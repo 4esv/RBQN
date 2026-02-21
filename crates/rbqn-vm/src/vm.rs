@@ -5,7 +5,8 @@ use rbqn_core::array::BqnArr;
 
 use crate::block::{Block, Body, eval_fun_block, m_md1_block, m_md2_block};
 use crate::bytecode::Op;
-use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d};
+use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_partial_r};
+use crate::namespace::{self, NS, NSDesc, get_ns, store_ns};
 use crate::scope::{Scope, v_get, v_set, v_seth, v_check_bad_read};
 
 pub fn exec_block(bl: &Block, body: Arc<Body>, psc: &Scope) -> B {
@@ -36,6 +37,31 @@ fn build_pscs(sc: &Arc<Scope>, max_psc: u16) -> Vec<Arc<Scope>> {
         }
     }
     pscs
+}
+
+/// Helper: unpack an immediate variable reference from a u64.
+/// The encoding is: low 32 bits = position, high 32 bits = depth.
+fn unpack_var_ref(packed: u64) -> (usize, usize) {
+    let pos = packed as u32 as usize;
+    let depth = (packed >> 32) as u32 as usize;
+    (depth, pos)
+}
+
+/// Resolve a SYSV system value by index.
+fn sysv_lookup(idx: u32) -> B {
+    // System values used by the bootstrap compiler:
+    //  0: Type    1: Decompose   4: Glyph   7: Fill/FillFn
+    // 22: GroupLen  23: GroupOrd
+    // Return a native function wrapper for implemented ones, SENTINEL for others.
+    match idx {
+        0 => crate::derive::m_native_fn(rbqn_prim::SYS_TYPE),
+        1 => crate::derive::m_native_fn(rbqn_prim::SYS_DECOMPOSE),
+        4 => crate::derive::m_native_fn(rbqn_prim::SYS_GLYPH),
+        7 => crate::derive::m_native_fn(rbqn_prim::SYS_FILL),
+        22 => crate::derive::m_native_fn(rbqn_prim::SYS_GROUPLEN),
+        23 => crate::derive::m_native_fn(rbqn_prim::SYS_GROUPORD),
+        _ => B::SENTINEL,
+    }
 }
 
 pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
@@ -100,6 +126,8 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let idx = read_u32!() as usize;
                 push!(bl.comp.objs[idx]);
             }
+
+            // --- Function calls ---
             Some(Op::FN1C) => {
                 let f = pop!();
                 let x = pop!();
@@ -132,6 +160,42 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     push!(c2(f, w, x));
                 }
             }
+
+            // --- Inline function call variants ---
+            Some(Op::FN1Ci) => {
+                let f = B::from_u64(read_u64!());
+                let x = pop!();
+                push!(c1(f, x));
+            }
+            Some(Op::FN1Oi) => {
+                let f = B::from_u64(read_u64!());
+                let x = pop!();
+                if x.q_n() {
+                    push!(x);
+                } else {
+                    push!(c1(f, x));
+                }
+            }
+            Some(Op::FN2Ci) => {
+                let f = B::from_u64(read_u64!());
+                let w = pop!();
+                let x = pop!();
+                push!(c2(f, w, x));
+            }
+            Some(Op::FN2Oi) => {
+                let f = B::from_u64(read_u64!());
+                let w = pop!();
+                let x = pop!();
+                if x.q_n() {
+                    push!(x);
+                } else if w.q_n() {
+                    push!(c1(f, x));
+                } else {
+                    push!(c2(f, w, x));
+                }
+            }
+
+            // --- List/array construction ---
             Some(Op::LSTO) | Some(Op::LSTM) => {
                 let sz = read_u32!() as usize;
                 if sz == 0 {
@@ -164,6 +228,8 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let arr = BqnArr::from_b_vec(elems);
                 push!(tag_arr(arr));
             }
+
+            // --- Block definitions ---
             Some(Op::DFND0) => {
                 let bl_data = read_u64!();
                 let bl_idx = bl_data as usize;
@@ -197,6 +263,8 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     rbqn_core::error::throw("DFND2: block index out of bounds");
                 }
             }
+
+            // --- Modifier application ---
             Some(Op::MD1C) => {
                 let f = pop!();
                 let m = pop!();
@@ -208,6 +276,20 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let g = pop!();
                 push!(m2_d(m, f, g));
             }
+            Some(Op::MD2L) => {
+                // Partial 2-modifier: has left operand, needs right
+                let f = pop!();
+                let m2 = pop!();
+                push!(m_md2_partial_l(m2, f));
+            }
+            Some(Op::MD2R) => {
+                // Partial 2-modifier: has right operand, needs left
+                let g = pop!();
+                let m2 = pop!();
+                push!(m_md2_partial_r(m2, g));
+            }
+
+            // --- Trains ---
             Some(Op::TR2D) => {
                 let g = pop!();
                 let h = pop!();
@@ -229,6 +311,8 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     push!(m_fork(f, g, h));
                 }
             }
+
+            // --- Variable access ---
             Some(Op::VARO) => {
                 let d = read_u32!();
                 let p = read_u32!();
@@ -283,6 +367,19 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     ext.vars[p as usize] = B::OPT_OUT;
                 }
             }
+
+            // --- Dynamic variables ---
+            Some(Op::DYNO) => {
+                let idx = read_u32!();
+                push!(sysv_lookup(idx));
+            }
+            Some(Op::DYNM) => {
+                let _idx = read_u32!();
+                // Push a mutable reference placeholder — for now treat as read-only
+                push!(B::SENTINEL);
+            }
+
+            // --- Assignment opcodes ---
             Some(Op::SETN) => {
                 let s = pop!();
                 let x = pop!();
@@ -312,6 +409,90 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 v_set(&mut pscs, s, r, true, false);
                 push!(r);
             }
+
+            // --- Immediate set variants (variable ref encoded as immediate u64) ---
+            Some(Op::SETNi) => {
+                let packed = read_u64!();
+                let (d, p) = unpack_var_ref(packed);
+                let x = pop!();
+                let sc_mut = Arc::make_mut(&mut pscs[d]);
+                sc_mut.vars[p] = x;
+                push!(x);
+            }
+            Some(Op::SETUi) => {
+                let packed = read_u64!();
+                let (d, p) = unpack_var_ref(packed);
+                let x = pop!();
+                let sc_mut = Arc::make_mut(&mut pscs[d]);
+                let prev = sc_mut.vars[p];
+                if crate::scope::v_check_bad_write(prev) {
+                    crate::scope::v_tag_error_pub(prev, true);
+                }
+                sc_mut.vars[p] = x;
+                push!(x);
+            }
+            Some(Op::SETMi) => {
+                let packed = read_u64!();
+                let (d, p) = unpack_var_ref(packed);
+                let f = pop!();
+                let x = pop!();
+                let w = pscs[d].vars[p];
+                let r = c2(f, w, x);
+                let sc_mut = Arc::make_mut(&mut pscs[d]);
+                sc_mut.vars[p] = r;
+                push!(r);
+            }
+            Some(Op::SETCi) => {
+                let packed = read_u64!();
+                let (d, p) = unpack_var_ref(packed);
+                let f = pop!();
+                let x = pscs[d].vars[p];
+                let r = c1(f, x);
+                let sc_mut = Arc::make_mut(&mut pscs[d]);
+                sc_mut.vars[p] = r;
+                push!(r);
+            }
+
+            // --- Void set variants (like SETNi but don't push result) ---
+            Some(Op::SETNv) => {
+                let packed = read_u64!();
+                let (d, p) = unpack_var_ref(packed);
+                let x = pop!();
+                let sc_mut = Arc::make_mut(&mut pscs[d]);
+                sc_mut.vars[p] = x;
+            }
+            Some(Op::SETUv) => {
+                let packed = read_u64!();
+                let (d, p) = unpack_var_ref(packed);
+                let x = pop!();
+                let sc_mut = Arc::make_mut(&mut pscs[d]);
+                let prev = sc_mut.vars[p];
+                if crate::scope::v_check_bad_write(prev) {
+                    crate::scope::v_tag_error_pub(prev, true);
+                }
+                sc_mut.vars[p] = x;
+            }
+            Some(Op::SETMv) => {
+                let packed = read_u64!();
+                let (d, p) = unpack_var_ref(packed);
+                let f = pop!();
+                let x = pop!();
+                let w = pscs[d].vars[p];
+                let r = c2(f, w, x);
+                let sc_mut = Arc::make_mut(&mut pscs[d]);
+                sc_mut.vars[p] = r;
+            }
+            Some(Op::SETCv) => {
+                let packed = read_u64!();
+                let (d, p) = unpack_var_ref(packed);
+                let f = pop!();
+                let x = pscs[d].vars[p];
+                let r = c1(f, x);
+                let sc_mut = Arc::make_mut(&mut pscs[d]);
+                sc_mut.vars[p] = r;
+            }
+
+            // --- Header match ---
             Some(Op::SETH1) => {
                 let s = pop!();
                 let x = pop!();
@@ -331,6 +512,8 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     rbqn_core::error::throw("SETH2: header match failed");
                 }
             }
+
+            // --- Predicates ---
             Some(Op::PRED1) => {
                 let x = pop!();
                 let _v1 = read_u64!();
@@ -346,36 +529,94 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     rbqn_core::error::throw("PRED2: predicate failed");
                 }
             }
+
+            // --- Namespace field access ---
             Some(Op::FLDG) => {
-                let ns = pop!();
-                let _gid = read_u32!();
-                if !ns.is_nsp() {
+                let ns_val = pop!();
+                let gid = read_u32!() as i32;
+                if !ns_val.is_nsp() {
                     rbqn_core::error::throw("Trying to read a field from non-namespace");
                 }
-                rbqn_core::error::throw("FLDG: namespace field access not yet implemented");
+                let ns = get_ns(ns_val);
+                match ns.get_by_gid(gid) {
+                    Some(v) => push!(v),
+                    None => rbqn_core::error::throw(
+                        format!("Namespace does not have field '{}'", namespace::gid2str(gid))
+                    ),
+                }
             }
+            Some(Op::FLDO) => {
+                let ns_val = pop!();
+                let gid = read_u32!() as i32;
+                if !ns_val.is_nsp() {
+                    rbqn_core::error::throw("Trying to read a field from non-namespace");
+                }
+                let ns = get_ns(ns_val);
+                match ns.get_by_gid(gid) {
+                    Some(v) => push!(v),
+                    None => push!(B::SENTINEL), // optional: Nothing if not found
+                }
+            }
+            Some(Op::FLDM) => {
+                let ns_val = pop!();
+                let gid = read_u32!() as i32;
+                if !ns_val.is_nsp() {
+                    rbqn_core::error::throw("Trying to read a field from non-namespace");
+                }
+                let ns = get_ns(ns_val);
+                match ns.get_by_gid(gid) {
+                    Some(v) => push!(v),
+                    None => rbqn_core::error::throw(
+                        format!("Namespace does not have field '{}' for modification", namespace::gid2str(gid))
+                    ),
+                }
+            }
+
             Some(Op::ALIM) => {
+                // Array limit: currently just consume the operand and pass through
                 let _o = pop!();
                 let _gid = read_u32!();
-                rbqn_core::error::throw("ALIM: not yet implemented");
             }
+
             Some(Op::CHKV) => {
                 if peek!(1).q_n() {
                     rbqn_core::error::throw("Unexpected Nothing (\u{00B7})");
                 }
             }
+
             Some(Op::VFYM) => {
-                let _o = pop!();
-                rbqn_core::error::throw("VFYM: not yet implemented");
+                // Verify mutable: check that top of stack is a valid mutable reference.
+                // For now, just pass through (the value stays on the stack).
+                // VFYM consumes 1, produces 1 => net 0.
+                // It pops and re-pushes, or just peeks. stack_diff=0, consumed=1 suggests pop+push.
+                let v = pop!();
+                push!(v);
             }
+
             Some(Op::FAIL) => {
                 rbqn_core::error::throw("This block cannot be called with these arguments");
             }
+
+            // --- System values ---
             Some(Op::SYSV) => {
-                let _n = read_u32!();
-                push!(B::SENTINEL); // placeholder
+                let idx = read_u32!();
+                push!(sysv_lookup(idx));
             }
+
+            // --- Return opcodes ---
             Some(Op::RETD) => {
+                // Build namespace from scope exports and return it
+                if let Some(ref ns_desc) = body.ns_desc {
+                    // Pop the unused stack value if present
+                    if !stack.is_empty() {
+                        pop!();
+                    }
+                    return store_ns(NS {
+                        desc: ns_desc.clone(),
+                        sc: if !pscs.is_empty() { pscs[0].clone() } else { sc.clone() },
+                    });
+                }
+                // No namespace descriptor: just return top of stack or SENTINEL
                 if stack.is_empty() {
                     return B::SENTINEL;
                 }
@@ -384,6 +625,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::RETN) => {
                 return pop!();
             }
+
             _ => {
                 rbqn_core::error::throw(format!("VM: unhandled opcode 0x{:02x}", op_val));
             }
@@ -391,27 +633,12 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     }
 }
 
-use std::sync::atomic::AtomicU64;
-
-static ARR_COUNTER: AtomicU64 = AtomicU64::new(1);
-use std::collections::HashMap;
-use std::sync::Mutex;
-
-static ARR_STORE: std::sync::LazyLock<Mutex<HashMap<u64, BqnArr>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn tag_arr(arr: BqnArr) -> B {
-    let id = ARR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    ARR_STORE.lock().unwrap().insert(id, arr);
-    rbqn_core::tagu64(id << 3, rbqn_core::ARR_TAG)
+pub fn tag_arr(arr: BqnArr) -> B {
+    rbqn_core::tag_arr(arr)
 }
 
 pub fn get_arr(b: B) -> Option<BqnArr> {
-    if !b.is_arr() {
-        return None;
-    }
-    let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
-    ARR_STORE.lock().unwrap().get(&id).cloned()
+    rbqn_core::get_arr(b)
 }
 
 impl Clone for Scope {
