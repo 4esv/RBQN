@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rbqn_core::value::{B, bi_N, bi_noVar, bi_optOut};
+use rbqn_core::B;
 
 use crate::block::Body;
 
@@ -23,7 +23,7 @@ impl Scope {
     pub fn new(body: Arc<Body>, psc: Option<Arc<Scope>>, var_am: u16, init_vars: &[B]) -> Self {
         let mut vars = Vec::with_capacity(var_am as usize);
         vars.extend_from_slice(init_vars);
-        vars.resize(var_am as usize, bi_noVar);
+        vars.resize(var_am as usize, B::NO_VAR);
         Scope {
             psc,
             body,
@@ -35,19 +35,19 @@ impl Scope {
 }
 
 pub fn v_check_bad_read(x: B) -> bool {
-    (x.u >> 47) == (((rbqn_core::value::TAG_TAG as u64) << 1) | 1)
+    (x.0 >> 47) == (((rbqn_core::TAG_TAG as u64) << 1) | 1)
 }
 
 pub fn v_check_bad_write(x: B) -> bool {
-    (x.u >> 46) == (((rbqn_core::value::TAG_TAG as u64) << 2) | 3)
+    (x.0 >> 46) == (((rbqn_core::TAG_TAG as u64) << 2) | 3)
 }
 
 fn v_tag_error(x: B, write: bool) -> ! {
     let act = if write { "Assignment: Attempting to modify" } else { "Attempting to read" };
-    if x.u == bi_noVar.u {
+    if x.0 == B::NO_VAR.0 {
         rbqn_core::error::throw(format!("{} variable which is not yet defined", act));
     }
-    if x.u == bi_optOut.u {
+    if x.0 == B::OPT_OUT.0 {
         rbqn_core::error::throw(format!(
             "{} variable which isn't available due to incomplete or aborted F\u{21A9}",
             act
@@ -83,7 +83,7 @@ pub fn v_set(pscs: &mut [Arc<Scope>], s: B, x: B, upd: bool, _chk: bool) {
             }
         }
         sc.vars[p] = x;
-    } else if s.u == bi_N.u {
+    } else if s.0 == B::SENTINEL.0 {
         // assigning to Nothing: ignore
     } else {
         rbqn_core::error::throw("v_set: complex assignment not yet implemented");
@@ -97,7 +97,7 @@ pub fn v_seth(pscs: &mut [Arc<Scope>], s: B, x: B) -> bool {
         let sc = Arc::make_mut(&mut pscs[d]);
         sc.vars[p] = x;
         true
-    } else if s.u == bi_N.u {
+    } else if s.0 == B::SENTINEL.0 {
         true
     } else {
         false
@@ -113,7 +113,7 @@ pub fn v_get_move(pscs: &mut [Arc<Scope>], s: B, chk: bool) -> B {
         if chk && v_check_bad_read(r) {
             v_tag_error(r, false);
         }
-        sc.vars[p] = bi_optOut;
+        sc.vars[p] = B::OPT_OUT;
         r
     } else {
         rbqn_core::error::throw("v_get_move: non-var access not yet implemented");

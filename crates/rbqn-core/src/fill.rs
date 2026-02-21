@@ -1,15 +1,11 @@
-use crate::value::{B, bi_noFill, m_c32, m_f64};
+use crate::value::B;
 
-pub fn fill_get(x: B) -> B {
+pub fn fill_for(x: B) -> Option<B> {
     if x.is_f64() {
-        m_f64(0.0)
+        Some(B::m_f64(0.0))
     } else if x.is_c32() {
-        m_c32(' ' as u32)
+        Some(B::m_c32(b' ' as u32))
     } else {
-        bi_noFill
+        None
     }
-}
-
-pub fn has_fill(x: B) -> bool {
-    !x.no_fill()
 }

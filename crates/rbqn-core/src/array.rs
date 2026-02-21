@@ -1,12 +1,20 @@
-use std::sync::Arc;
-
 use crate::eltype::ElType;
-use crate::error::throw;
-use crate::value::{B, bi_noFill, m_c32, m_f64, m_i32};
+use crate::error::{BqnError, Result};
+use crate::value::B;
+
+pub type Rank = u8;
+pub const RANK_MAX: Rank = 255;
 
 #[derive(Debug, Clone)]
-pub enum ArrayStorage {
-    HArr(Vec<B>),
+pub struct BqnArr {
+    pub shape: Vec<usize>,
+    pub data: ArrData,
+    pub fill: Option<B>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ArrData {
+    Bit(Vec<u64>),
     I8(Vec<i8>),
     I16(Vec<i16>),
     I32(Vec<i32>),
@@ -14,156 +22,236 @@ pub enum ArrayStorage {
     C8(Vec<u8>),
     C16(Vec<u16>),
     C32(Vec<u32>),
-    Bit(Vec<u64>),
+    Boxed(Vec<B>),
 }
 
-impl ArrayStorage {
+impl ArrData {
     pub fn el_type(&self) -> ElType {
         match self {
-            ArrayStorage::Bit(_) => ElType::Bit,
-            ArrayStorage::I8(_) => ElType::I8,
-            ArrayStorage::I16(_) => ElType::I16,
-            ArrayStorage::I32(_) => ElType::I32,
-            ArrayStorage::F64(_) => ElType::F64,
-            ArrayStorage::C8(_) => ElType::C8,
-            ArrayStorage::C16(_) => ElType::C16,
-            ArrayStorage::C32(_) => ElType::C32,
-            ArrayStorage::HArr(_) => ElType::B,
+            ArrData::Bit(_) => ElType::Bit,
+            ArrData::I8(_) => ElType::I8,
+            ArrData::I16(_) => ElType::I16,
+            ArrData::I32(_) => ElType::I32,
+            ArrData::F64(_) => ElType::F64,
+            ArrData::C8(_) => ElType::C8,
+            ArrData::C16(_) => ElType::C16,
+            ArrData::C32(_) => ElType::C32,
+            ArrData::Boxed(_) => ElType::B,
         }
     }
 
     pub fn len(&self) -> usize {
         match self {
-            ArrayStorage::HArr(v) => v.len(),
-            ArrayStorage::I8(v) => v.len(),
-            ArrayStorage::I16(v) => v.len(),
-            ArrayStorage::I32(v) => v.len(),
-            ArrayStorage::F64(v) => v.len(),
-            ArrayStorage::C8(v) => v.len(),
-            ArrayStorage::C16(v) => v.len(),
-            ArrayStorage::C32(v) => v.len(),
-            ArrayStorage::Bit(v) => v.len() * 64, // approximate; actual count tracked by ia
+            ArrData::Bit(v) => {
+                // bit arrays store ia separately, but for now use bit count heuristic
+                // actual ia is in BqnArr.shape product
+                v.len() * 64 // overestimate; real length from shape
+            }
+            ArrData::I8(v) => v.len(),
+            ArrData::I16(v) => v.len(),
+            ArrData::I32(v) => v.len(),
+            ArrData::F64(v) => v.len(),
+            ArrData::C8(v) => v.len(),
+            ArrData::C16(v) => v.len(),
+            ArrData::C32(v) => v.len(),
+            ArrData::Boxed(v) => v.len(),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Flags(pub u8);
-
-impl Flags {
-    pub const NONE: Flags = Flags(0);
-    pub const SQUOZE: Flags = Flags(1);
-    pub const ASC: Flags = Flags(2);
-    pub const DSC: Flags = Flags(4);
-}
-
-#[derive(Debug, Clone)]
-pub struct BqnArr {
-    pub ia: usize,
-    pub shape: Vec<usize>,
-    pub storage: ArrayStorage,
-    pub fill: B,
-    pub flags: Flags,
 }
 
 impl BqnArr {
-    pub fn new(storage: ArrayStorage, shape: Vec<usize>, fill: B) -> Self {
-        let ia = if shape.is_empty() {
-            1
-        } else {
-            shape.iter().product()
-        };
-        BqnArr {
-            ia,
-            shape,
-            storage,
-            fill,
-            flags: Flags::NONE,
+    pub fn ia(&self) -> usize {
+        self.shape.iter().copied().product::<usize>().max(0)
+    }
+
+    pub fn rank(&self) -> Rank {
+        self.shape.len() as Rank
+    }
+
+    pub fn el_type(&self) -> ElType {
+        self.data.el_type()
+    }
+
+    pub fn get(&self, i: usize) -> Result<B> {
+        if i >= self.ia() {
+            return Err(BqnError::Domain(format!("Index {i} out of bounds")));
         }
-    }
-
-    pub fn rank(&self) -> usize {
-        self.shape.len()
-    }
-
-    pub fn get(&self, idx: usize) -> B {
-        if idx >= self.ia {
-            throw(format!("Index {} out of bounds for array of size {}", idx, self.ia));
-        }
-        self.get_unchecked(idx)
-    }
-
-    pub fn get_unchecked(&self, idx: usize) -> B {
-        match &self.storage {
-            ArrayStorage::HArr(v) => v[idx],
-            ArrayStorage::I8(v) => m_i32(v[idx] as i32),
-            ArrayStorage::I16(v) => m_i32(v[idx] as i32),
-            ArrayStorage::I32(v) => m_i32(v[idx]),
-            ArrayStorage::F64(v) => m_f64(v[idx]),
-            ArrayStorage::C8(v) => m_c32(v[idx] as u32),
-            ArrayStorage::C16(v) => m_c32(v[idx] as u32),
-            ArrayStorage::C32(v) => m_c32(v[idx]),
-            ArrayStorage::Bit(v) => {
-                let word = idx / 64;
-                let bit = idx % 64;
-                m_i32(((v[word] >> bit) & 1) as i32)
+        Ok(match &self.data {
+            ArrData::Bit(v) => {
+                let word = i / 64;
+                let bit = i % 64;
+                B::m_i32(((v[word] >> bit) & 1) as i32)
             }
+            ArrData::I8(v) => B::m_i32(v[i] as i32),
+            ArrData::I16(v) => B::m_i32(v[i] as i32),
+            ArrData::I32(v) => B::m_i32(v[i]),
+            ArrData::F64(v) => B::m_f64(v[i]),
+            ArrData::C8(v) => B::m_c32(v[i] as u32),
+            ArrData::C16(v) => B::m_c32(v[i] as u32),
+            ArrData::C32(v) => B::m_c32(v[i]),
+            ArrData::Boxed(v) => v[i],
+        })
+    }
+
+    pub fn i32_iter(&self) -> Result<Vec<i32>> {
+        match &self.data {
+            ArrData::Bit(v) => {
+                let ia = self.ia();
+                Ok((0..ia)
+                    .map(|i| ((v[i / 64] >> (i % 64)) & 1) as i32)
+                    .collect())
+            }
+            ArrData::I8(v) => Ok(v.iter().map(|&x| x as i32).collect()),
+            ArrData::I16(v) => Ok(v.iter().map(|&x| x as i32).collect()),
+            ArrData::I32(v) => Ok(v.clone()),
+            ArrData::F64(v) => v
+                .iter()
+                .map(|&x| {
+                    let i = x as i32;
+                    if x == i as f64 {
+                        Ok(i)
+                    } else {
+                        Err(BqnError::Type("Expected integer".into()))
+                    }
+                })
+                .collect(),
+            _ => Err(BqnError::Type("Expected numeric array".into())),
         }
     }
 
-    pub fn from_b_vec(v: Vec<B>) -> Self {
-        let ia = v.len();
-        BqnArr {
-            ia,
-            shape: vec![ia],
-            storage: ArrayStorage::HArr(v),
-            fill: bi_noFill,
-            flags: Flags::NONE,
+    pub fn f64_iter(&self) -> Result<Vec<f64>> {
+        match &self.data {
+            ArrData::Bit(v) => {
+                let ia = self.ia();
+                Ok((0..ia)
+                    .map(|i| ((v[i / 64] >> (i % 64)) & 1) as f64)
+                    .collect())
+            }
+            ArrData::I8(v) => Ok(v.iter().map(|&x| x as f64).collect()),
+            ArrData::I16(v) => Ok(v.iter().map(|&x| x as f64).collect()),
+            ArrData::I32(v) => Ok(v.iter().map(|&x| x as f64).collect()),
+            ArrData::F64(v) => Ok(v.clone()),
+            _ => Err(BqnError::Type("Expected numeric array".into())),
         }
     }
 
-    pub fn from_i32_vec(v: Vec<i32>) -> Self {
-        let ia = v.len();
+    pub fn new_vec_i32(data: Vec<i32>) -> Self {
+        let len = data.len();
         BqnArr {
-            ia,
-            shape: vec![ia],
-            storage: ArrayStorage::I32(v),
-            fill: m_f64(0.0),
-            flags: Flags::NONE,
+            shape: vec![len],
+            data: ArrData::I32(data),
+            fill: Some(B::m_i32(0)),
         }
     }
 
-    pub fn from_string(s: &str) -> Self {
-        let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
-        let ia = chars.len();
-        let all_ascii = chars.iter().all(|&c| c < 128);
-        let storage = if all_ascii {
-            ArrayStorage::C8(chars.iter().map(|&c| c as u8).collect())
-        } else {
-            ArrayStorage::C32(chars)
-        };
+    pub fn new_vec_f64(data: Vec<f64>) -> Self {
+        let len = data.len();
         BqnArr {
-            ia,
-            shape: vec![ia],
-            storage,
-            fill: m_c32(' ' as u32),
-            flags: Flags::NONE,
+            shape: vec![len],
+            data: ArrData::F64(data),
+            fill: Some(B::m_f64(0.0)),
+        }
+    }
+
+    pub fn new_vec_b(data: Vec<B>) -> Self {
+        let len = data.len();
+        BqnArr {
+            shape: vec![len],
+            data: ArrData::Boxed(data),
+            fill: None,
+        }
+    }
+
+    pub fn new_vec_c32(data: Vec<u32>) -> Self {
+        let len = data.len();
+        BqnArr {
+            shape: vec![len],
+            data: ArrData::C32(data),
+            fill: Some(B::m_c32(b' ' as u32)),
+        }
+    }
+
+    pub fn empty_vec() -> Self {
+        BqnArr {
+            shape: vec![0],
+            data: ArrData::Boxed(vec![]),
+            fill: None,
         }
     }
 
     pub fn empty_harr() -> Self {
-        BqnArr {
-            ia: 0,
-            shape: vec![0],
-            storage: ArrayStorage::HArr(Vec::new()),
-            fill: bi_noFill,
-            flags: Flags::NONE,
-        }
+        Self::empty_vec()
+    }
+
+    pub fn from_b_vec(data: Vec<B>) -> Self {
+        Self::new_vec_b(data)
+    }
+
+    pub fn with_shape(mut self, shape: Vec<usize>) -> Self {
+        self.shape = shape;
+        self
     }
 }
 
-pub type ArcArr = Arc<BqnArr>;
+// Squeeze: try to narrow an f64 array to a smaller integer type
+pub fn squeeze_num(arr: BqnArr) -> BqnArr {
+    if arr.el_type() != ElType::F64 {
+        return arr;
+    }
+    let vals = match &arr.data {
+        ArrData::F64(v) => v,
+        _ => return arr,
+    };
 
-pub fn new_arr(arr: BqnArr) -> ArcArr {
-    Arc::new(arr)
+    let mut all_bit = true;
+    let mut all_i8 = true;
+    let mut all_i16 = true;
+    let mut all_i32 = true;
+
+    for &v in vals {
+        let i = v as i32;
+        if v != i as f64 {
+            all_bit = false;
+            all_i8 = false;
+            all_i16 = false;
+            all_i32 = false;
+            break;
+        }
+        if v != 0.0 && v != 1.0 {
+            all_bit = false;
+        }
+        if i != i as i8 as i32 {
+            all_i8 = false;
+        }
+        if i != i as i16 as i32 {
+            all_i16 = false;
+        }
+        all_i32 = true; // already checked v == i as f64
+    }
+
+    let data = if all_bit {
+        let ia = vals.len();
+        let nwords = (ia + 63) / 64;
+        let mut words = vec![0u64; nwords];
+        for (i, &v) in vals.iter().enumerate() {
+            if v == 1.0 {
+                words[i / 64] |= 1 << (i % 64);
+            }
+        }
+        ArrData::Bit(words)
+    } else if all_i8 {
+        ArrData::I8(vals.iter().map(|&v| v as i8).collect())
+    } else if all_i16 {
+        ArrData::I16(vals.iter().map(|&v| v as i16).collect())
+    } else if all_i32 {
+        ArrData::I32(vals.iter().map(|&v| v as i32).collect())
+    } else {
+        return arr;
+    };
+
+    BqnArr {
+        shape: arr.shape,
+        data,
+        fill: arr.fill,
+    }
 }

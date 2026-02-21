@@ -1,20 +1,25 @@
 use std::fmt;
 
 #[derive(Debug, Clone)]
-pub struct BqnError {
-    pub message: String,
-    pub stack: Vec<StackFrame>,
-}
-
-#[derive(Debug, Clone)]
-pub struct StackFrame {
-    pub src: Option<String>,
-    pub pos: Option<(usize, usize)>,
+pub enum BqnError {
+    Type(String),
+    Rank(String),
+    Shape(String),
+    Domain(String),
+    Assert(String),
+    Nyi(String),
 }
 
 impl fmt::Display for BqnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
+        match self {
+            BqnError::Type(s) => write!(f, "Type error: {s}"),
+            BqnError::Rank(s) => write!(f, "Rank error: {s}"),
+            BqnError::Shape(s) => write!(f, "Shape error: {s}"),
+            BqnError::Domain(s) => write!(f, "Domain error: {s}"),
+            BqnError::Assert(s) => write!(f, "Assertion error: {s}"),
+            BqnError::Nyi(s) => write!(f, "Not yet implemented: {s}"),
+        }
     }
 }
 
@@ -23,5 +28,21 @@ impl std::error::Error for BqnError {}
 pub type Result<T> = std::result::Result<T, BqnError>;
 
 pub fn throw(msg: impl Into<String>) -> ! {
-    panic!("{}", msg.into())
+    panic!("{}", BqnError::Domain(msg.into()))
+}
+
+pub fn throw_type(msg: impl Into<String>) -> ! {
+    panic!("{}", BqnError::Type(msg.into()))
+}
+
+pub fn throw_rank(msg: impl Into<String>) -> ! {
+    panic!("{}", BqnError::Rank(msg.into()))
+}
+
+pub fn throw_shape(msg: impl Into<String>) -> ! {
+    panic!("{}", BqnError::Shape(msg.into()))
+}
+
+pub fn throw_nyi(msg: impl Into<String>) -> ! {
+    panic!("{}", BqnError::Nyi(msg.into()))
 }

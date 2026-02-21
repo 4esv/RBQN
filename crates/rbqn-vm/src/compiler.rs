@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rbqn_core::value::{B, bi_N};
+use rbqn_core::B;
 
 use crate::block::{Block, Body, Comp, CompKind};
 use crate::bytecode::Op;
@@ -22,7 +22,7 @@ pub fn compile_all(
         src,
         fullpath,
         indices,
-        name_list: bi_N,
+        name_list: B::SENTINEL,
         objs,
         kind: CompKind::Unknown,
         block_am: 0,
@@ -53,10 +53,6 @@ fn compile_block(
     my_pos: i32,
     ns_result: i32,
 ) -> Arc<Block> {
-    // Simplified compiler: for now, we pass through bytecode mostly unchanged.
-    // The full compiler transforms PUSH->ADDI/ADDU, DFND->DFND0/1/2, etc.
-    // This will be expanded as needed.
-
     let fail_body = Arc::new(Body::fail_body());
 
     let mut new_bc: Vec<i32> = Vec::new();
@@ -64,14 +60,10 @@ fn compile_block(
     let mut bodies: Vec<Arc<Body>> = Vec::new();
     let mut used_blocks: Vec<Arc<Block>> = Vec::new();
 
-    // Add fail body's bytecode
     new_bc.push(Op::FAIL as i32);
     map_bc.push(my_pos);
     bodies.push(fail_body.clone());
 
-    // For the simple case: single body starting at bytecode offset from the block info
-    // In a real implementation, we'd parse the block/body structure from the input arrays.
-    // For now, compile the bytecode starting from position 0.
     let bc_start = new_bc.len();
     let mut h: i32 = 0;
     let mut h_max: i32 = 0;
@@ -92,16 +84,16 @@ fn compile_block(
                 } else {
                     new_bc.push(Op::ADDU as i32);
                 }
-                new_bc.push(obj.u as i32);
-                new_bc.push((obj.u >> 32) as i32);
+                new_bc.push(obj.0 as i32);
+                new_bc.push((obj.0 >> 32) as i32);
                 map_bc.extend([old_idx as i32; 3]);
                 idx += 2;
                 h += 1;
             }
             Some(Op::NOTM) => {
                 new_bc.push(Op::ADDU as i32);
-                new_bc.push(bi_N.u as i32);
-                new_bc.push((bi_N.u >> 32) as i32);
+                new_bc.push(B::SENTINEL.0 as i32);
+                new_bc.push((B::SENTINEL.0 >> 32) as i32);
                 map_bc.extend([old_idx as i32; 3]);
                 idx += 1;
                 h += 1;
@@ -120,11 +112,10 @@ fn compile_block(
                         _ => Op::DFND2,
                     };
                     new_bc.push(dfnd_op as i32);
-                    // Store block pointer as index (we'll resolve later)
                     let bl_idx = used_blocks.len();
                     used_blocks.push(child);
                     new_bc.push(bl_idx as i32);
-                    new_bc.push(0); // padding for u64 alignment
+                    new_bc.push(0);
                     map_bc.extend([old_idx as i32; 3]);
                 }
                 idx += 2;
@@ -190,7 +181,6 @@ fn compile_block(
         }
     }
 
-    // Create the main body
     let mut main_body = Body::new(0, bc_start, h_max as u32, mpsc as u16);
     main_body.bc = new_bc.iter().map(|&x| x as u32).collect();
     main_body.bc_offset = bc_start;

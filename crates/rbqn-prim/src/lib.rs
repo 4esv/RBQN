@@ -13,3 +13,5 @@ pub mod md1;
 pub mod md2;
 pub mod inverse;
 pub mod sysfn;
+
+pub use dispatch::{get_runtime, MonadFn, DyadFn, Primitive, PrimResult};

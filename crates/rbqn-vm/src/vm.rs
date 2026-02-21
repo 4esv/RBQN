@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use rbqn_core::value::{B, bi_N, bi_optOut, tagu64};
-use rbqn_core::value::{VAR_TAG, EXT_TAG};
+use rbqn_core::B;
 use rbqn_core::array::BqnArr;
 
 use crate::block::{Block, Body, eval_fun_block, m_md1_block, m_md2_block};
@@ -139,7 +138,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     let arr = BqnArr::empty_harr();
                     push!(tag_arr(arr));
                 } else {
-                    let mut elems = vec![bi_N; sz];
+                    let mut elems = vec![B::SENTINEL; sz];
                     for i in 0..sz {
                         elems[sz - i - 1] = pop!();
                     }
@@ -149,7 +148,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             }
             Some(Op::ARMO) => {
                 let sz = read_u32!() as usize;
-                let mut elems = vec![bi_N; sz];
+                let mut elems = vec![B::SENTINEL; sz];
                 for i in 0..sz {
                     elems[sz - i - 1] = pop!();
                 }
@@ -158,7 +157,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             }
             Some(Op::ARMM) => {
                 let sz = read_u32!() as usize;
-                let mut elems = vec![bi_N; sz];
+                let mut elems = vec![B::SENTINEL; sz];
                 for i in 0..sz {
                     elems[sz - i - 1] = pop!();
                 }
@@ -170,7 +169,6 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let bl_idx = bl_data as usize;
                 if bl_idx < bl.blocks.len() {
                     let child_bl = bl.blocks[bl_idx].clone();
-                    // Reconstruct psc from current scope
                     let psc = if !pscs.is_empty() { pscs[0].clone() } else { sc.clone() };
                     push!(eval_fun_block(child_bl, psc));
                 } else {
@@ -243,16 +241,15 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::VARM) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                push!(tagu64((d as u64) << 32 | p as u64, VAR_TAG));
+                push!(rbqn_core::tagu64((d as u64) << 32 | p as u64, rbqn_core::VAR_TAG));
             }
             Some(Op::VARU) => {
                 let d = read_u32!();
                 let p = read_u32!();
                 let val = pscs[d as usize].vars[p as usize];
                 push!(val);
-                // Replace with bi_optOut
                 let sc_mut = Arc::make_mut(&mut pscs[d as usize]);
-                sc_mut.vars[p as usize] = bi_optOut;
+                sc_mut.vars[p as usize] = B::OPT_OUT;
             }
             Some(Op::EXTO) => {
                 let d = read_u32!();
@@ -270,7 +267,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::EXTM) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                push!(tagu64((d as u64) << 32 | p as u64, EXT_TAG));
+                push!(rbqn_core::tagu64((d as u64) << 32 | p as u64, rbqn_core::EXT_TAG));
             }
             Some(Op::EXTU) => {
                 let d = read_u32!();
@@ -281,10 +278,9 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 } else {
                     rbqn_core::error::throw("EXTU: no scope extension");
                 }
-                // Replace with bi_optOut in ext
                 let sc_mut = Arc::make_mut(&mut pscs[d as usize]);
                 if let Some(ref mut ext) = sc_mut.ext {
-                    ext.vars[p as usize] = bi_optOut;
+                    ext.vars[p as usize] = B::OPT_OUT;
                 }
             }
             Some(Op::SETN) => {
@@ -322,7 +318,6 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let _v1 = read_u64!();
                 let ok = v_seth(&mut pscs, s, x);
                 if !ok {
-                    // goto next body - for now, just error
                     rbqn_core::error::throw("SETH1: header match failed");
                 }
             }
@@ -357,13 +352,11 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 if !ns.is_nsp() {
                     rbqn_core::error::throw("Trying to read a field from non-namespace");
                 }
-                // TODO: namespace field access
                 rbqn_core::error::throw("FLDG: namespace field access not yet implemented");
             }
             Some(Op::ALIM) => {
                 let _o = pop!();
                 let _gid = read_u32!();
-                // TODO: field alias
                 rbqn_core::error::throw("ALIM: not yet implemented");
             }
             Some(Op::CHKV) => {
@@ -373,7 +366,6 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             }
             Some(Op::VFYM) => {
                 let _o = pop!();
-                // TODO: push verify-mutable wrapper
                 rbqn_core::error::throw("VFYM: not yet implemented");
             }
             Some(Op::FAIL) => {
@@ -381,14 +373,11 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             }
             Some(Op::SYSV) => {
                 let _n = read_u32!();
-                // System function - will be implemented with the primitive dispatch
-                push!(bi_N); // placeholder
+                push!(B::SENTINEL); // placeholder
             }
             Some(Op::RETD) => {
-                // Return namespace
-                // TODO: proper namespace construction
                 if stack.is_empty() {
-                    return bi_N;
+                    return B::SENTINEL;
                 }
                 return pop!();
             }
@@ -414,14 +403,14 @@ static ARR_STORE: std::sync::LazyLock<Mutex<HashMap<u64, BqnArr>>> =
 fn tag_arr(arr: BqnArr) -> B {
     let id = ARR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     ARR_STORE.lock().unwrap().insert(id, arr);
-    tagu64(id << 3, rbqn_core::value::ARR_TAG)
+    rbqn_core::tagu64(id << 3, rbqn_core::ARR_TAG)
 }
 
 pub fn get_arr(b: B) -> Option<BqnArr> {
     if !b.is_arr() {
         return None;
     }
-    let id = (b.u & 0xFFFFFFFFFFFF) >> 3;
+    let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
     ARR_STORE.lock().unwrap().get(&id).cloned()
 }
 
