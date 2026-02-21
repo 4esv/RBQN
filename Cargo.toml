@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rbqn-core",
+    "crates/rbqn-vm",
+    "crates/rbqn-prim",
+    "crates/rbqn-gpu",
+    "crates/rbqn",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "ISC"
+
+[workspace.dependencies]
+rbqn-core = { path = "crates/rbqn-core" }
+rbqn-vm = { path = "crates/rbqn-vm" }
+rbqn-prim = { path = "crates/rbqn-prim" }
+rbqn-gpu = { path = "crates/rbqn-gpu" }
+wgpu = "24"
+bytemuck = { version = "1", features = ["derive"] }

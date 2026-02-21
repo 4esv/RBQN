@@ -1,0 +1,11 @@
+[package]
+name = "rbqn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rbqn-core.workspace = true
+rbqn-vm.workspace = true
+rbqn-prim.workspace = true
+rbqn-gpu.workspace = true
