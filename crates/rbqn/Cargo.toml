@@ -9,3 +9,4 @@ rbqn-core.workspace = true
 rbqn-vm.workspace = true
 rbqn-prim.workspace = true
 rbqn-gpu.workspace = true
+rustyline = "15"
