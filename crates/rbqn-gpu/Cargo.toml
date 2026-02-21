@@ -1,0 +1,10 @@
+[package]
+name = "rbqn-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rbqn-core.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
