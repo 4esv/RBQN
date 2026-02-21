@@ -88,5 +88,44 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
         return Ok(PrimResult::Scalar(arr.get(flat_idx)?));
     }
 
-    Err(error::throw_nyi("⊑: nested pick not yet implemented"))
+    // Nested pick: w is a higher-rank array or contains boxed index lists.
+    // Each element of w (if boxed) is an index-list into x.
+    // The result has the outer shape of w, with each element being the picked value.
+    if warr.el_type() == ElType::B {
+        let wia = warr.ia();
+        let mut result = Vec::with_capacity(wia);
+        for i in 0..wia {
+            let idx_b = warr.get(i)?;
+            if idx_b.is_f64() {
+                // Simple integer index
+                let idx = resolve_index(idx_b.o2i(), arr.ia())?;
+                result.push(arr.get(idx)?);
+            } else if idx_b.is_arr() {
+                // Nested index list
+                let idx_arr = get_arr(idx_b)
+                    .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: index element not found".into()))?;
+                let indices = idx_arr.i32_iter()?;
+                if indices.len() != arr.rank() as usize {
+                    return Err(BqnError::Rank(
+                        "𝕨⊑𝕩: index length must equal rank of 𝕩".into(),
+                    ));
+                }
+                let mut flat_idx = 0usize;
+                let mut stride = 1usize;
+                for j in (0..indices.len()).rev() {
+                    let idx = resolve_index(indices[j], arr.shape[j])?;
+                    flat_idx += idx * stride;
+                    stride *= arr.shape[j];
+                }
+                result.push(arr.get(flat_idx)?);
+            } else {
+                return Err(BqnError::Type("𝕨⊑𝕩: index must be number or array".into()));
+            }
+        }
+        let mut out = BqnArr::new_vec_b(result);
+        out.shape = warr.shape.clone();
+        return Ok(PrimResult::Array(out));
+    }
+
+    Err(BqnError::Type("𝕨⊑𝕩: unsupported index type".into()))
 }
