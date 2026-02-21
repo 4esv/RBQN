@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub struct EmbeddedBytecode {
     pub bc: &'static [i32],
     pub objs: &'static [&'static [i32]],

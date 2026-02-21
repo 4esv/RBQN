@@ -4,6 +4,7 @@ use rbqn_prim::dispatch::PrimitiveRegistry;
 
 use crate::embedded;
 
+#[allow(dead_code)]
 pub struct Runtime {
     pub fruntime: Vec<B>,
     pub runtime: Vec<B>,
@@ -13,6 +14,7 @@ pub struct Runtime {
     pub def_re: RuntimeEnv,
 }
 
+#[allow(dead_code)]
 pub struct RuntimeEnv {
     pub comp_fn: B,
     pub rt: B,
