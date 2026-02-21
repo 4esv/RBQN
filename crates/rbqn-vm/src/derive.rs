@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rbqn_core::value::{B, FUN_TAG, MD1_TAG, MD2_TAG, bi_N, m_f64, tagu64};
+use rbqn_core::{B, FUN_TAG, MD1_TAG, MD2_TAG, tagu64};
 
 use crate::block::Block;
 use crate::scope::Scope;
@@ -62,7 +62,7 @@ pub fn m_fork(f: B, g: B, h: B) -> B {
 pub fn m_atop(g: B, h: B) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::Atop,
-        f: bi_N, g, h,
+        f: B::SENTINEL, g, h,
         bl: None, sc: None,
     });
     tagu64(id << 3, FUN_TAG)
@@ -71,7 +71,7 @@ pub fn m_atop(g: B, h: B) -> B {
 pub fn m_md1d(m1: B, f: B) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::Md1D,
-        f, g: m1, h: bi_N,
+        f, g: m1, h: B::SENTINEL,
         bl: None, sc: None,
     });
     tagu64(id << 3, FUN_TAG)
@@ -89,7 +89,7 @@ pub fn m_md2d(m2: B, f: B, g: B) -> B {
 pub fn m_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::FunBlock,
-        f: bi_N, g: bi_N, h: bi_N,
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
         bl: Some(bl), sc: Some(psc),
     });
     tagu64(id << 3, FUN_TAG)
@@ -98,7 +98,7 @@ pub fn m_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
 pub fn m_md1_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::Md1Block,
-        f: bi_N, g: bi_N, h: bi_N,
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
         bl: Some(bl), sc: Some(psc),
     });
     tagu64(id << 3, MD1_TAG)
@@ -107,7 +107,7 @@ pub fn m_md1_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
 pub fn m_md2_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::Md2Block,
-        f: bi_N, g: bi_N, h: bi_N,
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
         bl: Some(bl), sc: Some(psc),
     });
     tagu64(id << 3, MD2_TAG)
@@ -131,13 +131,13 @@ pub fn m2_d(m: B, f: B, g: B) -> B {
 
 pub fn c1(f: B, x: B) -> B {
     if f.is_fun() {
-        let id = (f.u & 0xFFFFFFFFFFFF) >> 3;
+        let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
         match d.kind {
             DerivedKind::Fork => {
                 let hx = c1(d.h, x);
                 let gx = c1(d.g, hx);
-                c2(d.f, m_f64(0.0), gx) // TODO: proper fork c1
+                c2(d.f, B::m_f64(0.0), gx) // TODO: proper fork c1
             }
             DerivedKind::Atop => {
                 let hx = c1(d.h, x);
@@ -147,15 +147,13 @@ pub fn c1(f: B, x: B) -> B {
                 let bl = d.bl.as_ref().unwrap().clone();
                 let psc = d.sc.as_ref().unwrap().clone();
                 let body = bl.bodies[0].clone();
-                crate::vm::exec_block_with_args(&bl, body, &psc, &[f, x, bi_N])
+                crate::vm::exec_block_with_args(&bl, body, &psc, &[f, x, B::SENTINEL])
             }
             DerivedKind::Md1D => {
-                // m1 c1: call the modifier's function
-                let modifier = d.g; // the 1-modifier itself
+                let modifier = d.g;
                 let operand = d.f;
-                // For built-in modifiers this would dispatch; for blocks:
                 if modifier.is_md1() {
-                    let mid = (modifier.u & 0xFFFFFFFFFFFF) >> 3;
+                    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                     let md = get_derived(mid);
                     if md.kind == DerivedKind::Md1Block {
                         let bl = md.bl.as_ref().unwrap().clone();
@@ -163,18 +161,18 @@ pub fn c1(f: B, x: B) -> B {
                         let body = bl.bodies[0].clone();
                         return crate::vm::exec_block_with_args(
                             &bl, body, &psc,
-                            &[tagu64(id << 3, FUN_TAG), x, bi_N, modifier, operand],
+                            &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand],
                         );
                     }
                 }
                 rbqn_core::error::throw("c1: unhandled md1d dispatch");
             }
             DerivedKind::Md2D => {
-                let modifier = d.g; // the 2-modifier
+                let modifier = d.g;
                 let operand_f = d.f;
                 let operand_g = d.h;
                 if modifier.is_md2() {
-                    let mid = (modifier.u & 0xFFFFFFFFFFFF) >> 3;
+                    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                     let md = get_derived(mid);
                     if md.kind == DerivedKind::Md2Block {
                         let bl = md.bl.as_ref().unwrap().clone();
@@ -182,7 +180,7 @@ pub fn c1(f: B, x: B) -> B {
                         let body = bl.bodies[0].clone();
                         return crate::vm::exec_block_with_args(
                             &bl, body, &psc,
-                            &[tagu64(id << 3, FUN_TAG), x, bi_N, modifier, operand_f, operand_g],
+                            &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand_f, operand_g],
                         );
                     }
                 }
@@ -193,14 +191,13 @@ pub fn c1(f: B, x: B) -> B {
     } else if f.is_md() {
         rbqn_core::error::throw("Calling a modifier");
     } else {
-        // data value called as function: return itself, drop x
         f
     }
 }
 
 pub fn c2(f: B, w: B, x: B) -> B {
     if f.is_fun() {
-        let id = (f.u & 0xFFFFFFFFFFFF) >> 3;
+        let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
         match d.kind {
             DerivedKind::Fork => {
@@ -222,7 +219,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 let modifier = d.g;
                 let operand = d.f;
                 if modifier.is_md1() {
-                    let mid = (modifier.u & 0xFFFFFFFFFFFF) >> 3;
+                    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                     let md = get_derived(mid);
                     if md.kind == DerivedKind::Md1Block {
                         let bl = md.bl.as_ref().unwrap().clone();
@@ -241,7 +238,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 let operand_f = d.f;
                 let operand_g = d.h;
                 if modifier.is_md2() {
-                    let mid = (modifier.u & 0xFFFFFFFFFFFF) >> 3;
+                    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                     let md = get_derived(mid);
                     if md.kind == DerivedKind::Md2Block {
                         let bl = md.bl.as_ref().unwrap().clone();
