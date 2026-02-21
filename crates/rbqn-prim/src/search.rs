@@ -152,6 +152,49 @@ pub fn deduplicate_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⍷ dyad: find
-pub fn find_c2(_w: B, _wa: Option<&BqnArr>, _x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
-    Err(error::throw_nyi("⍷: find not yet implemented"))
+// w⍷x marks positions where w occurs as contiguous subsequence in x.
+// For vectors: substring search. Returns boolean array same length as x.
+pub fn find_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍷𝕩: 𝕨 must be an array".into()))?;
+    let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍷𝕩: 𝕩 must be an array".into()))?;
+
+    let wia = warr.ia();
+    let xia = xarr.ia();
+
+    if wia == 0 {
+        // Empty needle: all positions match
+        let result = vec![1i32; xia];
+        let mut out = BqnArr::new_vec_i32(result);
+        out.shape = xarr.shape.clone();
+        return Ok(PrimResult::Array(out));
+    }
+
+    if wia > xia {
+        let result = vec![0i32; xia];
+        let mut out = BqnArr::new_vec_i32(result);
+        out.shape = xarr.shape.clone();
+        return Ok(PrimResult::Array(out));
+    }
+
+    let mut result = vec![0i32; xia];
+    let num_positions = xia - wia + 1;
+
+    for i in 0..num_positions {
+        let mut matches = true;
+        for j in 0..wia {
+            let wv = warr.get(j)?;
+            let xv = xarr.get(i + j)?;
+            if !wv.atom_equal(xv) {
+                matches = false;
+                break;
+            }
+        }
+        if matches {
+            result[i] = 1;
+        }
+    }
+
+    let mut out = BqnArr::new_vec_i32(result);
+    out.shape = xarr.shape.clone();
+    Ok(PrimResult::Array(out))
 }
