@@ -5,8 +5,7 @@ use rbqn_core::{B, FUN_TAG, MD1_TAG, MD2_TAG, tagu64};
 use crate::block::Block;
 use crate::scope::Scope;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedKind {
     Fork,
     Atop,
@@ -15,6 +14,9 @@ pub enum DerivedKind {
     FunBlock,
     Md1Block,
     Md2Block,
+    NativeFn { prim_idx: usize },
+    NativeMd1 { prim_idx: usize },
+    NativeMd2 { prim_idx: usize },
 }
 
 #[derive(Debug)]
@@ -113,6 +115,33 @@ pub fn m_md2_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     tagu64(id << 3, MD2_TAG)
 }
 
+pub fn m_native_fn(idx: usize) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::NativeFn { prim_idx: idx },
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: None, sc: None,
+    });
+    tagu64(id << 3, FUN_TAG)
+}
+
+pub fn m_native_md1(idx: usize) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::NativeMd1 { prim_idx: idx },
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: None, sc: None,
+    });
+    tagu64(id << 3, MD1_TAG)
+}
+
+pub fn m_native_md2(idx: usize) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::NativeMd2 { prim_idx: idx },
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: None, sc: None,
+    });
+    tagu64(id << 3, MD2_TAG)
+}
+
 pub fn m1_d(m: B, f: B) -> B {
     if m.is_md1() {
         m_md1d(m, f)
@@ -164,6 +193,9 @@ pub fn c1(f: B, x: B) -> B {
                             &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand],
                         );
                     }
+                    if let DerivedKind::NativeMd1 { prim_idx } = &md.kind {
+                        return dispatch_native_md1_c1(*prim_idx, operand, f, x);
+                    }
                 }
                 rbqn_core::error::throw("c1: unhandled md1d dispatch");
             }
@@ -183,8 +215,24 @@ pub fn c1(f: B, x: B) -> B {
                             &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand_f, operand_g],
                         );
                     }
+                    if let DerivedKind::NativeMd2 { prim_idx } = &md.kind {
+                        return dispatch_native_md2_c1(*prim_idx, operand_f, operand_g, f, x);
+                    }
                 }
                 rbqn_core::error::throw("c1: unhandled md2d dispatch");
+            }
+            DerivedKind::NativeFn { prim_idx } => {
+                let prims = rbqn_prim::get_runtime();
+                let prim = &prims[prim_idx];
+                let c1_fn = prim.c1.unwrap_or_else(|| {
+                    rbqn_core::error::throw(format!("primitive '{}' has no monadic form", prim.glyph))
+                });
+                let x_arr = crate::vm::get_arr(x);
+                let result = match c1_fn(x, x_arr.as_ref()) {
+                    Ok(r) => r,
+                    Err(e) => rbqn_core::error::throw(e.to_string()),
+                };
+                prim_result_to_b(result)
             }
             _ => rbqn_core::error::throw("c1: unhandled derived kind"),
         }
@@ -230,6 +278,9 @@ pub fn c2(f: B, w: B, x: B) -> B {
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand],
                         );
                     }
+                    if let DerivedKind::NativeMd1 { prim_idx } = &md.kind {
+                        return dispatch_native_md1_c2(*prim_idx, operand, f, w, x);
+                    }
                 }
                 rbqn_core::error::throw("c2: unhandled md1d dispatch");
             }
@@ -249,8 +300,25 @@ pub fn c2(f: B, w: B, x: B) -> B {
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand_f, operand_g],
                         );
                     }
+                    if let DerivedKind::NativeMd2 { prim_idx } = &md.kind {
+                        return dispatch_native_md2_c2(*prim_idx, operand_f, operand_g, f, w, x);
+                    }
                 }
                 rbqn_core::error::throw("c2: unhandled md2d dispatch");
+            }
+            DerivedKind::NativeFn { prim_idx } => {
+                let prims = rbqn_prim::get_runtime();
+                let prim = &prims[prim_idx];
+                let c2_fn = prim.c2.unwrap_or_else(|| {
+                    rbqn_core::error::throw(format!("primitive '{}' has no dyadic form", prim.glyph))
+                });
+                let w_arr = crate::vm::get_arr(w);
+                let x_arr = crate::vm::get_arr(x);
+                let result = match c2_fn(w, w_arr.as_ref(), x, x_arr.as_ref()) {
+                    Ok(r) => r,
+                    Err(e) => rbqn_core::error::throw(e.to_string()),
+                };
+                prim_result_to_b(result)
             }
             _ => rbqn_core::error::throw("c2: unhandled derived kind"),
         }
@@ -258,5 +326,56 @@ pub fn c2(f: B, w: B, x: B) -> B {
         rbqn_core::error::throw("Calling a modifier");
     } else {
         f
+    }
+}
+
+fn prim_result_to_b(r: rbqn_prim::PrimResult) -> B {
+    match r {
+        rbqn_prim::PrimResult::Scalar(b) => b,
+        rbqn_prim::PrimResult::Array(arr) => crate::vm::tag_arr(arr),
+    }
+}
+
+fn dispatch_native_md1_c1(prim_idx: usize, _operand: B, _self_val: B, _x: B) -> B {
+    let prims = rbqn_prim::get_runtime();
+    let prim = &prims[prim_idx];
+    rbqn_core::error::throw(format!(
+        "native 1-modifier '{}' c1 dispatch not yet implemented", prim.glyph
+    ));
+}
+
+fn dispatch_native_md1_c2(prim_idx: usize, _operand: B, _self_val: B, _w: B, _x: B) -> B {
+    let prims = rbqn_prim::get_runtime();
+    let prim = &prims[prim_idx];
+    rbqn_core::error::throw(format!(
+        "native 1-modifier '{}' c2 dispatch not yet implemented", prim.glyph
+    ));
+}
+
+fn dispatch_native_md2_c1(prim_idx: usize, _operand_f: B, _operand_g: B, _self_val: B, _x: B) -> B {
+    let prims = rbqn_prim::get_runtime();
+    let prim = &prims[prim_idx];
+    rbqn_core::error::throw(format!(
+        "native 2-modifier '{}' c1 dispatch not yet implemented", prim.glyph
+    ));
+}
+
+fn dispatch_native_md2_c2(prim_idx: usize, _operand_f: B, _operand_g: B, _self_val: B, _w: B, _x: B) -> B {
+    let prims = rbqn_prim::get_runtime();
+    let prim = &prims[prim_idx];
+    rbqn_core::error::throw(format!(
+        "native 2-modifier '{}' c2 dispatch not yet implemented", prim.glyph
+    ));
+}
+
+/// Convert a primitive index to a NaN-boxed B value.
+/// Indices 0-43 are functions, 44-53 are 1-modifiers, 54-63 are 2-modifiers.
+pub fn prim_to_b(idx: usize) -> B {
+    if idx < 44 {
+        m_native_fn(idx)
+    } else if idx < 54 {
+        m_native_md1(idx)
+    } else {
+        m_native_md2(idx)
     }
 }
