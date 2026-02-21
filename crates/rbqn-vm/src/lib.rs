@@ -8,6 +8,7 @@ pub mod body {
 pub mod scope;
 pub mod env;
 pub mod derive;
+pub mod modifiers;
 pub mod namespace;
 pub mod compiler;
 pub mod vm;
