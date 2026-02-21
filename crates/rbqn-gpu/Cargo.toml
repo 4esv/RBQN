@@ -8,3 +8,4 @@ license.workspace = true
 rbqn-core.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
+pollster = "0.4"
