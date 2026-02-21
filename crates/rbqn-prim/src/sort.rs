@@ -68,7 +68,23 @@ pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Res
         return Ok(PrimResult::Array(out));
     }
 
-    Err(error::throw_nyi("⍋: non-numeric bins not yet implemented"))
+    // Non-numeric bins: use compare::compare for ordering
+    let wia = warr.ia();
+    let xia = xarr.ia();
+    let mut wvals = Vec::with_capacity(wia);
+    for i in 0..wia {
+        wvals.push(warr.get(i)?);
+    }
+    let mut result = Vec::with_capacity(xia);
+    for i in 0..xia {
+        let xv = xarr.get(i)?;
+        // Binary search: find first position where wvals[pos] > xv
+        let pos = wvals.partition_point(|&wv| compare::compare(wv, xv) <= 0);
+        result.push(pos as i32);
+    }
+    let mut out = BqnArr::new_vec_i32(result);
+    out.shape = xarr.shape.clone();
+    Ok(PrimResult::Array(out))
 }
 
 // ⍒ dyad: bins (descending)
@@ -89,5 +105,21 @@ pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> R
         return Ok(PrimResult::Array(out));
     }
 
-    Err(error::throw_nyi("⍒: non-numeric bins not yet implemented"))
+    // Non-numeric bins descending: use compare::compare for ordering
+    let wia = warr.ia();
+    let xia = xarr.ia();
+    let mut wvals = Vec::with_capacity(wia);
+    for i in 0..wia {
+        wvals.push(warr.get(i)?);
+    }
+    let mut result = Vec::with_capacity(xia);
+    for i in 0..xia {
+        let xv = xarr.get(i)?;
+        // Binary search: find first position where wvals[pos] < xv (descending)
+        let pos = wvals.partition_point(|&wv| compare::compare(wv, xv) >= 0);
+        result.push(pos as i32);
+    }
+    let mut out = BqnArr::new_vec_i32(result);
+    out.shape = xarr.shape.clone();
+    Ok(PrimResult::Array(out))
 }
