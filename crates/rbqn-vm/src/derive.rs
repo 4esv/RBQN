@@ -279,7 +279,7 @@ pub fn c1(f: B, x: B) -> B {
                 prim_result_to_b(result)
             }
             DerivedKind::SysFn { sys_idx } => {
-                dispatch_sys_c1(*sys_idx, x)
+                dispatch_sys_c1(sys_idx, x)
             }
             _ => rbqn_core::error::throw("c1: unhandled derived kind"),
         }
@@ -376,7 +376,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 prim_result_to_b(result)
             }
             DerivedKind::SysFn { sys_idx } => {
-                dispatch_sys_c2(*sys_idx, w, x)
+                dispatch_sys_c2(sys_idx, w, x)
             }
             _ => rbqn_core::error::throw("c2: unhandled derived kind"),
         }
@@ -420,4 +420,196 @@ pub fn prim_to_b(idx: usize) -> B {
     } else {
         m_native_md2(idx)
     }
+}
+
+/// Dispatch system function c1.
+/// System value indices: 0=Type, 1=Decompose, 4=Glyph, 7=Fill, 22=GroupLen, 23=GroupOrd
+fn dispatch_sys_c1(idx: u32, x: B) -> B {
+    let x_arr = crate::vm::get_arr(x);
+    match idx {
+        0 => { // •Type
+            let r = rbqn_prim::sysfn::type_fn(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
+        1 => { // •Decompose
+            dispatch_sys_decompose_c1(x)
+        }
+        4 => { // •Glyph
+            dispatch_sys_glyph_c1(x)
+        }
+        7 => { // •Fill / •FillFn
+            let r = rbqn_prim::sysfn::fill_fn(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
+        22 => { // •_groupLen
+            let r = rbqn_prim::group::group_len(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
+        23 => { // •_groupOrd
+            let r = rbqn_prim::group::group_ord(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
+        _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c1)")),
+    }
+}
+
+/// Dispatch system function c2.
+fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
+    let w_arr = crate::vm::get_arr(w);
+    let x_arr = crate::vm::get_arr(x);
+    match idx {
+        7 => { // •_fillBy (dyadic)
+            // w‿x: fill value is w, array is x. Return x with fill set to w.
+            // For now: just return x (fill tracking is a future enhancement)
+            x
+        }
+        22 => { // •_groupLen dyadic: w is desired length, x is indices
+            dispatch_sys_group_len_c2(w, x, x_arr.as_ref())
+        }
+        23 => { // •_groupOrd dyadic: w is lengths, x is indices
+            dispatch_sys_group_ord_c2(w, w_arr.as_ref(), x, x_arr.as_ref())
+        }
+        _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c2)")),
+    }
+}
+
+fn dispatch_sys_group_len_c2(w: B, x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
+    let arr = xa.unwrap_or_else(|| rbqn_core::error::throw("•GroupLen: 𝕩 must be an array"));
+    let indices = arr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+    let n = w.o2i() as usize;
+    let mut counts = vec![0i32; n];
+    for &g in &indices {
+        if g >= 0 && (g as usize) < n {
+            counts[g as usize] += 1;
+        }
+    }
+    prim_result_to_b(rbqn_prim::PrimResult::Array(rbqn_core::BqnArr::new_vec_i32(counts)))
+}
+
+fn dispatch_sys_group_ord_c2(w: B, wa: Option<&rbqn_core::BqnArr>, x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
+    let warr = wa.unwrap_or_else(|| rbqn_core::error::throw("•GroupOrd: 𝕨 must be an array"));
+    let xarr = xa.unwrap_or_else(|| rbqn_core::error::throw("•GroupOrd: 𝕩 must be an array"));
+    let lengths = warr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+    let indices = xarr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+    let n_groups = lengths.len();
+    let mut offsets = Vec::with_capacity(n_groups + 1);
+    offsets.push(0usize);
+    for &l in &lengths {
+        offsets.push(offsets.last().unwrap() + l as usize);
+    }
+    let total = *offsets.last().unwrap();
+    let mut result = vec![0i32; total];
+    let mut pos = offsets[..n_groups].to_vec();
+    for (i, &g) in indices.iter().enumerate() {
+        if g >= 0 && (g as usize) < n_groups {
+            let gu = g as usize;
+            if pos[gu] < offsets[gu + 1] {
+                result[pos[gu]] = i as i32;
+                pos[gu] += 1;
+            }
+        }
+    }
+    prim_result_to_b(rbqn_prim::PrimResult::Array(rbqn_core::BqnArr::new_vec_i32(result)))
+}
+
+/// •Decompose: return ⟨kind, value⟩ or ⟨kind, modifier, operands...⟩
+fn dispatch_sys_decompose_c1(x: B) -> B {
+    use rbqn_core::array::BqnArr;
+    if x.is_f64() || x.is_c32() || x.is_arr() {
+        // Atoms: ⟨-1, x⟩
+        let arr = BqnArr::from_b_vec(vec![B::m_i32(-1), x]);
+        crate::vm::tag_arr(arr)
+    } else if x.is_fun() {
+        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
+        let d = get_derived(id);
+        match d.kind {
+            DerivedKind::NativeFn { .. } | DerivedKind::SysFn { .. } | DerivedKind::FunBlock => {
+                // Primitives/blocks: ⟨0, x⟩
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(0), x]);
+                crate::vm::tag_arr(arr)
+            }
+            DerivedKind::Md1D => {
+                // 1-modifier derived: ⟨4, m, f⟩
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(4), d.g, d.f]);
+                crate::vm::tag_arr(arr)
+            }
+            DerivedKind::Md2D => {
+                // 2-modifier derived: ⟨5, m, f, g⟩
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(5), d.g, d.f, d.h]);
+                crate::vm::tag_arr(arr)
+            }
+            DerivedKind::Atop => {
+                // Train atop: ⟨2, g, h⟩
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(2), d.g, d.h]);
+                crate::vm::tag_arr(arr)
+            }
+            DerivedKind::Fork => {
+                // Train fork: ⟨3, f, g, h⟩
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(3), d.f, d.g, d.h]);
+                crate::vm::tag_arr(arr)
+            }
+            _ => {
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(-1), x]);
+                crate::vm::tag_arr(arr)
+            }
+        }
+    } else if x.is_md1() {
+        let arr = BqnArr::from_b_vec(vec![B::m_i32(0), x]);
+        crate::vm::tag_arr(arr)
+    } else if x.is_md2() {
+        let arr = BqnArr::from_b_vec(vec![B::m_i32(0), x]);
+        crate::vm::tag_arr(arr)
+    } else {
+        let arr = BqnArr::from_b_vec(vec![B::m_i32(-1), x]);
+        crate::vm::tag_arr(arr)
+    }
+}
+
+/// •Glyph: return the glyph character for a primitive, or empty string
+fn dispatch_sys_glyph_c1(x: B) -> B {
+    if x.is_fun() {
+        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
+        let d = get_derived(id);
+        if let DerivedKind::NativeFn { prim_idx } = d.kind {
+            let prims = rbqn_prim::get_runtime();
+            if prim_idx < prims.len() {
+                let glyph = prims[prim_idx].glyph;
+                let chars: Vec<u32> = glyph.chars().map(|c| c as u32).collect();
+                let arr = rbqn_core::array::BqnArr::new_vec_c32(chars);
+                return crate::vm::tag_arr(arr);
+            }
+        }
+    } else if x.is_md1() || x.is_md2() {
+        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
+        let d = get_derived(id);
+        let prim_idx = match d.kind {
+            DerivedKind::NativeMd1 { prim_idx } => Some(prim_idx),
+            DerivedKind::NativeMd2 { prim_idx } => Some(prim_idx),
+            _ => None,
+        };
+        if let Some(idx) = prim_idx {
+            let prims = rbqn_prim::get_runtime();
+            if idx < prims.len() {
+                let glyph = prims[idx].glyph;
+                let chars: Vec<u32> = glyph.chars().map(|c| c as u32).collect();
+                let arr = rbqn_core::array::BqnArr::new_vec_c32(chars);
+                return crate::vm::tag_arr(arr);
+            }
+        }
+    }
+    // Non-primitive: return empty string
+    let arr = rbqn_core::array::BqnArr::new_vec_c32(vec![]);
+    crate::vm::tag_arr(arr)
 }

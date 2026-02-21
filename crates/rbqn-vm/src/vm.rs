@@ -52,14 +52,8 @@ fn sysv_lookup(idx: u32) -> B {
     // System values used by the bootstrap compiler:
     //  0: Type    1: Decompose   4: Glyph   7: Fill/FillFn
     // 22: GroupLen  23: GroupOrd
-    // Return a native function wrapper for implemented ones, SENTINEL for others.
     match idx {
-        0 => crate::derive::m_native_fn(rbqn_prim::SYS_TYPE),
-        1 => crate::derive::m_native_fn(rbqn_prim::SYS_DECOMPOSE),
-        4 => crate::derive::m_native_fn(rbqn_prim::SYS_GLYPH),
-        7 => crate::derive::m_native_fn(rbqn_prim::SYS_FILL),
-        22 => crate::derive::m_native_fn(rbqn_prim::SYS_GROUPLEN),
-        23 => crate::derive::m_native_fn(rbqn_prim::SYS_GROUPORD),
+        0 | 1 | 4 | 7 | 22 | 23 => crate::derive::m_sys_fn(idx),
         _ => B::SENTINEL,
     }
 }
