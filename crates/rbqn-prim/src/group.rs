@@ -78,13 +78,49 @@ pub fn group_len(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // •GroupOrd system function
+// Takes ⟨lengths, indices⟩ where lengths is group lengths and indices is the group
+// assignment for each element. Returns ordered indices such that elements of each
+// group are contiguous.
 pub fn group_ord(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("•GroupOrd: 𝕩 must be an array".into()))?;
-    let ia = arr.ia();
-    if ia < 2 {
+
+    // Expect a 2-element boxed array: ⟨lengths, indices⟩
+    if arr.ia() < 2 {
         return Err(BqnError::Domain("•GroupOrd: Expected ⟨lengths, indices⟩".into()));
     }
-    // Stub: this needs both group lengths and indices
-    let _ = arr;
-    Err(error::throw_nyi("•GroupOrd not yet implemented"))
+
+    let lengths_b = arr.get(0)?;
+    let indices_b = arr.get(1)?;
+
+    let lengths_arr = get_arr(lengths_b)
+        .ok_or_else(|| BqnError::Type("•GroupOrd: lengths must be an array".into()))?;
+    let indices_arr = get_arr(indices_b)
+        .ok_or_else(|| BqnError::Type("•GroupOrd: indices must be an array".into()))?;
+
+    let lengths = lengths_arr.i32_iter()?;
+    let indices = indices_arr.i32_iter()?;
+
+    // Compute prefix sums of lengths to get offsets
+    let n_groups = lengths.len();
+    let mut offsets = Vec::with_capacity(n_groups + 1);
+    offsets.push(0usize);
+    for &l in &lengths {
+        offsets.push(offsets.last().unwrap() + l as usize);
+    }
+    let total = *offsets.last().unwrap();
+
+    // Place each element into its group's position
+    let mut result = vec![0i32; total];
+    let mut pos = offsets[..n_groups].to_vec();
+    for (i, &g) in indices.iter().enumerate() {
+        if g >= 0 && (g as usize) < n_groups {
+            let gu = g as usize;
+            if pos[gu] < offsets[gu + 1] {
+                result[pos[gu]] = i as i32;
+                pos[gu] += 1;
+            }
+        }
+    }
+
+    Ok(PrimResult::Array(BqnArr::new_vec_i32(result)))
 }
