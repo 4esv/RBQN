@@ -1,6 +1,10 @@
 // NOTE: Tiled matrix multiply. Tile size = 16x16.
 // C[row, col] = sum_k A[row, k] * B[k, col]
 // Dimensions: A is M x K, B is K x N, C is M x N.
+//
+// IMPORTANT: All threads in a workgroup must reach every workgroupBarrier,
+// so out-of-bounds threads still participate in loading (writing 0.0) and
+// barriers. Only the final store is guarded by the bounds check.
 
 struct Params {
     M: u32,
@@ -29,25 +33,25 @@ fn matmul_f32(
     let local_row = lid.y;
     let local_col = lid.x;
 
-    if (row >= params.M || col >= params.N) {
-        return;
-    }
+    // NOTE: Do NOT early-return here — all threads must participate in barriers.
+    let in_bounds = (row < params.M) && (col < params.N);
 
     var acc: f32 = 0.0;
     let num_tiles = (params.K + TILE - 1u) / TILE;
 
     for (var t = 0u; t < num_tiles; t = t + 1u) {
-        // Load tile of A into shared memory: A[row, t*TILE + local_col]
+        // Load tile of A: A[row, t*TILE + local_col]
+        // Out-of-bounds threads write 0.0 so they don't corrupt the accumulation.
         let a_col = t * TILE + local_col;
-        if (a_col < params.K) {
+        if (row < params.M && a_col < params.K) {
             tile_a[local_row * TILE + local_col] = mat_a[row * params.K + a_col];
         } else {
             tile_a[local_row * TILE + local_col] = 0.0;
         }
 
-        // Load tile of B into shared memory: B[t*TILE + local_row, col]
+        // Load tile of B: B[t*TILE + local_row, col]
         let b_row = t * TILE + local_row;
-        if (b_row < params.K) {
+        if (b_row < params.K && col < params.N) {
             tile_b[local_row * TILE + local_col] = mat_b[b_row * params.N + col];
         } else {
             tile_b[local_row * TILE + local_col] = 0.0;
@@ -63,5 +67,8 @@ fn matmul_f32(
         workgroupBarrier();
     }
 
-    mat_c[row * params.N + col] = acc;
+    // Only write result for threads that correspond to valid output elements.
+    if (in_bounds) {
+        mat_c[row * params.N + col] = acc;
+    }
 }
