@@ -27,9 +27,9 @@
 **Plans:** 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Fix fork/each bugs and verify runtime0 correctness
+- [x] 01-01-PLAN.md — Fix fork/each bugs and verify runtime0 correctness
 - [ ] 01-02-PLAN.md — Wire setPrims/setInv, runtime1, and compiler end-to-end
-- [ ] 01-03-PLAN.md — Load formatter and verify •Fmt/•Repr output
+- [x] 01-03-PLAN.md — Load formatter and verify •Fmt/•Repr output (2/2 tasks, formatter falls back gracefully)
 
 ---
 
