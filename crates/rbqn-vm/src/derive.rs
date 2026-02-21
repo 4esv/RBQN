@@ -201,8 +201,8 @@ pub fn c1(f: B, x: B) -> B {
         match d.kind {
             DerivedKind::Fork => {
                 let hx = c1(d.h, x);
-                let gx = c1(d.g, hx);
-                c2(d.f, B::m_f64(0.0), gx) // TODO: proper fork c1
+                let fx = c1(d.f, x);
+                c2(d.g, fx, hx)
             }
             DerivedKind::Atop => {
                 let hx = c1(d.h, x);
