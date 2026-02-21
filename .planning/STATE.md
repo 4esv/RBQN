@@ -7,7 +7,7 @@ M1: Core Language Completeness
 01-fix-bootstrap-pipeline — Plan 01 COMPLETE, continuing to Plan 02
 
 ## Last Session
-2026-02-21 — Completed 01-01-PLAN.md (fork dispatch fix + typed modifier output)
+Last activity: 2026-02-21 - Completed quick task 1: Start GPU-accelerated ML primitives
 
 ## Decisions Made
 - Fork c1: `(f g h) x = (f x) g (h x)` — fixed broken 3-step dispatch in derive.rs
@@ -76,6 +76,9 @@ M1: Core Language Completeness
 | Buffer pool | DONE |
 | Pipeline cache | DONE |
 | Dispatch thresholds | DONE |
+| Unary elementwise (exp/sqrt/neg/abs) | DONE |
+| Matmul (tiled 16x16) | DONE |
+| Softmax (single-WG + multi-pass) | DONE |
 | Arithmetic kernels | SCAFFOLDING |
 | Reduce kernels | SCAFFOLDING |
 | Scan kernels | SCAFFOLDING |
@@ -107,3 +110,9 @@ None currently blocking runtime0. Fixed:
 
 ## Blockers
 - Runtime1/compiler correctness depends on runtime0 being correct (now unblocked)
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 1 | Start GPU-accelerated ML primitives | 2026-02-21 | 1997575 | [1-start-gpu-accelerated-ml-primitives](./quick/1-start-gpu-accelerated-ml-primitives/) |
