@@ -126,6 +126,33 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
 // Helpers
 // ============================================================
 
+/// Convert a Vec<B> of results into a typed array.
+/// If all results are numeric scalars, produces a numeric array (applying squeeze).
+/// If all results are characters, produces a character array.
+/// Otherwise, keeps as Boxed.
+fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
+    if results.is_empty() {
+        let mut out = BqnArr::new_vec_b(results);
+        out.shape = shape;
+        return crate::vm::tag_arr(out);
+    }
+    if results.iter().all(|b| b.is_f64()) {
+        let vals: Vec<f64> = results.iter().map(|b| b.o2f()).collect();
+        let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
+        out.shape = shape;
+        return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
+    }
+    if results.iter().all(|b| b.is_c32()) {
+        let vals: Vec<u32> = results.iter().map(|b| b.0 as u32).collect();
+        let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
+        out.shape = shape;
+        return crate::vm::tag_arr(out);
+    }
+    let mut out = BqnArr::new_vec_b(results);
+    out.shape = shape;
+    crate::vm::tag_arr(out)
+}
+
 fn arr_of(x: B) -> BqnArr {
     crate::vm::get_arr(x)
         .unwrap_or_else(|| rbqn_core::error::throw("Expected array argument"))
@@ -179,9 +206,7 @@ fn each_c1(f: B, x: B) -> B {
     for i in 0..n {
         results.push(c1(f, get_elem(&arr, i)));
     }
-    let mut out = BqnArr::new_vec_b(results);
-    out.shape = arr.shape.clone();
-    crate::vm::tag_arr(out)
+    results_to_arr(results, arr.shape.clone())
 }
 
 fn each_c2(f: B, w: B, x: B) -> B {
@@ -197,9 +222,7 @@ fn each_c2(f: B, w: B, x: B) -> B {
         for i in 0..n {
             results.push(c2(f, w, get_elem(&xarr, i)));
         }
-        let mut out = BqnArr::new_vec_b(results);
-        out.shape = xarr.shape.clone();
-        return crate::vm::tag_arr(out);
+        return results_to_arr(results, xarr.shape.clone());
     }
     if x_is_atom {
         let warr = arr_of(w);
@@ -208,9 +231,7 @@ fn each_c2(f: B, w: B, x: B) -> B {
         for i in 0..n {
             results.push(c2(f, get_elem(&warr, i), x));
         }
-        let mut out = BqnArr::new_vec_b(results);
-        out.shape = warr.shape.clone();
-        return crate::vm::tag_arr(out);
+        return results_to_arr(results, warr.shape.clone());
     }
     let warr = arr_of(w);
     let xarr = arr_of(x);
@@ -222,9 +243,7 @@ fn each_c2(f: B, w: B, x: B) -> B {
     for i in 0..n {
         results.push(c2(f, get_elem(&warr, i), get_elem(&xarr, i)));
     }
-    let mut out = BqnArr::new_vec_b(results);
-    out.shape = warr.shape.clone();
-    crate::vm::tag_arr(out)
+    results_to_arr(results, warr.shape.clone())
 }
 
 // ============================================================
@@ -245,9 +264,7 @@ fn table_c2(f: B, w: B, x: B) -> B {
     }
     let mut shape = warr.shape.clone();
     shape.extend_from_slice(&xarr.shape);
-    let mut out = BqnArr::new_vec_b(results);
-    out.shape = shape;
-    crate::vm::tag_arr(out)
+    results_to_arr(results, shape)
 }
 
 // ============================================================
@@ -336,9 +353,7 @@ fn scan_c1(f: B, x: B) -> B {
         let prev = results[i - 1];
         results.push(c2(f, prev, get_elem(&arr, i)));
     }
-    let mut out = BqnArr::new_vec_b(results);
-    out.shape = arr.shape.clone();
-    crate::vm::tag_arr(out)
+    results_to_arr(results, arr.shape.clone())
 }
 
 fn scan_c2(f: B, w: B, x: B) -> B {
@@ -350,9 +365,7 @@ fn scan_c2(f: B, w: B, x: B) -> B {
         acc = c2(f, acc, get_elem(&arr, i));
         results.push(acc);
     }
-    let mut out = BqnArr::new_vec_b(results);
-    out.shape = arr.shape.clone();
-    crate::vm::tag_arr(out)
+    results_to_arr(results, arr.shape.clone())
 }
 
 // ============================================================
@@ -372,7 +385,7 @@ fn cells_c1(f: B, x: B) -> B {
         let cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
         results.push(c1(f, cell));
     }
-    crate::vm::tag_arr(BqnArr::new_vec_b(results))
+    results_to_arr(results, vec![lead])
 }
 
 fn cells_c2(f: B, w: B, x: B) -> B {
@@ -394,7 +407,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
                 let xc = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
                 results.push(c2(f, wc, xc));
             }
-            return crate::vm::tag_arr(BqnArr::new_vec_b(results));
+            return results_to_arr(results, vec![lead]);
         }
     }
     let mut results = Vec::with_capacity(lead);
@@ -402,7 +415,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
         let cell = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
         results.push(c2(f, w, cell));
     }
-    crate::vm::tag_arr(BqnArr::new_vec_b(results))
+    results_to_arr(results, vec![lead])
 }
 
 // ============================================================
