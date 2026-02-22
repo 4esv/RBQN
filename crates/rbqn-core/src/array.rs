@@ -154,11 +154,12 @@ impl BqnArr {
     }
 
     /// Returns true if this array contains numeric data.
+    /// NOTE: Empty Boxed arrays are treated as numeric (valid for pervasive ops).
     pub fn is_num_arr(&self) -> bool {
         matches!(
             &self.data,
             ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) | ArrData::F64(_)
-        ) || matches!(&self.data, ArrData::Boxed(v) if !v.is_empty() && v.iter().all(|b| b.is_f64()))
+        ) || matches!(&self.data, ArrData::Boxed(v) if v.is_empty() || v.iter().all(|b| b.is_f64()))
     }
 
     pub fn f64_iter(&self) -> Result<Vec<f64>> {
@@ -174,9 +175,9 @@ impl BqnArr {
             ArrData::I32(v) => Ok(v.iter().map(|&x| x as f64).collect()),
             ArrData::F64(v) => Ok(v.clone()),
             other => {
-                // Handle Boxed arrays where all elements are f64 scalars
+                // Handle Boxed arrays where all elements are f64 scalars (or empty)
                 if let ArrData::Boxed(v) = other {
-                    if !v.is_empty() && v.iter().all(|b| b.is_f64()) {
+                    if v.is_empty() || v.iter().all(|b| b.is_f64()) {
                         return Ok(v.iter().map(|b| b.o2f()).collect());
                     }
                     let types: Vec<&str> = v.iter().take(5).map(|b| {

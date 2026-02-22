@@ -462,6 +462,7 @@ pub fn solo_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ≍ dyad: couple
 pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     match (wa, xa) {
+        // atom ≍ atom → 2-element list
         (None, None) => {
             if w.is_f64() && x.is_f64() {
                 Ok(PrimResult::Array(BqnArr::new_vec_f64(vec![w.o2f(), x.o2f()])))
@@ -469,9 +470,13 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
                 Ok(PrimResult::Array(BqnArr::new_vec_b(vec![w, x])))
             }
         }
+        // array ≍ array → shapes must match
         (Some(warr), Some(xarr)) => {
             if warr.shape != xarr.shape {
-                return Err(BqnError::Shape("𝕨≍𝕩: argument shapes don't match".into()));
+                return Err(BqnError::Shape(format!(
+                    "𝕨≍𝕩: 𝕨 and 𝕩 must have equal shapes ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+                    warr.shape, xarr.shape
+                )));
             }
             let wia = warr.ia();
             let xia = xarr.ia();
@@ -486,28 +491,18 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             new_shape.extend_from_slice(&warr.shape);
             Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
         }
+        // atom ≍ array or array ≍ atom → shape mismatch error (BQN requires equal shapes)
         (None, Some(xarr)) => {
-            // Atom ≍ Array: solo the atom, then couple
-            let xia = xarr.ia();
-            let mut result = Vec::with_capacity(1 + xia);
-            result.push(w);
-            for i in 0..xia {
-                result.push(xarr.get(i)?);
-            }
-            let mut new_shape = vec![2];
-            new_shape.extend_from_slice(&xarr.shape);
-            Ok(PrimResult::Array(typed_arr(result, new_shape, xarr.fill)))
+            Err(BqnError::Shape(format!(
+                "𝕨≍𝕩: 𝕨 and 𝕩 must have equal shapes (⟨⟩ ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+                xarr.shape
+            )))
         }
         (Some(warr), None) => {
-            let wia = warr.ia();
-            let mut result = Vec::with_capacity(wia + 1);
-            for i in 0..wia {
-                result.push(warr.get(i)?);
-            }
-            result.push(x);
-            let mut new_shape = vec![2];
-            new_shape.extend_from_slice(&warr.shape);
-            Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
+            Err(BqnError::Shape(format!(
+                "𝕨≍𝕩: 𝕨 and 𝕩 must have equal shapes ({:?} ≡ ≢𝕨, ⟨⟩ ≡ ≢𝕩)",
+                warr.shape
+            )))
         }
     }
 }
