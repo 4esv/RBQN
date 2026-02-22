@@ -1,4 +1,5 @@
 use rbqn_core::*;
+use rbqn_core::array::typed_arr_from_b_vec;
 use crate::dispatch::PrimResult;
 
 // ⊐ monad: self-index-of (classify)
@@ -28,6 +29,9 @@ pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Res
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊐𝕩: 𝕩 must be an array".into()))?;
     let wia = warr.ia();
     let xia = xarr.ia();
+    if xia == 0 {
+        eprintln!("[DEBUG indexOf] empty x (xia=0), wia={}", wia);
+    }
     let mut result = Vec::with_capacity(xia);
     for i in 0..xia {
         let xv = xarr.get(i)?;
@@ -148,7 +152,8 @@ pub fn deduplicate_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             result.push(v);
         }
     }
-    Ok(PrimResult::Array(BqnArr::new_vec_b(result)))
+    let len = result.len();
+    Ok(PrimResult::Array(typed_arr_from_b_vec(result, vec![len], arr.fill)))
 }
 
 // ⍷ dyad: find

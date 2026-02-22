@@ -50,10 +50,11 @@ fn unpack_var_ref(packed: u64) -> (usize, usize) {
 /// Resolve a SYSV system value by index.
 fn sysv_lookup(idx: u32) -> B {
     // System values used by the bootstrap compiler:
-    //  0: Type    1: Decompose   4: Glyph   7: Fill/FillFn
+    //  0: Type    1: Decompose   4: Glyph   5: PrimInd   7: Fill/FillFn
+    //  8: setInvReg  9: setInvSwap  10: nativeInvReg  11: nativeInvSwap
     // 22: GroupLen  23: GroupOrd
     match idx {
-        0 | 1 | 4 | 5 | 7 | 22 | 23 => crate::derive::m_sys_fn(idx),
+        0 | 1 | 4 | 5 | 7 | 8 | 9 | 10 | 11 | 22 | 23 => crate::derive::m_sys_fn(idx),
         _ => B::SENTINEL,
     }
 }

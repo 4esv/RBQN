@@ -77,9 +77,16 @@ fn find_gen_dir(cbqn: &Path) -> Option<PathBuf> {
 }
 
 fn write_bytecode_from_gen(code: &mut String, dir: &Path) {
+    // NOTE: Use runtime1x (extended provide variant) when available — it uses all 40 provide
+    // entries directly, avoiding runtime_0 fallbacks for extended primitives (√¬∧∨≡≍«»⌽⍉⍋⍒⊐⊒∊˘⎉).
+    // runtime1x requires the extended provide array (indices 23-39) to be populated.
+    // runtime1 is the fallback for implementations without extended provide.
+    let runtime1_file = if dir.join("runtime1x").is_file() { "runtime1x" } else { "runtime1" };
+    println!("cargo:warning=Using {} for runtime1", runtime1_file);
+
     let components = [
         ("RUNTIME0", "runtime0"),
-        ("RUNTIME1", "runtime1"),
+        ("RUNTIME1", runtime1_file),
         ("COMPILER", "compiles"),
         ("FORMATTER", "formatter"),
     ];
@@ -389,17 +396,20 @@ fn parse_blocks(src: &str) -> (Vec<(usize, BlkEntry)>, usize) {
     (entries, len)
 }
 
-/// Parse m_blockinfo(TYPE, iarrs0, iarrs[N])
+/// Parse m_blockinfo(TYPE, iarrs0, iarrs[N]) or m_blockinfo(TYPE, iarrs[M], iarrs[N])
 fn parse_blockinfo(inner: &str) -> BlkEntry {
-    // Split by commas, but be careful of nested brackets
     let parts: Vec<&str> = inner.splitn(3, ',').map(|s| s.trim()).collect();
     if parts.len() < 3 {
         return BlkEntry::IArr(0);
     }
     let typ: u8 = parts[0].parse().unwrap_or(0);
-    // parts[1] is "iarrs0" — extract the iarrs0 index (always refers to iarrs[0])
-    let iarrs0_idx = 0; // iarrs0 is always iarrs[0] per the gen files
-    // parts[2] is "iarrs[N]"
+    // parts[1] is "iarrs0" (= iarrs[0]) or "iarrs[M]"
+    let iarrs0_idx = if let Some(rest) = parts[1].strip_prefix("iarrs[") {
+        rest.trim_end_matches(']').parse().unwrap_or(0)
+    } else {
+        0 // bare "iarrs0" means iarrs[0]
+    };
+    // parts[2] is "iarrs0" or "iarrs[N]"
     let data_idx = if let Some(rest) = parts[2].strip_prefix("iarrs[") {
         rest.trim_end_matches(']').parse().unwrap_or(0)
     } else {

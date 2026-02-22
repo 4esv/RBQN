@@ -1,4 +1,5 @@
 use rbqn_core::*;
+use rbqn_core::array::typed_arr_from_b_vec;
 use crate::dispatch::PrimResult;
 
 // / monad: indices
@@ -18,6 +19,7 @@ pub fn indices_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             result.push(i as i32);
         }
     }
+    // NOTE: empty result from / is legitimate BQN behavior
     Ok(PrimResult::Array(BqnArr::new_vec_i32(result)))
 }
 
@@ -52,5 +54,6 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Re
             result.push(v);
         }
     }
-    Ok(PrimResult::Array(BqnArr::new_vec_b(result)))
+    let len = result.len();
+    Ok(PrimResult::Array(typed_arr_from_b_vec(result, vec![len], arr.fill)))
 }
