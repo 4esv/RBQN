@@ -25,11 +25,23 @@ fn resolve_index(i: i32, len: usize) -> Result<usize> {
 // ⊏ dyad: select
 pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊏𝕩: 𝕩 must be an array".into()))?;
-    let ia = arr.ia();
+    // NOTE: BQN ⊏ selects along the first axis
+    let first_dim = if arr.shape.is_empty() { arr.ia() } else { arr.shape[0] };
+    let cell_shape: &[usize] = if arr.shape.len() > 1 { &arr.shape[1..] } else { &[] };
+    let cell_size: usize = cell_shape.iter().product();
 
     if w.is_f64() {
-        let idx = resolve_index(w.o2i(), ia)?;
-        return Ok(PrimResult::Scalar(arr.get(idx)?));
+        let idx = resolve_index(w.o2i(), first_dim)?;
+        if arr.rank() <= 1 {
+            return Ok(PrimResult::Scalar(arr.get(idx)?));
+        }
+        // Multi-dimensional: return the selected cell
+        let mut result = Vec::with_capacity(cell_size);
+        for j in 0..cell_size {
+            result.push(arr.get(idx * cell_size + j)?);
+        }
+        let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), arr.fill);
+        return Ok(PrimResult::Array(out));
     }
 
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊏𝕩: 𝕨 must be a number or array".into()))?;
@@ -37,11 +49,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
     // BQN select with non-numeric indices: recurse per-element for boxed arrays
     if warr.el_type() == ElType::B {
         let wia = warr.ia();
-        let first_dim = if arr.shape.is_empty() { arr.ia() } else { arr.shape[0] };
-        let cell_shape = if arr.shape.len() > 1 { &arr.shape[1..] } else { &[] as &[usize] };
-        let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
-
-        let mut result = Vec::with_capacity(wia * cell_size);
+        let mut result = Vec::with_capacity(wia * cell_size.max(1));
         for i in 0..wia {
             let idx_b = warr.get(i)?;
             if idx_b.is_f64() {
@@ -54,7 +62,6 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
                     }
                 }
             } else if idx_b.is_arr() {
-                // Nested: each element is a sub-array of indices — recursively select
                 let sub_arr = get_arr(idx_b)
                     .ok_or_else(|| BqnError::Type("𝕨⊏𝕩: index element not found".into()))?;
                 let sub_indices = sub_arr.i32_iter()?;
@@ -72,9 +79,6 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
                 return Err(BqnError::Type("𝕨⊏𝕩: index must be number or array".into()));
             }
         }
-        // For boxed w with simple numeric sub-arrays, result shape = w.shape ++ cell_shape
-        // But for now, produce flat result and let caller handle shapes
-        // Actually, BQN select: result shape = w.shape ++ x.cell_shape
         let mut out_shape = warr.shape.clone();
         out_shape.extend_from_slice(cell_shape);
         let out = typed_arr_from_b_vec(result, out_shape, arr.fill);
@@ -82,13 +86,30 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
     }
 
     let indices = warr.i32_iter()?;
-    let mut result = Vec::with_capacity(indices.len());
-    for &i in &indices {
-        let idx = resolve_index(i, ia)?;
-        result.push(arr.get(idx)?);
+
+    if cell_shape.is_empty() && arr.rank() <= 1 {
+        // Rank-1: simple element selection
+        let mut result = Vec::with_capacity(indices.len());
+        for &i in &indices {
+            let idx = resolve_index(i, first_dim)?;
+            result.push(arr.get(idx)?);
+        }
+        let out = typed_arr_from_b_vec(result, warr.shape.clone(), arr.fill);
+        Ok(PrimResult::Array(out))
+    } else {
+        // Multi-dimensional: select cells along first axis
+        let mut result = Vec::with_capacity(indices.len() * cell_size);
+        for &i in &indices {
+            let idx = resolve_index(i, first_dim)?;
+            for j in 0..cell_size {
+                result.push(arr.get(idx * cell_size + j)?);
+            }
+        }
+        let mut out_shape = warr.shape.clone();
+        out_shape.extend_from_slice(cell_shape);
+        let out = typed_arr_from_b_vec(result, out_shape, arr.fill);
+        Ok(PrimResult::Array(out))
     }
-    let out = typed_arr_from_b_vec(result, warr.shape.clone(), arr.fill);
-    Ok(PrimResult::Array(out))
 }
 
 // ⊑ monad: first
