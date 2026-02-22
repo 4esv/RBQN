@@ -1,6 +1,34 @@
 use rbqn_core::*;
 use crate::dispatch::PrimResult;
 
+// NOTE: Recursive helper for pervasive monadic application on a single B value.
+// Handles scalars, flat numeric arrays, and nested Boxed arrays.
+fn pervasive_monad_b(x: B, scalar_fn: fn(f64) -> f64, name: &str) -> Result<B> {
+    if x.is_f64() {
+        return Ok(B::m_f64(scalar_fn(x.o2f())));
+    }
+    let arr = get_arr(x)
+        .ok_or_else(|| BqnError::Type(format!("{name}𝕩: 𝕩 must be a number or array")))?;
+    if arr.el_type().is_num() {
+        let vals = arr.f64_iter()?;
+        let result: Vec<f64> = vals.iter().map(|&v| scalar_fn(v)).collect();
+        let mut out = BqnArr::new_vec_f64(result);
+        out.shape = arr.shape.clone();
+        return Ok(tag_arr(array::squeeze_num(out)));
+    }
+    // NOTE: Boxed array — recurse into each element (BQN pervasion)
+    if let ArrData::Boxed(ref elems) = arr.data {
+        let results: Result<Vec<B>> = elems
+            .iter()
+            .map(|&elem| pervasive_monad_b(elem, scalar_fn, name))
+            .collect();
+        let mut out = BqnArr::new_vec_b(results?);
+        out.shape = arr.shape.clone();
+        return Ok(tag_arr(out));
+    }
+    Err(BqnError::Type(format!("{name}𝕩: 𝕩 contained non-number")))
+}
+
 fn pervasive_monad(
     x: B,
     xa: Option<&BqnArr>,
@@ -11,14 +39,24 @@ fn pervasive_monad(
         return Ok(PrimResult::Scalar(B::m_f64(scalar_fn(x.o2f()))));
     }
     let arr = xa.ok_or_else(|| BqnError::Type(format!("{name}𝕩: 𝕩 must be a number or array")))?;
-    if !arr.el_type().is_num() {
-        return Err(BqnError::Type(format!("{name}𝕩: 𝕩 contained non-number")));
+    if arr.el_type().is_num() {
+        let vals = arr.f64_iter()?;
+        let result: Vec<f64> = vals.iter().map(|&v| scalar_fn(v)).collect();
+        let mut out = BqnArr::new_vec_f64(result);
+        out.shape = arr.shape.clone();
+        return Ok(PrimResult::Array(array::squeeze_num(out)));
     }
-    let vals = arr.f64_iter()?;
-    let result: Vec<f64> = vals.iter().map(|&v| scalar_fn(v)).collect();
-    let mut out = BqnArr::new_vec_f64(result);
-    out.shape = arr.shape.clone();
-    Ok(PrimResult::Array(array::squeeze_num(out)))
+    // NOTE: Boxed array — recurse into each element (BQN pervasion)
+    if let ArrData::Boxed(ref elems) = arr.data {
+        let results: Result<Vec<B>> = elems
+            .iter()
+            .map(|&elem| pervasive_monad_b(elem, scalar_fn, name))
+            .collect();
+        let mut out = BqnArr::new_vec_b(results?);
+        out.shape = arr.shape.clone();
+        return Ok(PrimResult::Array(out));
+    }
+    Err(BqnError::Type(format!("{name}𝕩: 𝕩 contained non-number")))
 }
 
 // + monad: identity (assert numeric)
@@ -29,6 +67,16 @@ pub fn add_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("+𝕩: 𝕩 must consist of numbers".into()))?;
     if arr.el_type().is_num() {
         return Ok(PrimResult::Array(arr.clone()));
+    }
+    // NOTE: Boxed array — recurse to assert all leaves are numeric (BQN pervasion)
+    if let ArrData::Boxed(ref elems) = arr.data {
+        let results: Result<Vec<B>> = elems
+            .iter()
+            .map(|&elem| pervasive_monad_b(elem, |v| v, "+"))
+            .collect();
+        let mut out = BqnArr::new_vec_b(results?);
+        out.shape = arr.shape.clone();
+        return Ok(PrimResult::Array(out));
     }
     Err(BqnError::Type("+𝕩: 𝕩 must consist of numbers".into()))
 }
