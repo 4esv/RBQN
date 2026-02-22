@@ -209,10 +209,11 @@ pub fn c1(f: B, x: B) -> B {
                 c1(d.g, hx)
             }
             DerivedKind::FunBlock => {
+                crate::vm::vm_trace_push(format!("c1 FunBlock id={} x={:#x} x_is_arr={} nblocks={}", id, x.0, x.is_arr(), d.bl.as_ref().map_or(0, |b| b.blocks.len())));
                 let bl = d.bl.as_ref().unwrap().clone();
                 let psc = d.sc.as_ref().unwrap().clone();
                 let body = bl.bodies[0].clone();
-                crate::vm::exec_block_with_args(&bl, body, &psc, &[f, x, B::SENTINEL])
+                crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, B::SENTINEL])
             }
             DerivedKind::Md1D => {
                 let modifier = d.g;
@@ -221,15 +222,18 @@ pub fn c1(f: B, x: B) -> B {
                     let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                     let md = get_derived(mid);
                     if md.kind == DerivedKind::Md1Block {
+                        crate::vm::vm_trace_push(format!("c1 Md1Block mid={} x={:#x}", mid, x.0));
                         let bl = md.bl.as_ref().unwrap().clone();
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.bodies[0].clone();
                         return crate::vm::exec_block_with_args(
-                            &bl, body, &psc,
+                            &bl, body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand],
                         );
                     }
                     if let DerivedKind::NativeMd1 { prim_idx } = &md.kind {
+                        let x_ia = if x.is_arr() { crate::vm::get_arr(x).map_or(-1i64, |a| a.ia() as i64) } else { -2 };
+                        crate::vm::vm_trace_push(format!("c1 NativeMd1 prim={} x={:#x} x_ia={}", prim_idx, x.0, x_ia));
                         return dispatch_native_md1_c1(*prim_idx, operand, f, x);
                     }
                     if md.kind == DerivedKind::Md2PartialL {
@@ -255,7 +259,7 @@ pub fn c1(f: B, x: B) -> B {
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.bodies[0].clone();
                         return crate::vm::exec_block_with_args(
-                            &bl, body, &psc,
+                            &bl, body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand_f, operand_g],
                         );
                     }
@@ -272,6 +276,12 @@ pub fn c1(f: B, x: B) -> B {
                     rbqn_core::error::throw(format!("primitive '{}' has no monadic form", prim.glyph))
                 });
                 let x_arr = crate::vm::get_arr(x);
+                crate::vm::vm_trace_push(format!(
+                    "c1 prim={} x_tag={:#06x} x_ia={}",
+                    prim.glyph,
+                    (x.0 >> 48) as u16,
+                    x_arr.as_ref().map_or(-1i64, |a| a.ia() as i64),
+                ));
                 let result = match c1_fn(x, x_arr.as_ref()) {
                     Ok(r) => r,
                     Err(e) => rbqn_core::error::throw(e.to_string()),
@@ -308,7 +318,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 let bl = d.bl.as_ref().unwrap().clone();
                 let psc = d.sc.as_ref().unwrap().clone();
                 let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
-                crate::vm::exec_block_with_args(&bl, body, &psc, &[f, x, w])
+                crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, w])
             }
             DerivedKind::Md1D => {
                 let modifier = d.g;
@@ -321,7 +331,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
                         return crate::vm::exec_block_with_args(
-                            &bl, body, &psc,
+                            &bl, body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand],
                         );
                     }
@@ -351,7 +361,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
                         return crate::vm::exec_block_with_args(
-                            &bl, body, &psc,
+                            &bl, body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand_f, operand_g],
                         );
                     }
@@ -369,9 +379,21 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 });
                 let w_arr = crate::vm::get_arr(w);
                 let x_arr = crate::vm::get_arr(x);
+                crate::vm::vm_trace_push(format!(
+                    "c2 prim={} w_tag={:#06x} x_tag={:#06x} x_ia={}",
+                    prim.glyph,
+                    (w.0 >> 48) as u16,
+                    (x.0 >> 48) as u16,
+                    x_arr.as_ref().map_or(-1i64, |a| a.ia() as i64),
+                ));
                 let result = match c2_fn(w, w_arr.as_ref(), x, x_arr.as_ref()) {
                     Ok(r) => r,
-                    Err(e) => rbqn_core::error::throw(e.to_string()),
+                    Err(e) => {
+                        let trace = crate::vm::vm_trace_dump();
+                        eprintln!("=== VM TRACE (last {} ops) ===", trace.len());
+                        for t in &trace { eprintln!("  {}", t); }
+                        rbqn_core::error::throw(e.to_string())
+                    },
                 };
                 prim_result_to_b(result)
             }

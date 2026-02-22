@@ -61,10 +61,11 @@ pub fn gid2str(id: i32) -> String {
 
 impl NS {
     pub fn get_by_gid(&self, gid: i32) -> Option<B> {
+        let vars = self.sc.vars.lock().unwrap();
         for (i, &exp_gid) in self.desc.exp_gids.iter().enumerate() {
             if exp_gid == gid {
-                if i < self.sc.vars.len() {
-                    return Some(self.sc.vars[i]);
+                if i < vars.len() {
+                    return Some(vars[i]);
                 }
             }
         }

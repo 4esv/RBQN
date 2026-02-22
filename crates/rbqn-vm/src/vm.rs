@@ -6,7 +6,7 @@ use rbqn_core::array::BqnArr;
 use crate::block::{Block, Body, eval_fun_block, m_md1_block, m_md2_block};
 use crate::bytecode::Op;
 use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_partial_r};
-use crate::namespace::{self, NS, NSDesc, get_ns, store_ns};
+use crate::namespace::{self, NS, get_ns, store_ns};
 use crate::scope::{Scope, v_get, v_set, v_seth, v_check_bad_read};
 
 pub fn exec_block(bl: &Block, body: Arc<Body>, psc: Arc<Scope>) -> B {
@@ -81,7 +81,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     let bc_offset = body.bc_offset;
     let mut pc = bc_offset;
     let mut stack: Vec<B> = Vec::with_capacity(body.max_stack as usize);
-    let mut pscs = build_pscs(&sc, body.max_psc);
+    let pscs = build_pscs(&sc, body.max_psc);
 
     macro_rules! pop {
         () => {

@@ -83,7 +83,7 @@ pub fn block_given_vars(bl: &Block) -> i32 {
 
 pub fn eval_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     if bl.imm {
-        crate::vm::exec_block(&bl, bl.bodies[0].clone(), &psc)
+        crate::vm::exec_block(&bl, bl.bodies[0].clone(), psc)
     } else {
         crate::derive::m_fun_block(bl, psc)
     }

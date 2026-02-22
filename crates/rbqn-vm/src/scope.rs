@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use rbqn_core::B;
 
@@ -7,7 +8,7 @@ use crate::block::Body;
 #[derive(Debug)]
 pub struct ScopeExt {
     pub var_am: u16,
-    pub vars: Vec<B>,
+    pub vars: Mutex<Vec<B>>,
 }
 
 #[derive(Debug)]
@@ -16,7 +17,7 @@ pub struct Scope {
     pub body: Arc<Body>,
     pub var_am: u16,
     pub ext: Option<ScopeExt>,
-    pub vars: Vec<B>,
+    pub vars: Mutex<Vec<B>>,
 }
 
 impl Scope {
@@ -29,8 +30,18 @@ impl Scope {
             body,
             var_am,
             ext: None,
-            vars,
+            vars: Mutex::new(vars),
         }
+    }
+
+    /// Read a variable at the given position.
+    pub fn var_get(&self, pos: usize) -> B {
+        self.vars.lock().unwrap()[pos]
+    }
+
+    /// Write a variable at the given position.
+    pub fn var_set(&self, pos: usize, val: B) {
+        self.vars.lock().unwrap()[pos] = val;
     }
 }
 
@@ -65,7 +76,7 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
-        let r = sc.vars[p];
+        let r = sc.var_get(p);
         if chk && v_check_bad_read(r) {
             v_tag_error(r, false);
         }
@@ -75,7 +86,7 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            let r = ext.vars[p];
+            let r = ext.vars.lock().unwrap()[p];
             if chk && v_check_bad_read(r) {
                 v_tag_error(r, false);
             }
@@ -88,30 +99,30 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
     }
 }
 
-pub fn v_set(pscs: &mut [Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
+pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
-        let sc = Arc::make_mut(&mut pscs[d]);
+        let sc = &pscs[d];
         if upd {
-            let prev = sc.vars[p];
+            let prev = sc.var_get(p);
             if chk && v_check_bad_write(prev) {
                 v_tag_error(prev, true);
             }
         }
-        sc.vars[p] = x;
+        sc.var_set(p, x);
     } else if s.is_ext() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
-        let sc = Arc::make_mut(&mut pscs[d]);
-        if let Some(ref mut ext) = sc.ext {
+        let sc = &pscs[d];
+        if let Some(ref ext) = sc.ext {
             if upd {
-                let prev = ext.vars[p];
+                let prev = ext.vars.lock().unwrap()[p];
                 if chk && v_check_bad_write(prev) {
                     v_tag_error(prev, true);
                 }
             }
-            ext.vars[p] = x;
+            ext.vars.lock().unwrap()[p] = x;
         } else {
             rbqn_core::error::throw("v_set: no scope extension for EXT ref");
         }
@@ -138,19 +149,18 @@ pub fn v_set(pscs: &mut [Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
     }
 }
 
-pub fn v_seth(pscs: &mut [Arc<Scope>], s: B, x: B) -> bool {
+pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
-        let sc = Arc::make_mut(&mut pscs[d]);
-        sc.vars[p] = x;
+        pscs[d].var_set(p, x);
         true
     } else if s.is_ext() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
-        let sc = Arc::make_mut(&mut pscs[d]);
-        if let Some(ref mut ext) = sc.ext {
-            ext.vars[p] = x;
+        let sc = &pscs[d];
+        if let Some(ref ext) = sc.ext {
+            ext.vars.lock().unwrap()[p] = x;
             true
         } else {
             false
@@ -184,27 +194,27 @@ pub fn v_seth(pscs: &mut [Arc<Scope>], s: B, x: B) -> bool {
     }
 }
 
-pub fn v_get_move(pscs: &mut [Arc<Scope>], s: B, chk: bool) -> B {
+pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
-        let sc = Arc::make_mut(&mut pscs[d]);
-        let r = sc.vars[p];
+        let sc = &pscs[d];
+        let r = sc.var_get(p);
         if chk && v_check_bad_read(r) {
             v_tag_error(r, false);
         }
-        sc.vars[p] = B::OPT_OUT;
+        sc.var_set(p, B::OPT_OUT);
         r
     } else if s.is_ext() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
-        let sc = Arc::make_mut(&mut pscs[d]);
-        if let Some(ref mut ext) = sc.ext {
-            let r = ext.vars[p];
+        let sc = &pscs[d];
+        if let Some(ref ext) = sc.ext {
+            let r = ext.vars.lock().unwrap()[p];
             if chk && v_check_bad_read(r) {
                 v_tag_error(r, false);
             }
-            ext.vars[p] = B::OPT_OUT;
+            ext.vars.lock().unwrap()[p] = B::OPT_OUT;
             r
         } else {
             rbqn_core::error::throw("v_get_move: no scope extension for EXT ref");
