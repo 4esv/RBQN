@@ -9,15 +9,15 @@ use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_p
 use crate::namespace::{self, NS, NSDesc, get_ns, store_ns};
 use crate::scope::{Scope, v_get, v_set, v_seth, v_check_bad_read};
 
-pub fn exec_block(bl: &Block, body: Arc<Body>, psc: &Scope) -> B {
+pub fn exec_block(bl: &Block, body: Arc<Body>, psc: Arc<Scope>) -> B {
     let var_am = body.var_am;
-    let sc = Arc::new(Scope::new(body.clone(), Some(Arc::new(psc.clone())), var_am, &[]));
+    let sc = Arc::new(Scope::new(body.clone(), Some(psc), var_am, &[]));
     eval_bc(&body, sc, bl)
 }
 
-pub fn exec_block_with_args(bl: &Block, body: Arc<Body>, psc: &Scope, args: &[B]) -> B {
+pub fn exec_block_with_args(bl: &Block, body: Arc<Body>, psc: Arc<Scope>, args: &[B]) -> B {
     let var_am = body.var_am.max(args.len() as u16);
-    let sc = Arc::new(Scope::new(body.clone(), Some(Arc::new(psc.clone())), var_am, args));
+    let sc = Arc::new(Scope::new(body.clone(), Some(psc), var_am, args));
     eval_bc(&body, sc, bl)
 }
 
@@ -58,6 +58,24 @@ fn sysv_lookup(idx: u32) -> B {
     }
 }
 
+// Thread-local trace buffer for debugging VM crashes
+std::thread_local! {
+    static VM_TRACE: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+}
+
+pub fn vm_trace_push(msg: String) {
+    VM_TRACE.with(|t| {
+        let mut buf = t.borrow_mut();
+        if buf.len() > 500 { buf.remove(0); }
+        buf.push(msg);
+    });
+}
+
+pub fn vm_trace_dump() -> Vec<String> {
+    // NOTE: Temporary debugging function - remove when not needed
+    VM_TRACE.with(|t| t.borrow().clone())
+}
+
 pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     let bc = &bl.bc;
     let bc_offset = body.bc_offset;
@@ -96,6 +114,9 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
         }};
     }
 
+    // NOTE: Debug flag for targeted tracing during runtime1 bootstrap
+    let vm_debug = std::env::var("RBQN_VM_TRACE").is_ok();
+
     loop {
         if pc >= bc.len() {
             rbqn_core::error::throw("VM: bytecode overrun");
@@ -104,6 +125,24 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
         pc += 1;
 
         let op = Op::from_u32(op_val);
+
+        if vm_debug {
+            let op_name = op.map(|o| format!("{:?}", o)).unwrap_or_else(|| format!("0x{:02x}", op_val));
+            let stack_info: String = stack.iter().rev().take(4).enumerate().map(|(i, b)| {
+                if b.is_arr() {
+                    let ia = get_arr(*b).map_or(-1i64, |a| a.ia() as i64);
+                    format!("s[{}]=arr(ia={})", i, ia)
+                } else if b.is_f64() {
+                    format!("s[{}]={}", i, b.o2f())
+                } else if b.is_fun() {
+                    format!("s[{}]=fun", i)
+                } else {
+                    format!("s[{}]={:#x}", i, b.0)
+                }
+            }).collect::<Vec<_>>().join(" ");
+            vm_trace_push(format!("OP pc={} {} stk=[{}]", pc-1, op_name, stack_info));
+        }
+
         match op {
             Some(Op::POPS) => {
                 pop!();
@@ -140,6 +179,23 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let w = pop!();
                 let f = pop!();
                 let x = pop!();
+                // NOTE: Debug trace for FN2C with empty array arguments
+                if vm_debug && x.is_arr() {
+                    if let Some(xa) = get_arr(x) {
+                        if xa.ia() == 0 && w.is_f64() {
+                            let f_tag = (f.0 >> 48) as u16;
+                            vm_trace_push(format!(
+                                "FN2C w={} f_tag={:#06x} x=EMPTY_ARR shape={:?} bc_pc={}",
+                                w.o2f(), f_tag, xa.shape, pc
+                            ));
+                            if f.is_fun() {
+                                let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
+                                let d = crate::derive::get_derived(id);
+                                vm_trace_push(format!("  f_kind={:?}", d.kind));
+                            }
+                        }
+                    }
+                }
                 push!(c2(f, w, x));
             }
             Some(Op::FN2O) => {
@@ -177,15 +233,18 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 push!(c2(f, w, x));
             }
             Some(Op::FN2Oi) => {
-                let f = B::from_u64(read_u64!());
+                // FIX: FN2Oi has TWO u64 immediates — monadic fn ptr and dyadic fn ptr.
+                // CBQN: bL_m[FN2Oi]=5 (1 opcode + 2*u64 = 5 u32 words).
+                let f_mono = B::from_u64(read_u64!());
+                let f_dy = B::from_u64(read_u64!());
                 let w = pop!();
                 let x = pop!();
                 if x.q_n() {
                     push!(x);
                 } else if w.q_n() {
-                    push!(c1(f, x));
+                    push!(c1(f_mono, x));
                 } else {
-                    push!(c2(f, w, x));
+                    push!(c2(f_dy, w, x));
                 }
             }
 
@@ -193,15 +252,14 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::LSTO) | Some(Op::LSTM) => {
                 let sz = read_u32!() as usize;
                 if sz == 0 {
-                    let arr = BqnArr::empty_harr();
-                    push!(tag_arr(arr));
+                    push!(tag_arr(BqnArr::empty_harr()));
                 } else {
                     let mut elems = vec![B::SENTINEL; sz];
                     for i in 0..sz {
                         elems[sz - i - 1] = pop!();
                     }
-                    let arr = BqnArr::from_b_vec(elems);
-                    push!(tag_arr(arr));
+                    // NOTE: try to produce typed array (numeric/char) when homogeneous
+                    push!(b_vec_to_arr(elems));
                 }
             }
             Some(Op::ARMO) => {
@@ -210,8 +268,10 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 for i in 0..sz {
                     elems[sz - i - 1] = pop!();
                 }
-                let arr = BqnArr::from_b_vec(elems);
-                push!(tag_arr(arr));
+                // FIX: ARMO is "array merge observable" — equivalent to > on the
+                // collected list. It merges elements (all same-shape arrays) into
+                // a single array with one extra leading dimension.
+                push!(bqn_merge(elems));
             }
             Some(Op::ARMM) => {
                 let sz = read_u32!() as usize;
@@ -219,8 +279,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 for i in 0..sz {
                     elems[sz - i - 1] = pop!();
                 }
-                let arr = BqnArr::from_b_vec(elems);
-                push!(tag_arr(arr));
+                push!(tag_arr(BqnArr::from_b_vec(elems)));
             }
 
             // --- Block definitions ---
@@ -310,7 +369,14 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::VARO) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                let val = pscs[d as usize].vars[p as usize];
+                let val = pscs[d as usize].var_get(p as usize);
+                if vm_debug && val.is_arr() {
+                    if let Some(a) = get_arr(val) {
+                        if a.ia() == 0 {
+                            vm_trace_push(format!("  VARO d={} p={} → EMPTY_ARR shape={:?}", d, p, a.shape));
+                        }
+                    }
+                }
                 if v_check_bad_read(val) {
                     rbqn_core::error::throw("Attempting to read variable which is not yet defined");
                 }
@@ -324,16 +390,15 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::VARU) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                let val = pscs[d as usize].vars[p as usize];
+                let val = pscs[d as usize].var_get(p as usize);
                 push!(val);
-                let sc_mut = Arc::make_mut(&mut pscs[d as usize]);
-                sc_mut.vars[p as usize] = B::OPT_OUT;
+                pscs[d as usize].var_set(p as usize, B::OPT_OUT);
             }
             Some(Op::EXTO) => {
                 let d = read_u32!();
                 let p = read_u32!();
                 if let Some(ref ext) = pscs[d as usize].ext {
-                    let val = ext.vars[p as usize];
+                    let val = ext.vars.lock().unwrap()[p as usize];
                     if v_check_bad_read(val) {
                         rbqn_core::error::throw("Attempting to read ext variable which is not yet defined");
                     }
@@ -351,14 +416,13 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let d = read_u32!();
                 let p = read_u32!();
                 if let Some(ref ext) = pscs[d as usize].ext {
-                    let val = ext.vars[p as usize];
+                    let val = ext.vars.lock().unwrap()[p as usize];
                     push!(val);
                 } else {
                     rbqn_core::error::throw("EXTU: no scope extension");
                 }
-                let sc_mut = Arc::make_mut(&mut pscs[d as usize]);
-                if let Some(ref mut ext) = sc_mut.ext {
-                    ext.vars[p as usize] = B::OPT_OUT;
+                if let Some(ref ext) = pscs[d as usize].ext {
+                    ext.vars.lock().unwrap()[p as usize] = B::OPT_OUT;
                 }
             }
 
@@ -377,13 +441,13 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::SETN) => {
                 let s = pop!();
                 let x = pop!();
-                v_set(&mut pscs, s, x, false, true);
+                v_set(&pscs, s, x, false, true);
                 push!(x);
             }
             Some(Op::SETU) => {
                 let s = pop!();
                 let x = pop!();
-                v_set(&mut pscs, s, x, true, true);
+                v_set(&pscs, s, x, true, true);
                 push!(x);
             }
             Some(Op::SETM) => {
@@ -392,7 +456,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let x = pop!();
                 let w = v_get(&pscs, s, true);
                 let r = c2(f, w, x);
-                v_set(&mut pscs, s, r, true, false);
+                v_set(&pscs, s, r, true, false);
                 push!(r);
             }
             Some(Op::SETC) => {
@@ -400,7 +464,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let f = pop!();
                 let x = v_get(&pscs, s, true);
                 let r = c1(f, x);
-                v_set(&mut pscs, s, r, true, false);
+                v_set(&pscs, s, r, true, false);
                 push!(r);
             }
 
@@ -409,20 +473,18 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
                 let x = pop!();
-                let sc_mut = Arc::make_mut(&mut pscs[d]);
-                sc_mut.vars[p] = x;
+                pscs[d].var_set(p, x);
                 push!(x);
             }
             Some(Op::SETUi) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
                 let x = pop!();
-                let sc_mut = Arc::make_mut(&mut pscs[d]);
-                let prev = sc_mut.vars[p];
+                let prev = pscs[d].var_get(p);
                 if crate::scope::v_check_bad_write(prev) {
                     crate::scope::v_tag_error_pub(prev, true);
                 }
-                sc_mut.vars[p] = x;
+                pscs[d].var_set(p, x);
                 push!(x);
             }
             Some(Op::SETMi) => {
@@ -430,20 +492,18 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let (d, p) = unpack_var_ref(packed);
                 let f = pop!();
                 let x = pop!();
-                let w = pscs[d].vars[p];
+                let w = pscs[d].var_get(p);
                 let r = c2(f, w, x);
-                let sc_mut = Arc::make_mut(&mut pscs[d]);
-                sc_mut.vars[p] = r;
+                pscs[d].var_set(p, r);
                 push!(r);
             }
             Some(Op::SETCi) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
                 let f = pop!();
-                let x = pscs[d].vars[p];
+                let x = pscs[d].var_get(p);
                 let r = c1(f, x);
-                let sc_mut = Arc::make_mut(&mut pscs[d]);
-                sc_mut.vars[p] = r;
+                pscs[d].var_set(p, r);
                 push!(r);
             }
 
@@ -452,75 +512,105 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
                 let x = pop!();
-                let sc_mut = Arc::make_mut(&mut pscs[d]);
-                sc_mut.vars[p] = x;
+                pscs[d].var_set(p, x);
             }
             Some(Op::SETUv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
                 let x = pop!();
-                let sc_mut = Arc::make_mut(&mut pscs[d]);
-                let prev = sc_mut.vars[p];
+                let prev = pscs[d].var_get(p);
                 if crate::scope::v_check_bad_write(prev) {
                     crate::scope::v_tag_error_pub(prev, true);
                 }
-                sc_mut.vars[p] = x;
+                pscs[d].var_set(p, x);
             }
             Some(Op::SETMv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
                 let f = pop!();
                 let x = pop!();
-                let w = pscs[d].vars[p];
+                let w = pscs[d].var_get(p);
                 let r = c2(f, w, x);
-                let sc_mut = Arc::make_mut(&mut pscs[d]);
-                sc_mut.vars[p] = r;
+                pscs[d].var_set(p, r);
             }
             Some(Op::SETCv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
                 let f = pop!();
-                let x = pscs[d].vars[p];
+                let x = pscs[d].var_get(p);
                 let r = c1(f, x);
-                let sc_mut = Arc::make_mut(&mut pscs[d]);
-                sc_mut.vars[p] = r;
+                pscs[d].var_set(p, r);
             }
 
             // --- Header match ---
             Some(Op::SETH1) => {
                 let s = pop!();
                 let x = pop!();
-                let _v1 = read_u64!();
-                let ok = v_seth(&mut pscs, s, x);
-                if !ok {
-                    rbqn_core::error::throw("SETH1: header match failed");
+                let next_body_idx = read_u64!() as usize;
+                if !v_seth(&pscs, s, x) {
+                    let next_body = bl.bodies[next_body_idx].clone();
+                    if !next_body.exists {
+                        rbqn_core::error::throw("No matching header");
+                    }
+                    let parent = pscs.last().cloned().unwrap_or(sc.clone());
+                    return exec_block(bl, next_body, parent);
                 }
             }
             Some(Op::SETH2) => {
                 let s = pop!();
                 let x = pop!();
-                let _v1 = read_u64!();
-                let _v2 = read_u64!();
-                let ok = v_seth(&mut pscs, s, x);
-                if !ok {
-                    rbqn_core::error::throw("SETH2: header match failed");
+                let mono_idx = read_u64!() as usize;
+                let dy_idx = read_u64!() as usize;
+                if !v_seth(&pscs, s, x) {
+                    let vars = sc.vars.lock().unwrap();
+                    let is_dyadic = vars.get(2).map_or(false, |b| !b.q_n());
+                    let next_idx = if is_dyadic { dy_idx } else { mono_idx };
+                    let next_body = bl.bodies[next_idx].clone();
+                    if !next_body.exists {
+                        rbqn_core::error::throw("No matching header");
+                    }
+                    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
+                    let args: Vec<B> = (0..arg_count).map(|i| {
+                        vars.get(i).copied().unwrap_or(B::SENTINEL)
+                    }).collect();
+                    drop(vars);
+                    let parent = sc.psc.clone().unwrap_or(sc.clone());
+                    return exec_block_with_args(bl, next_body, parent, &args);
                 }
             }
 
             // --- Predicates ---
             Some(Op::PRED1) => {
                 let x = pop!();
-                let _v1 = read_u64!();
+                let next_body_idx = read_u64!() as usize;
                 if !x.o2b() {
-                    rbqn_core::error::throw("PRED1: predicate failed");
+                    let next_body = bl.bodies[next_body_idx].clone();
+                    if !next_body.exists {
+                        rbqn_core::error::throw("No matching predicate");
+                    }
+                    let parent = pscs.last().cloned().unwrap_or(sc.clone());
+                    return exec_block(bl, next_body, parent);
                 }
             }
             Some(Op::PRED2) => {
                 let x = pop!();
-                let _v1 = read_u64!();
-                let _v2 = read_u64!();
+                let mono_idx = read_u64!() as usize;
+                let dy_idx = read_u64!() as usize;
                 if !x.o2b() {
-                    rbqn_core::error::throw("PRED2: predicate failed");
+                    let vars = sc.vars.lock().unwrap();
+                    let is_dyadic = vars.get(2).map_or(false, |b| !b.q_n());
+                    let next_idx = if is_dyadic { dy_idx } else { mono_idx };
+                    let next_body = bl.bodies[next_idx].clone();
+                    if !next_body.exists {
+                        rbqn_core::error::throw("No matching predicate");
+                    }
+                    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
+                    let args: Vec<B> = (0..arg_count).map(|i| {
+                        vars.get(i).copied().unwrap_or(B::SENTINEL)
+                    }).collect();
+                    drop(vars);
+                    let parent = sc.psc.clone().unwrap_or(sc.clone());
+                    return exec_block_with_args(bl, next_body, parent, &args);
                 }
             }
 
@@ -567,9 +657,13 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             }
 
             Some(Op::ALIM) => {
-                // Array limit: currently just consume the operand and pass through
-                let _o = pop!();
+                // FIX: ALIM pops one value and reads one u32, then pushes
+                // a wrapped value back. Stack diff = 0 (consumed=1, added=1).
+                // In CBQN this wraps in a FldAlias object; we pass through
+                // the value for now but must not drop it from the stack.
+                let o = pop!();
                 let _gid = read_u32!();
+                push!(o);
             }
 
             Some(Op::CHKV) => {
@@ -627,6 +721,72 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     }
 }
 
+/// Convert a Vec<B> to a typed B array value.
+/// Produces a numeric array if all elements are f64 scalars,
+/// a character array if all are c32, otherwise keeps Boxed.
+/// This matches CBQN's behavior where list literals are typed when homogeneous.
+pub fn b_vec_to_arr(elems: Vec<B>) -> B {
+    if elems.is_empty() {
+        return tag_arr(BqnArr::empty_harr());
+    }
+    if elems.iter().all(|b| b.is_f64()) {
+        let vals: Vec<f64> = elems.iter().map(|b| b.o2f()).collect();
+        let arr = rbqn_core::array::BqnArr::new_vec_f64(vals);
+        return tag_arr(rbqn_core::array::squeeze_num(arr));
+    }
+    if elems.iter().all(|b| b.is_c32()) {
+        let vals: Vec<u32> = elems.iter().map(|b| b.0 as u32).collect();
+        let arr = BqnArr::new_vec_c32(vals);
+        return tag_arr(arr);
+    }
+    tag_arr(BqnArr::from_b_vec(elems))
+}
+
+/// Merge a list of elements (ARMO opcode). Equivalent to BQN's `>` on the list.
+/// Each element should be an array of the same shape. The result has shape
+/// `(len(elems)) ∾ inner_shape`. Scalar elements are treated as 0-rank (no inner dims).
+fn bqn_merge(elems: Vec<B>) -> B {
+    if elems.is_empty() {
+        return tag_arr(BqnArr::empty_harr());
+    }
+    // If all elements are scalars (f64 or c32), just build a typed 1-d array
+    if elems.iter().all(|b| b.is_f64()) {
+        let vals: Vec<f64> = elems.iter().map(|b| b.o2f()).collect();
+        let arr = BqnArr::new_vec_f64(vals);
+        return tag_arr(rbqn_core::array::squeeze_num(arr));
+    }
+    if elems.iter().all(|b| b.is_c32()) {
+        let vals: Vec<u32> = elems.iter().map(|b| b.0 as u32).collect();
+        return tag_arr(BqnArr::new_vec_c32(vals));
+    }
+    // If all elements are arrays, merge them
+    if elems.iter().all(|b| b.is_arr()) {
+        let arrs: Vec<BqnArr> = elems.iter().filter_map(|b| get_arr(*b)).collect();
+        if arrs.len() == elems.len() {
+            let inner_shape = &arrs[0].shape;
+            let inner_ia: usize = inner_shape.iter().product();
+            // Check all elements have the same inner shape
+            let same_shape = arrs.iter().all(|a| a.shape == *inner_shape);
+            if same_shape {
+                // Build result shape: [len, inner_shape...]
+                let mut out_shape = vec![elems.len()];
+                out_shape.extend_from_slice(inner_shape);
+                // Flatten all element data
+                let mut flat: Vec<B> = Vec::with_capacity(elems.len() * inner_ia);
+                for a in &arrs {
+                    for i in 0..inner_ia {
+                        flat.push(a.get(i).unwrap_or(B::SENTINEL));
+                    }
+                }
+                let arr = rbqn_core::array::typed_arr_from_b_vec(flat, out_shape, arrs[0].fill);
+                return tag_arr(arr);
+            }
+        }
+    }
+    // Mixed or non-conforming: fall back to boxed list
+    tag_arr(BqnArr::from_b_vec(elems))
+}
+
 pub fn tag_arr(arr: BqnArr) -> B {
     rbqn_core::tag_arr(arr)
 }
@@ -643,9 +803,9 @@ impl Clone for Scope {
             var_am: self.var_am,
             ext: self.ext.as_ref().map(|e| crate::scope::ScopeExt {
                 var_am: e.var_am,
-                vars: e.vars.clone(),
+                vars: std::sync::Mutex::new(e.vars.lock().unwrap().clone()),
             }),
-            vars: self.vars.clone(),
+            vars: std::sync::Mutex::new(self.vars.lock().unwrap().clone()),
         }
     }
 }
