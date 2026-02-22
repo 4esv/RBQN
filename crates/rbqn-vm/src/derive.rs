@@ -78,24 +78,92 @@ pub fn set_inv_swap_fn(f: B) {
 
 /// Look up the regular inverse of a function using the BQN runtime's inverse tables.
 pub fn inv_reg(func: B) -> B {
-    // Check for known native inverses first (fast path)
     if func.is_fun() {
         let id = (func.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
+
+        // Fast path: native primitive inverse
         if let DerivedKind::NativeFn { prim_idx } = d.kind {
             if let Some(inv) = native_inverse_reg(prim_idx) {
                 return inv;
             }
         }
+
+        // Handle Md2D inverses natively (matches CBQN's before_im / after_im)
+        if d.kind == DerivedKind::Md2D {
+            if let Some(inv) = md2d_inverse_reg(&d) {
+                return inv;
+            }
+        }
     }
+
+    // Fall through to BQN runtime resolver
     let reg_fn = INV_REG_FN.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(||
         rbqn_core::error::throw("⁼: inverse system not initialized (setInv not called)")
     );
     c1(reg_fn, func)
 }
 
+/// Native inverse for Md2D (2-modifier derived) values.
+/// Matches CBQN's before_im and after_im in md2.c.
+fn md2d_inverse_reg(d: &Derived) -> Option<B> {
+    // d.g = modifier, d.f = left operand, d.h = right operand
+    let modifier = d.g;
+    if !modifier.is_md2() { return None; }
+
+    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
+    let md = get_derived(mid);
+
+    match md.kind {
+        DerivedKind::NativeMd2 { prim_idx: 55 } => {
+            // ⊸ (before): (F⊸G)⁻¹ x = F G⁻¹ₓ x (dyadic inverse of G with F as w)
+            // Only when F is a value (not callable) and G is a function.
+            // CBQN: before_im(d,x) = isFun(d->g) && !isCallable(d->f)
+            //       ? TI(d->g, fn_ix)(d->g, d->f, x) : def_m2_im(d, x)
+            let f_operand = d.f;  // left operand of ⊸
+            let g_operand = d.h;  // right operand of ⊸
+            if g_operand.is_fun() && !f_operand.is_fun() && !f_operand.is_md() {
+                // (val⊸G)⁻¹ = val⊸(inv_reg(G))
+                // When called as c1(result, x), ⊸ dispatcher computes:
+                //   c1(val, x) = val (constant), then c2(inv_reg(G), val, x)
+                let g_inv = inv_reg(g_operand);
+                let before_md2 = m_native_md2(55); // ⊸
+                return Some(m_md2d(before_md2, f_operand, g_inv));
+            }
+            None
+        }
+        DerivedKind::NativeMd2 { prim_idx: 56 } => {
+            // ⟜ (after): (F⟜G)⁻¹ x → only when G is a value
+            // CBQN: after_im(d,x) = isFun(d->f) && !isCallable(d->g)
+            //       ? TI(d->f, fn_iw)(d->f, d->g, x) : def_m2_im(d, x)
+            let f_operand = d.f;
+            let g_operand = d.h;
+            if f_operand.is_fun() && !g_operand.is_fun() && !g_operand.is_md() {
+                // (F⟜val)⁻¹ = (inv_swap(F))⟜val
+                // When called as c1(result, x), ⟜ dispatcher computes:
+                //   c1(val, x) = val, then c2(inv_swap(F), x, val) = swap-inverse
+                let f_inv = inv_swap(f_operand);
+                let after_md2 = m_native_md2(56); // ⟜
+                return Some(m_md2d(after_md2, f_inv, g_operand));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Look up the swap inverse of a function using the BQN runtime's inverse tables.
 pub fn inv_swap(func: B) -> B {
+    // Check for known native swap inverses first
+    if func.is_fun() {
+        let id = (func.0 & 0xFFFFFFFFFFFF) >> 3;
+        let d = get_derived(id);
+        if let DerivedKind::NativeFn { prim_idx } = d.kind {
+            if let Some(inv) = native_inverse_swap(prim_idx) {
+                return inv;
+            }
+        }
+    }
     let swap_fn = INV_SWAP_FN.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(||
         rbqn_core::error::throw("⁼: inverse system not initialized (setInv not called)")
     );
@@ -123,6 +191,7 @@ fn native_inverse_reg(prim_idx: usize) -> Option<B> {
         21 => Some(m_native_fn(21)), // ⊢⁼ = ⊢
         31 => Some(m_native_fn(31)), // ⌽⁼ = ⌽ (reverse is its own inverse)
         32 => Some(m_native_fn(32)), // ⍉⁼ = ⍉ (transpose is its own inverse for rank≤2)
+        37 => Some(m_native_fn(24)), // ⊑⁼ = ≍ (solo: first inverse wraps in 1-element array)
         _ => None,
     }
 }
