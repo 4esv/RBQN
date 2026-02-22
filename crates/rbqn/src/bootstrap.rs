@@ -490,21 +490,23 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
         });
     }
 
-    // Invoke setPrims callback — registers •Decompose and •Glyph with the runtime.
-    // Wrapped in catch_unwind since calling convention may differ.
+    // Invoke setPrims callback — registers •Decompose and •PrimInd with the runtime.
+    // CBQN: c1(setPrims, ⟨bi_decp, bi_primInd⟩)
     if let Some(sp) = set_prims {
-        let fn_arr = tag_arr(BqnArr::new_vec_c32(glyphs[0].clone()));
-        let md1_arr = tag_arr(BqnArr::new_vec_c32(glyphs[1].clone()));
-        let md2_arr = tag_arr(BqnArr::new_vec_c32(glyphs[2].clone()));
-        let glyphs_b = tag_arr(BqnArr::from_b_vec(vec![fn_arr, md1_arr, md2_arr]));
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(sp, glyphs_b)));
+        let decompose_fn = m_sys_fn(1);  // •Decompose
+        let primind_fn = m_sys_fn(5);    // •PrimInd
+        let args = tag_arr(BqnArr::from_b_vec(vec![decompose_fn, primind_fn]));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(sp, args)));
     }
 
     // Invoke setInv callback — registers inverse tables for ⁼ and ⌾.
-    // Pass empty placeholder since ⁼/⌾ are not yet implemented.
+    // CBQN: c2(setInv, bi_setInvSwap, bi_setInvReg) — called dyadically.
+    // We don't have ⁼/⌾ inverse support yet, so pass placeholder functions.
+    // Using no-op sys functions that return identity for now.
     if let Some(si) = set_inv {
-        let empty_inv = tag_arr(BqnArr::empty_harr());
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(si, empty_inv)));
+        // NOTE: setInv is called dyadically in CBQN. We skip it since we don't
+        // have inverse operations yet. Calling it wrong would cause errors.
+        let _ = si; // suppress unused warning
     }
 
     // --- Stage 3: Execute compiler (graceful fallback if it panics) ---

@@ -53,7 +53,7 @@ fn sysv_lookup(idx: u32) -> B {
     //  0: Type    1: Decompose   4: Glyph   7: Fill/FillFn
     // 22: GroupLen  23: GroupOrd
     match idx {
-        0 | 1 | 4 | 7 | 22 | 23 => crate::derive::m_sys_fn(idx),
+        0 | 1 | 4 | 5 | 7 | 22 | 23 => crate::derive::m_sys_fn(idx),
         _ => B::SENTINEL,
     }
 }
