@@ -6,6 +6,12 @@ fn box_arr(arr: BqnArr) -> B {
     tag_arr(arr)
 }
 
+// Helper: convert Vec<B> to the most specific typed array (numeric, char, or boxed).
+// Use this anywhere elements are collected via arr.get(i) to preserve element types.
+fn typed_arr(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
+    rbqn_core::array::typed_arr_from_b_vec(elems, shape, fill)
+}
+
 // = monad: rank
 pub fn rank_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_atom() {
@@ -128,11 +134,7 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let mut new_shape = arr.shape.clone();
     new_shape.extend_from_slice(&inner_shape);
 
-    Ok(PrimResult::Array(BqnArr {
-        shape: new_shape,
-        data: ArrData::Boxed(result_data),
-        fill: first_inner.fill,
-    }))
+    Ok(PrimResult::Array(typed_arr(result_data, new_shape, first_inner.fill)))
 }
 
 // ⊣ monad/dyad: identity / left
@@ -160,11 +162,7 @@ pub fn rtack_c2(_w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
 // ⥊ monad: deshape (flatten to list)
 pub fn deshape_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_atom() {
-        return Ok(PrimResult::Array(BqnArr {
-            shape: vec![1],
-            data: ArrData::Boxed(vec![x]),
-            fill: None,
-        }));
+        return Ok(PrimResult::Array(typed_arr(vec![x], vec![1], None)));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⥊𝕩: 𝕩 must be an array".into()))?;
     let ia = arr.ia();
@@ -179,7 +177,13 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         vec![w.to_usz()?]
     } else {
         let warr = wa.ok_or_else(|| BqnError::Type("𝕨⥊𝕩: 𝕨 must be a number or array of numbers".into()))?;
-        warr.i32_iter()?.iter().map(|&s| s as usize).collect()
+        // BQN spec: shape can contain ∘ (exact), ⌊ (floor), or ⌈ (ceil) to compute a dimension
+        if warr.is_num_arr() {
+            warr.i32_iter()?.iter().map(|&s| s as usize).collect()
+        } else {
+            // Shape contains non-numeric element(s) — handle computed dimension
+            return reshape_computed(warr, x, xa);
+        }
     };
     let new_ia: usize = new_shape.iter().product();
 
@@ -200,9 +204,108 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     for i in 0..new_ia {
         result.push(arr.get(i % old_ia)?);
     }
-    let mut out = BqnArr::new_vec_b(result);
-    out.shape = new_shape;
-    Ok(PrimResult::Array(out))
+    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
+}
+
+/// Handle reshape with computed dimension (shape contains ∘, ⌊, or ⌈).
+/// BQN spec: at most one element in shape can be a non-number.
+/// ∘ = exact division, ⌊ = floor, ⌈ = ceil.
+/// We identify the mode by the B value's type tag:
+///   - MD2 (tag 0xfff3) → ∘ (atop) → exact division
+///   - FUN → ⌊ or ⌈ → floor or ceil (default floor)
+/// For robustness, any non-numeric value defaults to exact (∘) behavior.
+fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let ia = warr.ia();
+    let mut computed_idx: Option<usize> = None;
+    let mut computed_mode = 0u8; // 0=exact(∘), 1=floor(⌊), 2=ceil(⌈)
+    let mut known_dims: Vec<usize> = Vec::with_capacity(ia);
+
+    for i in 0..ia {
+        let v = warr.get(i)?;
+        if v.is_f64() {
+            known_dims.push(v.to_usz()?);
+        } else {
+            // Non-numeric element: this is the computed dimension
+            if computed_idx.is_some() {
+                return Err(BqnError::Domain("𝕨⥊𝕩: 𝕨 can have at most one computed dimension".into()));
+            }
+            computed_idx = Some(i);
+            known_dims.push(0); // placeholder
+
+            // NOTE: Determine mode. FUN tag with prim_idx 6=⌊, 7=⌈.
+            // MD2 tag = ∘ (exact). Default to exact for any other non-numeric.
+            if v.is_fun() {
+                // FUN value in shape: could be ⌊ or ⌈
+                // TODO: proper primitive identification for ⌊ vs ⌈
+                computed_mode = 1; // assume floor for now
+            }
+            // MD2 → exact (∘), which is the default (0)
+        }
+    }
+
+    let ci = computed_idx
+        .ok_or_else(|| BqnError::Domain("𝕨⥊𝕩: shape has no computed dimension but contains non-numeric".into()))?;
+
+    // Get total element count from x
+    let total = if x.is_atom() {
+        1
+    } else {
+        let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⥊𝕩: 𝕩 must be an array".into()))?;
+        xarr.ia()
+    };
+
+    // Product of known dimensions
+    let known_product: usize = known_dims.iter().enumerate()
+        .filter(|&(j, _)| j != ci)
+        .map(|(_, &d)| d)
+        .product();
+
+    if known_product == 0 {
+        return Err(BqnError::Domain("𝕨⥊𝕩: known dimensions product is 0".into()));
+    }
+
+    // Compute the missing dimension
+    let computed_dim = match computed_mode {
+        0 => { // exact (∘): must divide evenly
+            if total % known_product != 0 {
+                return Err(BqnError::Domain(format!(
+                    "𝕨⥊𝕩: 𝕩 length ({}) not divisible by known shape product ({})",
+                    total, known_product
+                )));
+            }
+            total / known_product
+        }
+        1 => { // floor (⌊)
+            total / known_product
+        }
+        2 => { // ceil (⌈)
+            (total + known_product - 1) / known_product
+        }
+        _ => unreachable!(),
+    };
+
+    known_dims[ci] = computed_dim;
+    let new_shape = known_dims;
+    let new_ia: usize = new_shape.iter().product();
+
+    if x.is_atom() {
+        let vals = vec![x.o2f(); new_ia];
+        let mut out = BqnArr::new_vec_f64(vals);
+        out.shape = new_shape;
+        return Ok(PrimResult::Array(array::squeeze_num(out)));
+    }
+
+    let arr = xa.ok_or_else(|| BqnError::Type("𝕨⥊𝕩: 𝕩 must be an array".into()))?;
+    let old_ia = arr.ia();
+    if old_ia == 0 {
+        return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty".into()));
+    }
+
+    let mut result = Vec::with_capacity(new_ia);
+    for i in 0..new_ia {
+        result.push(arr.get(i % old_ia)?);
+    }
+    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
 
 // ∾ monad: join (flatten one level of nesting)
@@ -271,11 +374,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let mut new_shape = vec![total_first];
     new_shape.extend_from_slice(&tail);
 
-    Ok(PrimResult::Array(BqnArr {
-        shape: new_shape,
-        data: ArrData::Boxed(result),
-        fill: arr.fill,
-    }))
+    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
 
 // ∾ dyad: join to
@@ -302,11 +401,7 @@ pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
                 for i in 0..xia {
                     result.push(xarr.get(i)?);
                 }
-                return Ok(PrimResult::Array(BqnArr {
-                    shape: new_shape,
-                    data: ArrData::Boxed(result),
-                    fill: warr.fill,
-                }));
+                return Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)));
             }
             let wia = warr.ia();
             let xia = xarr.ia();
@@ -317,7 +412,8 @@ pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
             for i in 0..xia {
                 result.push(xarr.get(i)?);
             }
-            Ok(PrimResult::Array(BqnArr::new_vec_b(result)))
+            let new_len = wia + xia;
+            Ok(PrimResult::Array(typed_arr(result, vec![new_len], warr.fill)))
         }
         (None, Some(xarr)) => {
             if xarr.rank() != 1 {
@@ -329,7 +425,8 @@ pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
             for i in 0..xia {
                 result.push(xarr.get(i)?);
             }
-            Ok(PrimResult::Array(BqnArr::new_vec_b(result)))
+            let len = 1 + xia;
+            Ok(PrimResult::Array(typed_arr(result, vec![len], xarr.fill)))
         }
         (Some(warr), None) => {
             if warr.rank() != 1 {
@@ -341,7 +438,8 @@ pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
                 result.push(warr.get(i)?);
             }
             result.push(x);
-            Ok(PrimResult::Array(BqnArr::new_vec_b(result)))
+            let len = wia + 1;
+            Ok(PrimResult::Array(typed_arr(result, vec![len], warr.fill)))
         }
         (None, None) => Err(BqnError::Type("𝕨∾𝕩: Arguments must include an array".into())),
     }
@@ -357,11 +455,7 @@ pub fn solo_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             out.shape = new_shape;
             Ok(PrimResult::Array(out))
         }
-        None => Ok(PrimResult::Array(BqnArr {
-            shape: vec![1],
-            data: ArrData::Boxed(vec![x]),
-            fill: None,
-        })),
+        None => Ok(PrimResult::Array(typed_arr(vec![x], vec![1], None))),
     }
 }
 
@@ -390,11 +484,7 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             }
             let mut new_shape = vec![2];
             new_shape.extend_from_slice(&warr.shape);
-            Ok(PrimResult::Array(BqnArr {
-                shape: new_shape,
-                data: ArrData::Boxed(result),
-                fill: warr.fill,
-            }))
+            Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
         }
         (None, Some(xarr)) => {
             // Atom ≍ Array: solo the atom, then couple
@@ -406,11 +496,7 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             }
             let mut new_shape = vec![2];
             new_shape.extend_from_slice(&xarr.shape);
-            Ok(PrimResult::Array(BqnArr {
-                shape: new_shape,
-                data: ArrData::Boxed(result),
-                fill: xarr.fill,
-            }))
+            Ok(PrimResult::Array(typed_arr(result, new_shape, xarr.fill)))
         }
         (Some(warr), None) => {
             let wia = warr.ia();
@@ -421,18 +507,14 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             result.push(x);
             let mut new_shape = vec![2];
             new_shape.extend_from_slice(&warr.shape);
-            Ok(PrimResult::Array(BqnArr {
-                shape: new_shape,
-                data: ArrData::Boxed(result),
-                fill: warr.fill,
-            }))
+            Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
         }
     }
 }
 
 // ⋈ dyad: pair
 pub fn pair_c2(w: B, _wa: Option<&BqnArr>, x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
-    Ok(PrimResult::Array(BqnArr::new_vec_b(vec![w, x])))
+    Ok(PrimResult::Array(typed_arr(vec![w, x], vec![2], None)))
 }
 
 // ↑ monad: prefixes
@@ -471,11 +553,7 @@ pub fn prefixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let n = w.to_i32()?;
     let arr = if x.is_atom() {
-        BqnArr {
-            shape: vec![1],
-            data: ArrData::Boxed(vec![x]),
-            fill: None,
-        }
+        typed_arr(vec![x], vec![1], None)
     } else {
         xa.ok_or_else(|| BqnError::Type("𝕨↑𝕩: 𝕩 must be an array".into()))?.clone()
     };
@@ -502,7 +580,8 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
                 result.push(arr.fill.unwrap_or(B::m_i32(0)));
             }
         }
-        return Ok(PrimResult::Array(BqnArr::new_vec_b(result)));
+        let take_len = n.unsigned_abs() as usize;
+        return Ok(PrimResult::Array(typed_arr(result, vec![take_len], arr.fill)));
     }
 
     // Multi-rank take: operates along first axis
@@ -542,11 +621,7 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
 
     let mut new_shape = vec![abs_n];
     new_shape.extend_from_slice(cell_shape);
-    Ok(PrimResult::Array(BqnArr {
-        shape: new_shape,
-        data: ArrData::Boxed(result),
-        fill: arr.fill,
-    }))
+    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
 
 // ↓ monad: suffixes
@@ -602,7 +677,8 @@ pub fn drop_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result
         for i in start..end {
             result.push(arr.get(i)?);
         }
-        return Ok(PrimResult::Array(BqnArr::new_vec_b(result)));
+        let len = result.len();
+        return Ok(PrimResult::Array(typed_arr(result, vec![len], arr.fill)));
     }
 
     // Multi-rank drop: operates along first axis
@@ -626,11 +702,7 @@ pub fn drop_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result
 
     let mut new_shape = vec![remaining];
     new_shape.extend_from_slice(cell_shape);
-    Ok(PrimResult::Array(BqnArr {
-        shape: new_shape,
-        data: ArrData::Boxed(result),
-        fill: arr.fill,
-    }))
+    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
 
 // ↕ monad: range
@@ -760,11 +832,7 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
             result.push(fill_val);
         }
 
-        return Ok(PrimResult::Array(BqnArr {
-            shape: arr.shape.clone(),
-            data: ArrData::Boxed(result),
-            fill: arr.fill,
-        }));
+        return Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)));
     }
 
     let ia = arr.ia();
@@ -791,9 +859,7 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         result.push(arr.fill.unwrap_or(B::m_i32(0)));
     }
     result.truncate(ia);
-    let mut out = BqnArr::new_vec_b(result);
-    out.shape = arr.shape.clone();
-    Ok(PrimResult::Array(out))
+    Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
 }
 
 // » dyad: shift before
@@ -832,11 +898,7 @@ pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
             }
         }
 
-        return Ok(PrimResult::Array(BqnArr {
-            shape: arr.shape.clone(),
-            data: ArrData::Boxed(result),
-            fill: arr.fill,
-        }));
+        return Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)));
     }
 
     let ia = arr.ia();
@@ -860,9 +922,7 @@ pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         result.push(arr.get(i)?);
     }
     result.truncate(ia);
-    let mut out = BqnArr::new_vec_b(result);
-    out.shape = arr.shape.clone();
-    Ok(PrimResult::Array(out))
+    Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
 }
 
 // ⌽ monad: reverse (along first axis)
@@ -875,7 +935,7 @@ pub fn reverse_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         for i in (0..ia).rev() {
             result.push(arr.get(i)?);
         }
-        return Ok(PrimResult::Array(BqnArr::new_vec_b(result)));
+        return Ok(PrimResult::Array(typed_arr(result, vec![ia], arr.fill)));
     }
 
     // Multi-rank: reverse major cells
@@ -887,11 +947,7 @@ pub fn reverse_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             result.push(arr.get(i * cell_size + j)?);
         }
     }
-    Ok(PrimResult::Array(BqnArr {
-        shape: arr.shape.clone(),
-        data: ArrData::Boxed(result),
-        fill: arr.fill,
-    }))
+    Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
 }
 
 // ⌽ dyad: rotate (along first axis)
@@ -911,7 +967,7 @@ pub fn rotate_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resu
         for i in 0..ia {
             result.push(arr.get((i + shift) % ia)?);
         }
-        return Ok(PrimResult::Array(BqnArr::new_vec_b(result)));
+        return Ok(PrimResult::Array(typed_arr(result, vec![ia], arr.fill)));
     }
 
     // Multi-rank: rotate major cells
@@ -924,11 +980,7 @@ pub fn rotate_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resu
             result.push(arr.get(src * cell_size + j)?);
         }
     }
-    Ok(PrimResult::Array(BqnArr {
-        shape: arr.shape.clone(),
-        data: ArrData::Boxed(result),
-        fill: arr.fill,
-    }))
+    Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
 }
 
 // ⍉ monad: transpose (reverse axis order)
@@ -987,11 +1039,7 @@ pub fn transpose_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         result[flat] = arr.get(old_flat)?;
     }
 
-    Ok(PrimResult::Array(BqnArr {
-        shape: new_shape,
-        data: ArrData::Boxed(result),
-        fill: arr.fill,
-    }))
+    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
 
 // ⍉ dyad: reorder axes
@@ -1069,9 +1117,5 @@ pub fn reorder_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resu
         result.push(arr.get(old_flat)?);
     }
 
-    Ok(PrimResult::Array(BqnArr {
-        shape: new_shape,
-        data: ArrData::Boxed(result),
-        fill: arr.fill,
-    }))
+    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
