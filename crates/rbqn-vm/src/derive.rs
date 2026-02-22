@@ -42,12 +42,13 @@ fn next_derived_id() -> u64 {
 
 pub fn store_derived(d: Derived) -> u64 {
     let id = next_derived_id();
-    DERIVED_STORE.lock().unwrap().insert(id, Arc::new(d));
+    // NOTE: Use unwrap_or_else to recover from poisoned mutex (caused by catch_unwind)
+    DERIVED_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(id, Arc::new(d));
     id
 }
 
 pub fn get_derived(id: u64) -> Arc<Derived> {
-    DERIVED_STORE.lock().unwrap().get(&id).cloned()
+    DERIVED_STORE.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
         .unwrap_or_else(|| rbqn_core::error::throw("Invalid derived object reference"))
 }
 
@@ -67,76 +68,27 @@ static INV_SWAP_FN: std::sync::LazyLock<Mutex<Option<B>>> =
 
 /// Store the BQN inverse lookup function (called from setInvReg system fn).
 pub fn set_inv_reg_fn(f: B) {
-    eprintln!("[DEBUG] set_inv_reg_fn called with f={:#x}", f.0);
-    *INV_REG_FN.lock().unwrap() = Some(f);
+    *INV_REG_FN.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
 }
 
 /// Store the BQN inverse swap function (called from setInvSwap system fn).
 pub fn set_inv_swap_fn(f: B) {
-    eprintln!("[DEBUG] set_inv_swap_fn called with f={:#x}", f.0);
-    *INV_SWAP_FN.lock().unwrap() = Some(f);
+    *INV_SWAP_FN.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
 }
 
 /// Look up the regular inverse of a function using the BQN runtime's inverse tables.
 pub fn inv_reg(func: B) -> B {
+    // Check for known native inverses first (fast path)
     if func.is_fun() {
         let id = (func.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
-        eprintln!("[DEBUG inv_reg] kind={:?}", d.kind);
-        if let DerivedKind::Md2D = d.kind {
-            // Log the modifier and operands for Md2D
-            let modifier = d.g;
-            let operand_f = d.f;
-            let operand_g = d.h;
-            let mod_info = if modifier.is_md2() {
-                let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
-                let md = get_derived(mid);
-                format!("{:?}", md.kind)
-            } else {
-                format!("non-md2 {:#x}", modifier.0)
-            };
-            let f_info = if operand_f.is_fun() {
-                let fid = (operand_f.0 & 0xFFFFFFFFFFFF) >> 3;
-                let fd = get_derived(fid);
-                format!("{:?}", fd.kind)
-            } else {
-                format!("{:#x}", operand_f.0)
-            };
-            let g_info = if operand_g.is_fun() {
-                let gid = (operand_g.0 & 0xFFFFFFFFFFFF) >> 3;
-                let gd = get_derived(gid);
-                format!("{:?}", gd.kind)
-            } else {
-                format!("{:#x}", operand_g.0)
-            };
-            eprintln!("[DEBUG inv_reg] Md2D: modifier={} f={} g={}", mod_info, f_info, g_info);
-            // Recursively decode G if it's also Md2D
-            if operand_g.is_fun() {
-                let gid = (operand_g.0 & 0xFFFFFFFFFFFF) >> 3;
-                let gd = get_derived(gid);
-                if let DerivedKind::Md2D = gd.kind {
-                    let gmod = gd.g;
-                    let gf = gd.f;
-                    let gh = gd.h;
-                    let gmod_info = if gmod.is_md2() {
-                        let mid = (gmod.0 & 0xFFFFFFFFFFFF) >> 3;
-                        let md = get_derived(mid);
-                        format!("{:?}", md.kind)
-                    } else { format!("{:#x}", gmod.0) };
-                    let gf_info = if gf.is_fun() {
-                        let fid = (gf.0 & 0xFFFFFFFFFFFF) >> 3;
-                        format!("{:?}", get_derived(fid).kind)
-                    } else { format!("{:#x}", gf.0) };
-                    let gh_info = if gh.is_fun() {
-                        let hid = (gh.0 & 0xFFFFFFFFFFFF) >> 3;
-                        format!("{:?}", get_derived(hid).kind)
-                    } else { format!("{:#x}", gh.0) };
-                    eprintln!("[DEBUG inv_reg]   G's Md2D: modifier={} f={} g={}", gmod_info, gf_info, gh_info);
-                }
+        if let DerivedKind::NativeFn { prim_idx } = d.kind {
+            if let Some(inv) = native_inverse_reg(prim_idx) {
+                return inv;
             }
         }
     }
-    let reg_fn = INV_REG_FN.lock().unwrap().unwrap_or_else(||
+    let reg_fn = INV_REG_FN.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(||
         rbqn_core::error::throw("⁼: inverse system not initialized (setInv not called)")
     );
     c1(reg_fn, func)
@@ -144,7 +96,7 @@ pub fn inv_reg(func: B) -> B {
 
 /// Look up the swap inverse of a function using the BQN runtime's inverse tables.
 pub fn inv_swap(func: B) -> B {
-    let swap_fn = INV_SWAP_FN.lock().unwrap().unwrap_or_else(||
+    let swap_fn = INV_SWAP_FN.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(||
         rbqn_core::error::throw("⁼: inverse system not initialized (setInv not called)")
     );
     c1(swap_fn, func)
@@ -673,19 +625,13 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         }
         8 => { // setInvReg: stores x (a BQN function) as the inverse-reg resolver,
                // returns nativeInvReg (sys_idx=10)
-            eprintln!("[DEBUG sys 8 setInvReg] called with x={:#x}", x.0);
             set_inv_reg_fn(x);
-            let r = m_sys_fn(10);
-            eprintln!("[DEBUG sys 8 setInvReg] returning nativeInvReg={:#x}", r.0);
-            r
+            m_sys_fn(10)
         }
         9 => { // setInvSwap: stores x as the inverse-swap resolver,
                // returns nativeInvSwap (sys_idx=11)
-            eprintln!("[DEBUG sys 9 setInvSwap] called with x={:#x}", x.0);
             set_inv_swap_fn(x);
-            let r = m_sys_fn(11);
-            eprintln!("[DEBUG sys 9 setInvSwap] returning nativeInvSwap={:#x}", r.0);
-            r
+            m_sys_fn(11)
         }
         10 => { // nativeInvReg: wraps x so that calling the result computes x's inverse.
             // In CBQN: wraps ALL functions with a lazy inverse resolver.
@@ -729,6 +675,9 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
                 Ok(pr) => prim_result_to_b(pr),
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
+        }
+        100 => { // •BQN placeholder c1 — return SENTINEL for now
+            B::SENTINEL
         }
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c1)")),
     }

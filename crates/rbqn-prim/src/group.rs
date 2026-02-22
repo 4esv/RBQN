@@ -2,6 +2,8 @@ use rbqn_core::*;
 use crate::dispatch::PrimResult;
 
 // ⊔ monad: group indices
+// Groups ↕≠𝕩 by values in 𝕩.
+// Result length = 1+⌈´𝕩, each group is a list of indices.
 pub fn group_indices_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⊔𝕩: 𝕩 must be an array".into()))?;
     let indices = arr.i32_iter()?;
@@ -18,31 +20,40 @@ pub fn group_indices_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
     let result: Vec<B> = groups
         .into_iter()
-        .map(|g| {
-            // Each group becomes an array; encode as sentinel for now
-            let _ = BqnArr::new_vec_i32(g);
-            B::SENTINEL
-        })
+        .map(|g| tag_arr(BqnArr::new_vec_i32(g)))
         .collect();
     Ok(PrimResult::Array(BqnArr::new_vec_b(result)))
 }
 
 // ⊔ dyad: group
+// 𝕨⊔𝕩: groups elements of 𝕩 by index list 𝕨.
+// BQN spec: ≠𝕨 can equal ≠𝕩 or 1+≠𝕩.
+// If ≠𝕨 = 1+≠𝕩, the last element of 𝕨 specifies the minimum result length minus 1.
 pub fn group_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊔𝕩: 𝕨 must be an array".into()))?;
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊔𝕩: 𝕩 must be an array".into()))?;
 
-    let indices = warr.i32_iter()?;
-    if indices.len() != xarr.ia() {
+    let all_indices = warr.i32_iter()?;
+    let xia = xarr.ia();
+
+    // Determine indices for grouping and minimum result length
+    let (indices, min_len) = if all_indices.len() == xia + 1 {
+        // Last element specifies minimum result length - 1
+        let last = *all_indices.last().unwrap();
+        let min = (last + 1).max(0) as usize;
+        (&all_indices[..xia], min)
+    } else if all_indices.len() == xia {
+        (&all_indices[..], 0usize)
+    } else {
         return Err(BqnError::Shape(format!(
-            "𝕨⊔𝕩: 𝕨 must have same length as 𝕩 ({} vs {})",
-            indices.len(),
-            xarr.ia()
+            "𝕨⊔𝕩: ≠𝕨 must be ≠𝕩 or 1+≠𝕩 ({} vs {})",
+            all_indices.len(),
+            xia
         )));
-    }
+    };
 
     let max_idx = indices.iter().copied().max().unwrap_or(-1);
-    let n = (max_idx + 1).max(0) as usize;
+    let n = ((max_idx + 1).max(0) as usize).max(min_len);
 
     let mut groups: Vec<Vec<B>> = vec![vec![]; n];
     for (i, &g) in indices.iter().enumerate() {
@@ -53,9 +64,9 @@ pub fn group_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 
     let result: Vec<B> = groups
         .into_iter()
-        .map(|_g| {
-            // Each group is a nested array
-            B::SENTINEL
+        .map(|g| {
+            let len = g.len();
+            tag_arr(array::typed_arr_from_b_vec(g, vec![len], xarr.fill))
         })
         .collect();
     Ok(PrimResult::Array(BqnArr::new_vec_b(result)))

@@ -115,7 +115,7 @@ impl BqnArr {
                     }
                 })
                 .collect(),
-            ArrData::Boxed(v) if !v.is_empty() && v.iter().all(|b| b.is_f64()) => {
+            ArrData::Boxed(v) if v.is_empty() || v.iter().all(|b| b.is_f64()) => {
                 v.iter().map(|b| {
                     let x = b.o2f();
                     let i = x as i32;

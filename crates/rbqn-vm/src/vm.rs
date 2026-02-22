@@ -399,7 +399,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let d = read_u32!();
                 let p = read_u32!();
                 if let Some(ref ext) = pscs[d as usize].ext {
-                    let val = ext.vars.lock().unwrap()[p as usize];
+                    let val = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize];
                     if v_check_bad_read(val) {
                         rbqn_core::error::throw("Attempting to read ext variable which is not yet defined");
                     }
@@ -417,13 +417,13 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let d = read_u32!();
                 let p = read_u32!();
                 if let Some(ref ext) = pscs[d as usize].ext {
-                    let val = ext.vars.lock().unwrap()[p as usize];
+                    let val = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize];
                     push!(val);
                 } else {
                     rbqn_core::error::throw("EXTU: no scope extension");
                 }
                 if let Some(ref ext) = pscs[d as usize].ext {
-                    ext.vars.lock().unwrap()[p as usize] = B::OPT_OUT;
+                    ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize] = B::OPT_OUT;
                 }
             }
 
@@ -563,7 +563,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
                 if !v_seth(&pscs, s, x) {
-                    let vars = sc.vars.lock().unwrap();
+                    let vars = sc.vars.lock().unwrap_or_else(|e| e.into_inner());
                     let is_dyadic = vars.get(2).map_or(false, |b| !b.q_n());
                     let next_idx = if is_dyadic { dy_idx } else { mono_idx };
                     let next_body = bl.bodies[next_idx].clone();
@@ -598,7 +598,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
                 if !x.o2b() {
-                    let vars = sc.vars.lock().unwrap();
+                    let vars = sc.vars.lock().unwrap_or_else(|e| e.into_inner());
                     let is_dyadic = vars.get(2).map_or(false, |b| !b.q_n());
                     let next_idx = if is_dyadic { dy_idx } else { mono_idx };
                     let next_body = bl.bodies[next_idx].clone();
@@ -804,9 +804,9 @@ impl Clone for Scope {
             var_am: self.var_am,
             ext: self.ext.as_ref().map(|e| crate::scope::ScopeExt {
                 var_am: e.var_am,
-                vars: std::sync::Mutex::new(e.vars.lock().unwrap().clone()),
+                vars: std::sync::Mutex::new(e.vars.lock().unwrap_or_else(|e| e.into_inner()).clone()),
             }),
-            vars: std::sync::Mutex::new(self.vars.lock().unwrap().clone()),
+            vars: std::sync::Mutex::new(self.vars.lock().unwrap_or_else(|e| e.into_inner()).clone()),
         }
     }
 }
