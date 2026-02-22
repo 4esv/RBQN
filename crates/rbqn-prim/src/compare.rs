@@ -1,6 +1,10 @@
 use rbqn_core::*;
 use crate::dispatch::PrimResult;
 
+fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
+    short.len() <= long.len() && short.iter().zip(long.iter()).all(|(a, b)| a == b)
+}
+
 fn cmp_pervasive(
     w: B,
     wa: Option<&BqnArr>,
@@ -34,22 +38,50 @@ fn cmp_pervasive(
             Ok(PrimResult::Array(out))
         }
         (Some(wa_arr), Some(xa_arr)) => {
-            if wa_arr.shape != xa_arr.shape {
+            if wa_arr.shape == xa_arr.shape {
+                // Fast path: identical shapes
+                let ia = wa_arr.ia();
+                let mut result = Vec::with_capacity(ia);
+                for i in 0..ia {
+                    let wv = wa_arr.get(i)?;
+                    let xv = xa_arr.get(i)?;
+                    result.push(scalar_fn(wv, xv) as i32);
+                }
+                let mut out = BqnArr::new_vec_i32(result);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
+                // 𝕨 shorter, broadcast across leading axes of 𝕩
+                let w_ia = wa_arr.ia().max(1);
+                let x_ia = xa_arr.ia();
+                let mut result = Vec::with_capacity(x_ia);
+                for i in 0..x_ia {
+                    let wv = wa_arr.get(i % w_ia)?;
+                    let xv = xa_arr.get(i)?;
+                    result.push(scalar_fn(wv, xv) as i32);
+                }
+                let mut out = BqnArr::new_vec_i32(result);
+                out.shape = xa_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
+                // 𝕩 shorter, broadcast across leading axes of 𝕨
+                let w_ia = wa_arr.ia();
+                let x_ia = xa_arr.ia().max(1);
+                let mut result = Vec::with_capacity(w_ia);
+                for i in 0..w_ia {
+                    let wv = wa_arr.get(i)?;
+                    let xv = xa_arr.get(i % x_ia)?;
+                    result.push(scalar_fn(wv, xv) as i32);
+                }
+                let mut out = BqnArr::new_vec_i32(result);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else {
                 return Err(BqnError::Shape(format!(
                     "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
                     wa_arr.shape, xa_arr.shape
                 )));
             }
-            let ia = wa_arr.ia();
-            let mut result = Vec::with_capacity(ia);
-            for i in 0..ia {
-                let wv = wa_arr.get(i)?;
-                let xv = xa_arr.get(i)?;
-                result.push(scalar_fn(wv, xv) as i32);
-            }
-            let mut out = BqnArr::new_vec_i32(result);
-            out.shape = wa_arr.shape.clone();
-            Ok(PrimResult::Array(out))
         }
     }
 }

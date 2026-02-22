@@ -1,6 +1,12 @@
 use rbqn_core::*;
 use crate::dispatch::PrimResult;
 
+/// Check that `short` is a prefix of `long`. Returns true if every element
+/// of `short` equals the corresponding leading element of `long`.
+fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
+    short.len() <= long.len() && short.iter().zip(long.iter()).all(|(a, b)| a == b)
+}
+
 fn pervasive_dyad(
     w: B,
     wa: Option<&BqnArr>,
@@ -34,24 +40,52 @@ fn pervasive_dyad(
             out.shape = wa_arr.shape.clone();
             Ok(PrimResult::Array(array::squeeze_num(out)))
         }
-        // array-array
+        // array-array: leading axis agreement (prefix broadcasting)
         (Some(wa_arr), Some(xa_arr)) => {
-            if wa_arr.shape != xa_arr.shape {
-                return Err(BqnError::Shape(format!(
+            if wa_arr.shape == xa_arr.shape {
+                // Fast path: identical shapes
+                let wvals = wa_arr.f64_iter()?;
+                let xvals = xa_arr.f64_iter()?;
+                let result: Vec<f64> = wvals
+                    .iter()
+                    .zip(xvals.iter())
+                    .map(|(&wv, &xv)| scalar_fn(wv, xv))
+                    .collect();
+                let mut out = BqnArr::new_vec_f64(result);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(array::squeeze_num(out)))
+            } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
+                // 𝕨 has shorter shape, broadcast across leading axes of 𝕩
+                let wvals = wa_arr.f64_iter()?;
+                let xvals = xa_arr.f64_iter()?;
+                let w_ia = wa_arr.ia().max(1);
+                let result: Vec<f64> = xvals
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &xv)| scalar_fn(wvals[i % w_ia], xv))
+                    .collect();
+                let mut out = BqnArr::new_vec_f64(result);
+                out.shape = xa_arr.shape.clone();
+                Ok(PrimResult::Array(array::squeeze_num(out)))
+            } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
+                // 𝕩 has shorter shape, broadcast across leading axes of 𝕨
+                let wvals = wa_arr.f64_iter()?;
+                let xvals = xa_arr.f64_iter()?;
+                let x_ia = xa_arr.ia().max(1);
+                let result: Vec<f64> = wvals
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &wv)| scalar_fn(wv, xvals[i % x_ia]))
+                    .collect();
+                let mut out = BqnArr::new_vec_f64(result);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(array::squeeze_num(out)))
+            } else {
+                Err(BqnError::Shape(format!(
                     "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
                     wa_arr.shape, xa_arr.shape
-                )));
+                )))
             }
-            let wvals = wa_arr.f64_iter()?;
-            let xvals = xa_arr.f64_iter()?;
-            let result: Vec<f64> = wvals
-                .iter()
-                .zip(xvals.iter())
-                .map(|(&wv, &xv)| scalar_fn(wv, xv))
-                .collect();
-            let mut out = BqnArr::new_vec_f64(result);
-            out.shape = wa_arr.shape.clone();
-            Ok(PrimResult::Array(array::squeeze_num(out)))
         }
     }
 }
@@ -151,28 +185,51 @@ fn pervasive_char_add(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>, w_is
             out.shape = ca_arr.shape.clone();
             Ok(PrimResult::Array(out))
         }
-        // array char + array num
+        // array char + array num (with prefix agreement)
         (Some(ca_arr), Some(na_arr)) => {
-            if ca_arr.shape != na_arr.shape {
-                return Err(BqnError::Shape(format!(
+            let chars = ca_arr.c32_iter()?;
+            let nums = na_arr.f64_iter()?;
+            if ca_arr.shape == na_arr.shape {
+                let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
+                    let r = c as i64 + n as i64;
+                    if r < 0 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨+𝕩: Invalid character".into()))
+                    } else {
+                        Ok(r as u32)
+                    }
+                }).collect();
+                let mut out = BqnArr::new_vec_c32(result?);
+                out.shape = ca_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else if is_shape_prefix(&ca_arr.shape, &na_arr.shape) {
+                let c_ia = ca_arr.ia().max(1);
+                let result: std::result::Result<Vec<u32>, _> = nums.iter().enumerate().map(|(i, &n)| {
+                    let r = chars[i % c_ia] as i64 + n as i64;
+                    if r < 0 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨+𝕩: Invalid character".into()))
+                    } else { Ok(r as u32) }
+                }).collect();
+                let mut out = BqnArr::new_vec_c32(result?);
+                out.shape = na_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else if is_shape_prefix(&na_arr.shape, &ca_arr.shape) {
+                let n_ia = na_arr.ia().max(1);
+                let result: std::result::Result<Vec<u32>, _> = chars.iter().enumerate().map(|(i, &c)| {
+                    let r = c as i64 + nums[i % n_ia] as i64;
+                    if r < 0 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨+𝕩: Invalid character".into()))
+                    } else { Ok(r as u32) }
+                }).collect();
+                let mut out = BqnArr::new_vec_c32(result?);
+                out.shape = ca_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else {
+                Err(BqnError::Shape(format!(
                     "𝕨+𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
                     if w_is_char { &ca_arr.shape } else { &na_arr.shape },
                     if w_is_char { &na_arr.shape } else { &ca_arr.shape },
-                )));
+                )))
             }
-            let chars = ca_arr.c32_iter()?;
-            let nums = na_arr.f64_iter()?;
-            let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
-                let r = c as i64 + n as i64;
-                if r < 0 || r > value::CHR_MAX as i64 {
-                    Err(BqnError::Domain("𝕨+𝕩: Invalid character".into()))
-                } else {
-                    Ok(r as u32)
-                }
-            }).collect();
-            let mut out = BqnArr::new_vec_c32(result?);
-            out.shape = ca_arr.shape.clone();
-            Ok(PrimResult::Array(out))
         }
     }
 }
@@ -219,23 +276,46 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
             Ok(PrimResult::Array(out))
         }
         (Some(wa_arr), Some(xa_arr)) => {
-            if wa_arr.shape != xa_arr.shape {
-                return Err(BqnError::Shape(format!(
-                    "𝕨-𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                    wa_arr.shape, xa_arr.shape
-                )));
-            }
             let chars = wa_arr.c32_iter()?;
             let nums = xa_arr.f64_iter()?;
-            let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
-                let r = c as i64 - n as i64;
-                if r < 0 || r > value::CHR_MAX as i64 {
-                    Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
-                } else { Ok(r as u32) }
-            }).collect();
-            let mut out = BqnArr::new_vec_c32(result?);
-            out.shape = wa_arr.shape.clone();
-            Ok(PrimResult::Array(out))
+            if wa_arr.shape == xa_arr.shape {
+                let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
+                    let r = c as i64 - n as i64;
+                    if r < 0 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
+                    } else { Ok(r as u32) }
+                }).collect();
+                let mut out = BqnArr::new_vec_c32(result?);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
+                let w_ia = wa_arr.ia().max(1);
+                let result: std::result::Result<Vec<u32>, _> = nums.iter().enumerate().map(|(i, &n)| {
+                    let r = chars[i % w_ia] as i64 - n as i64;
+                    if r < 0 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
+                    } else { Ok(r as u32) }
+                }).collect();
+                let mut out = BqnArr::new_vec_c32(result?);
+                out.shape = xa_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
+                let x_ia = xa_arr.ia().max(1);
+                let result: std::result::Result<Vec<u32>, _> = chars.iter().enumerate().map(|(i, &c)| {
+                    let r = c as i64 - nums[i % x_ia] as i64;
+                    if r < 0 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
+                    } else { Ok(r as u32) }
+                }).collect();
+                let mut out = BqnArr::new_vec_c32(result?);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else {
+                Err(BqnError::Shape(format!(
+                    "𝕨-𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+                    wa_arr.shape, xa_arr.shape
+                )))
+            }
         }
     }
 }
@@ -265,19 +345,34 @@ fn pervasive_char_sub_char(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>)
             Ok(PrimResult::Array(array::squeeze_num(out)))
         }
         (Some(wa_arr), Some(xa_arr)) => {
-            if wa_arr.shape != xa_arr.shape {
-                return Err(BqnError::Shape(format!(
-                    "𝕨-𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                    wa_arr.shape, xa_arr.shape
-                )));
-            }
             let wchars = wa_arr.c32_iter()?;
             let xchars = xa_arr.c32_iter()?;
-            let result: Vec<f64> = wchars.iter().zip(xchars.iter())
-                .map(|(&wc, &xc)| (wc as i64 - xc as i64) as f64).collect();
-            let mut out = BqnArr::new_vec_f64(result);
-            out.shape = wa_arr.shape.clone();
-            Ok(PrimResult::Array(array::squeeze_num(out)))
+            if wa_arr.shape == xa_arr.shape {
+                let result: Vec<f64> = wchars.iter().zip(xchars.iter())
+                    .map(|(&wc, &xc)| (wc as i64 - xc as i64) as f64).collect();
+                let mut out = BqnArr::new_vec_f64(result);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(array::squeeze_num(out)))
+            } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
+                let w_ia = wa_arr.ia().max(1);
+                let result: Vec<f64> = xchars.iter().enumerate()
+                    .map(|(i, &xc)| (wchars[i % w_ia] as i64 - xc as i64) as f64).collect();
+                let mut out = BqnArr::new_vec_f64(result);
+                out.shape = xa_arr.shape.clone();
+                Ok(PrimResult::Array(array::squeeze_num(out)))
+            } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
+                let x_ia = xa_arr.ia().max(1);
+                let result: Vec<f64> = wchars.iter().enumerate()
+                    .map(|(i, &wc)| (wc as i64 - xchars[i % x_ia] as i64) as f64).collect();
+                let mut out = BqnArr::new_vec_f64(result);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(array::squeeze_num(out)))
+            } else {
+                Err(BqnError::Shape(format!(
+                    "𝕨-𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+                    wa_arr.shape, xa_arr.shape
+                )))
+            }
         }
     }
 }
