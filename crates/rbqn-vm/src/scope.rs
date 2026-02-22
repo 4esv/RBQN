@@ -36,12 +36,12 @@ impl Scope {
 
     /// Read a variable at the given position.
     pub fn var_get(&self, pos: usize) -> B {
-        self.vars.lock().unwrap()[pos]
+        self.vars.lock().unwrap_or_else(|e| e.into_inner())[pos]
     }
 
     /// Write a variable at the given position.
     pub fn var_set(&self, pos: usize, val: B) {
-        self.vars.lock().unwrap()[pos] = val;
+        self.vars.lock().unwrap_or_else(|e| e.into_inner())[pos] = val;
     }
 }
 
@@ -86,7 +86,7 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            let r = ext.vars.lock().unwrap()[p];
+            let r = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
             if chk && v_check_bad_read(r) {
                 v_tag_error(r, false);
             }
@@ -117,12 +117,12 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
             if upd {
-                let prev = ext.vars.lock().unwrap()[p];
+                let prev = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
                 if chk && v_check_bad_write(prev) {
                     v_tag_error(prev, true);
                 }
             }
-            ext.vars.lock().unwrap()[p] = x;
+            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = x;
         } else {
             rbqn_core::error::throw("v_set: no scope extension for EXT ref");
         }
@@ -163,7 +163,7 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            ext.vars.lock().unwrap()[p] = x;
+            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = x;
             true
         } else {
             false
@@ -213,11 +213,11 @@ pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            let r = ext.vars.lock().unwrap()[p];
+            let r = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
             if chk && v_check_bad_read(r) {
                 v_tag_error(r, false);
             }
-            ext.vars.lock().unwrap()[p] = B::OPT_OUT;
+            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = B::OPT_OUT;
             r
         } else {
             rbqn_core::error::throw("v_get_move: no scope extension for EXT ref");

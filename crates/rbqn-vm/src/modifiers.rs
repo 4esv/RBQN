@@ -47,12 +47,6 @@ pub fn native_md1_c1(prim_idx: usize, operand: B, _self_val: B, x: B) -> B {
         MD1_TBL => each_c1(operand, x),
         MD1_UNDO => {
             // F⁼ x: look up the inverse of F, then call it monadically on x
-            eprintln!("[DEBUG ⁼ c1] operand={:#x} is_fun={} is_md1={}", operand.0, operand.is_fun(), operand.is_md1());
-            if operand.is_fun() {
-                let id = (operand.0 & 0xFFFFFFFFFFFF) >> 3;
-                let d = crate::derive::get_derived(id);
-                eprintln!("[DEBUG ⁼ c1] derived kind={:?}", d.kind);
-            }
             let inv_fn = crate::derive::inv_reg(operand);
             c1(inv_fn, x)
         }
@@ -98,7 +92,7 @@ pub fn native_md2_c1(prim_idx: usize, f: B, g: B, _self_val: B, x: B) -> B {
             let gx = c1(g, x);
             c2(f, x, gx)
         }
-        MD2_UNDER => rbqn_core::error::throw("⌾: under not yet implemented"),
+        MD2_UNDER => under_c1(f, g, x),
         MD2_VAL => c1(f, x),
         MD2_COND => choose_c1(f, g, x),
         MD2_RANK => rbqn_core::error::throw("⎉: rank not yet implemented"),
@@ -129,7 +123,7 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
             let gx = c1(g, x);
             c2(f, w, gx)
         }
-        MD2_UNDER => rbqn_core::error::throw("⌾: under not yet implemented"),
+        MD2_UNDER => under_c2(f, g, w, x),
         MD2_VAL => c2(g, w, x),
         MD2_COND => choose_c2(f, g, w, x),
         MD2_RANK => rbqn_core::error::throw("⎉: rank not yet implemented"),
@@ -361,11 +355,41 @@ fn table_c2(f: B, w: B, x: B) -> B {
 // 1-modifier: ´ Fold
 // ============================================================
 
+/// Get the identity element for a function (used for empty-array fold).
+fn fold_identity(f: B) -> Option<B> {
+    if !f.is_fun() { return None; }
+    let fid = (f.0 & 0xFFFFFFFFFFFF) >> 3;
+    let d = crate::derive::get_derived(fid);
+    match d.kind {
+        crate::derive::DerivedKind::NativeFn { prim_idx } => match prim_idx {
+            0 => Some(B::m_f64(0.0)),    // + → 0
+            1 => Some(B::m_f64(0.0)),    // - → 0
+            2 => Some(B::m_f64(1.0)),    // × → 1
+            3 => Some(B::m_f64(1.0)),    // ÷ → 1
+            4 => Some(B::m_f64(1.0)),    // ⋆ → 1
+            6 => Some(B::m_f64(f64::INFINITY)),   // ⌊ → ∞
+            7 => Some(B::m_f64(f64::NEG_INFINITY)), // ⌈ → -∞
+            9 => Some(B::m_f64(1.0)),    // ¬ → 1
+            10 => Some(B::m_f64(1.0)),   // ∧ → 1
+            11 => Some(B::m_f64(0.0)),   // ∨ → 0
+            14 => Some(B::m_f64(0.0)),   // ≠ → 0
+            15 => Some(B::m_f64(1.0)),   // = → 1
+            16 => Some(B::m_f64(1.0)),   // ≤ → 1
+            17 => Some(B::m_f64(1.0)),   // ≥ → 1
+            23 => Some(crate::vm::tag_arr(BqnArr::empty_vec())), // ∾ → ⟨⟩
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn fold_c1(f: B, x: B) -> B {
     let arr = arr_of(x);
     let n = arr.ia();
     if n == 0 {
-        rbqn_core::error::throw("´: empty array with no identity");
+        return fold_identity(f).unwrap_or_else(||
+            rbqn_core::error::throw("´: empty array with no identity")
+        );
     }
     let mut acc = get_elem(&arr, n - 1);
     for i in (0..n - 1).rev() {
@@ -552,6 +576,287 @@ fn cells_c2(f: B, w: B, x: B) -> B {
         results.push(c2(f, w, cell));
     }
     merge_cells_result(results, vec![lead])
+}
+
+// ============================================================
+// 2-modifier: ⌾ Under
+// ============================================================
+
+// Detect if a function is `array⊸/` (before-replicate with constant mask)
+// Returns the mask array if so.
+fn detect_mask_replicate(g: B) -> Option<B> {
+    if !g.is_fun() { return None; }
+    let gid = (g.0 & 0xFFFFFFFFFFFF) >> 3;
+    let gd = crate::derive::get_derived(gid);
+    // Check for Md2D where modifier is ⊸ (Before, prim 55) and right operand is / (prim 33)
+    if gd.kind != crate::derive::DerivedKind::Md2D { return None; }
+    let modifier = gd.g;
+    if !modifier.is_md2() { return None; }
+    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
+    let md = crate::derive::get_derived(mid);
+    match md.kind {
+        crate::derive::DerivedKind::NativeMd2 { prim_idx: 55 } => {} // ⊸ (Before)
+        _ => return None,
+    }
+    let right_fn = gd.h;
+    if !right_fn.is_fun() { return None; }
+    let rid = (right_fn.0 & 0xFFFFFFFFFFFF) >> 3;
+    let rd = crate::derive::get_derived(rid);
+    match rd.kind {
+        crate::derive::DerivedKind::NativeFn { prim_idx: 33 } => {} // / (replicate)
+        _ => return None,
+    }
+    // Left operand is the mask array
+    let mask = gd.f;
+    if mask.is_arr() { Some(mask) } else { None }
+}
+
+// Detect if a function is `array⊸⊏` (before-select with constant indices)
+// Returns the index array if so.
+fn detect_idx_select(g: B) -> Option<B> {
+    if !g.is_fun() { return None; }
+    let gid = (g.0 & 0xFFFFFFFFFFFF) >> 3;
+    let gd = crate::derive::get_derived(gid);
+    if gd.kind != crate::derive::DerivedKind::Md2D { return None; }
+    let modifier = gd.g;
+    if !modifier.is_md2() { return None; }
+    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
+    let md = crate::derive::get_derived(mid);
+    match md.kind {
+        crate::derive::DerivedKind::NativeMd2 { prim_idx: 55 } => {} // ⊸ (Before)
+        _ => return None,
+    }
+    let right_fn = gd.h;
+    if !right_fn.is_fun() { return None; }
+    let rid = (right_fn.0 & 0xFFFFFFFFFFFF) >> 3;
+    let rd = crate::derive::get_derived(rid);
+    match rd.kind {
+        crate::derive::DerivedKind::NativeFn { prim_idx: 36 } => {} // ⊏ (select)
+        _ => return None,
+    }
+    let indices = gd.f;
+    if indices.is_arr() { Some(indices) } else { None }
+}
+
+// F⌾G x: Apply G, then F, then undo G.
+fn under_c1(f: B, g: B, x: B) -> B {
+    // Compute G(x) and F(G(x)) once
+    let gx = c1(g, x);
+    let fgx = c1(f, gx);
+
+    // Try computational under: G⁻¹(F(Gx))
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let g_inv = crate::derive::inv_reg(g);
+        c1(g_inv, fgx)
+    }));
+    if let Ok(v) = result { return v; }
+
+    // Structural under: detect G pattern and handle specially
+    if let Some(mask_b) = detect_mask_replicate(g) {
+        return structural_under_replicate(mask_b, x, fgx);
+    }
+    if let Some(idx_b) = detect_idx_select(g) {
+        return structural_under_select(idx_b, x, fgx);
+    }
+    // Generic structural under via index-array trick
+    structural_under_generic(g, x, fgx)
+}
+
+// w F⌾G x: Dyadic under.
+fn under_c2(f: B, g: B, w: B, x: B) -> B {
+    // Compute G(x) first (common to both computational and structural)
+    let gx = c1(g, x);
+
+    // Try computational under: G⁻¹((Gw) F (Gx))
+    let comp_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let gw = c1(g, w);
+        let fgx = c2(f, gw, gx);
+        let g_inv = crate::derive::inv_reg(g);
+        c1(g_inv, fgx)
+    }));
+    if let Ok(v) = comp_result { return v; }
+
+    // If G selects nothing, return x unchanged
+    if gx.is_arr() {
+        if let Some(ga) = crate::vm::get_arr(gx) {
+            if ga.ia() == 0 { return x; }
+        }
+    }
+
+    // Structural under: w F (G x) — G is NOT applied to w
+    let fgx = c2(f, w, gx);
+
+    if let Some(mask_b) = detect_mask_replicate(g) {
+        return structural_under_replicate(mask_b, x, fgx);
+    }
+    if let Some(idx_b) = detect_idx_select(g) {
+        return structural_under_select(idx_b, x, fgx);
+    }
+    structural_under_generic(g, x, fgx)
+}
+
+// Structural under for mask⊸/ pattern:
+// Put fgx values back at positions where mask=1.
+fn structural_under_replicate(mask_b: B, x: B, fgx: B) -> B {
+    let mask_arr = crate::vm::get_arr(mask_b)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾: mask must be an array"));
+    let xarr = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾: x must be an array"));
+    let xia = xarr.ia();
+
+    // Get mask as i32 values (0 or 1)
+    let mask = mask_arr.i32_iter()
+        .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+
+    // Build result: copy x, overwrite positions where mask=1 with fgx elements
+    let mut result_elems: Vec<B> = Vec::with_capacity(xia);
+    for i in 0..xia {
+        result_elems.push(xarr.get(i).unwrap_or(B::SENTINEL));
+    }
+
+    let fgx_arr = if fgx.is_arr() {
+        crate::vm::get_arr(fgx)
+    } else {
+        None
+    };
+
+    let mut fgx_idx = 0usize;
+    for (i, &m) in mask.iter().enumerate().take(xia) {
+        if m != 0 {
+            if let Some(ref fa) = fgx_arr {
+                if fgx_idx < fa.ia() {
+                    result_elems[i] = fa.get(fgx_idx).unwrap_or(B::SENTINEL);
+                }
+            } else {
+                // fgx is a scalar
+                result_elems[i] = fgx;
+            }
+            fgx_idx += 1;
+        }
+    }
+
+    let result = rbqn_core::array::typed_arr_from_b_vec(
+        result_elems,
+        xarr.shape.clone(),
+        xarr.fill,
+    );
+    crate::vm::tag_arr(result)
+}
+
+// Structural under for indices⊸⊏ pattern:
+// Put fgx values back at the specified indices.
+fn structural_under_select(idx_b: B, x: B, fgx: B) -> B {
+    let idx_arr = crate::vm::get_arr(idx_b)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾: indices must be an array"));
+    let xarr = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾: x must be an array"));
+    let xia = xarr.ia();
+
+    let indices = idx_arr.i32_iter()
+        .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+
+    let mut result_elems: Vec<B> = Vec::with_capacity(xia);
+    for i in 0..xia {
+        result_elems.push(xarr.get(i).unwrap_or(B::SENTINEL));
+    }
+
+    let fgx_arr = if fgx.is_arr() {
+        crate::vm::get_arr(fgx)
+    } else {
+        None
+    };
+
+    for (j, &idx) in indices.iter().enumerate() {
+        let i = idx as usize;
+        if i < xia {
+            if let Some(ref fa) = fgx_arr {
+                if j < fa.ia() {
+                    result_elems[i] = fa.get(j).unwrap_or(B::SENTINEL);
+                }
+            } else {
+                result_elems[i] = fgx;
+            }
+        }
+    }
+
+    let result = rbqn_core::array::typed_arr_from_b_vec(
+        result_elems,
+        xarr.shape.clone(),
+        xarr.fill,
+    );
+    crate::vm::tag_arr(result)
+}
+
+// Generic structural under via index-array trick.
+fn structural_under_generic(g: B, x: B, fgx: B) -> B {
+    if !x.is_arr() {
+        return fgx;
+    }
+    let xarr = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾: expected array"));
+    let xia = xarr.ia();
+
+    let idx_arr = crate::vm::tag_arr(rbqn_core::array::BqnArr {
+        shape: xarr.shape.clone(),
+        data: rbqn_core::ArrData::F64((0..xia).map(|i| i as f64).collect()),
+        fill: Some(B::m_f64(0.0)),
+    });
+
+    let selected_result = std::panic::catch_unwind(
+        std::panic::AssertUnwindSafe(|| c1(g, idx_arr))
+    );
+
+    let selected_indices_b = match selected_result {
+        Ok(v) => v,
+        Err(_) => rbqn_core::error::throw("⌾: structural under failed — G is not a structural function"),
+    };
+
+    let mut result_elems: Vec<B> = Vec::with_capacity(xia);
+    for i in 0..xia {
+        result_elems.push(xarr.get(i).unwrap_or(B::SENTINEL));
+    }
+
+    if selected_indices_b.is_f64() {
+        let idx = selected_indices_b.to_usz()
+            .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+        if idx < xia {
+            result_elems[idx] = fgx;
+        }
+    } else if selected_indices_b.is_arr() {
+        let sel_arr = crate::vm::get_arr(selected_indices_b)
+            .unwrap_or_else(|| rbqn_core::error::throw("⌾: expected array from G on indices"));
+
+        if fgx.is_arr() {
+            let fgx_arr = crate::vm::get_arr(fgx)
+                .unwrap_or_else(|| rbqn_core::error::throw("⌾: expected array result from F"));
+            let n = sel_arr.ia().min(fgx_arr.ia());
+            for i in 0..n {
+                let idx_val = sel_arr.get(i).unwrap_or(B::m_f64(0.0));
+                let idx = idx_val.to_usz()
+                    .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+                if idx < xia {
+                    result_elems[idx] = fgx_arr.get(i).unwrap_or(B::SENTINEL);
+                }
+            }
+        } else {
+            let n = sel_arr.ia();
+            for i in 0..n {
+                let idx_val = sel_arr.get(i).unwrap_or(B::m_f64(0.0));
+                let idx = idx_val.to_usz()
+                    .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+                if idx < xia {
+                    result_elems[idx] = fgx;
+                }
+            }
+        }
+    }
+
+    let result = rbqn_core::array::typed_arr_from_b_vec(
+        result_elems,
+        xarr.shape.clone(),
+        xarr.fill,
+    );
+    crate::vm::tag_arr(result)
 }
 
 // ============================================================
