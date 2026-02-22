@@ -89,12 +89,10 @@ pub fn inv_reg(func: B) -> B {
             }
         }
 
-        // Handle Md2D inverses natively (matches CBQN's before_im / after_im)
-        if d.kind == DerivedKind::Md2D {
-            if let Some(inv) = md2d_inverse_reg(&d) {
-                return inv;
-            }
-        }
+        // NOTE: Md2D inverses (e.g., val⊸⊏⁼) are handled by the BQN runtime's
+        // inverse resolver (INV_REG_FN), not natively. The native md2d_inverse_reg
+        // was computing wrong results (e.g., val⊸(⊏⁼) instead of val⊏˜⁼).
+        // CBQN uses fn_ix dispatch tables which we don't have, so we fall through.
     }
 
     // Fall through to BQN runtime resolver
@@ -191,6 +189,7 @@ fn native_inverse_reg(prim_idx: usize) -> Option<B> {
         21 => Some(m_native_fn(21)), // ⊢⁼ = ⊢
         31 => Some(m_native_fn(31)), // ⌽⁼ = ⌽ (reverse is its own inverse)
         32 => Some(m_native_fn(32)), // ⍉⁼ = ⍉ (transpose is its own inverse for rank≤2)
+        33 => Some(m_sys_fn(201)),    // /⁼ = inverse of indices (counts from sorted indices)
         37 => Some(m_native_fn(24)), // ⊑⁼ = ≍ (solo: first inverse wraps in 1-element array)
         _ => None,
     }
@@ -747,6 +746,13 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         }
         100 => { // •BQN placeholder c1 — return SENTINEL for now
             B::SENTINEL
+        }
+        201 => { // Internal: /⁼ (inverse of indices)
+            let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
         }
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c1)")),
     }

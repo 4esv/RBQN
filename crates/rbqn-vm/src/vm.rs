@@ -747,6 +747,21 @@ pub fn b_vec_to_arr(elems: Vec<B>) -> B {
 /// Each element should be an array of the same shape. The result has shape
 /// `(len(elems)) ∾ inner_shape`. Scalar elements are treated as 0-rank (no inner dims).
 fn bqn_merge(elems: Vec<B>) -> B {
+    // DEBUG: trace merge calls that produce [n, 0] shapes
+    if elems.len() > 0 && elems.iter().all(|b| b.is_arr()) {
+        let first_arr = get_arr(elems[0]);
+        if let Some(ref fa) = first_arr {
+            if fa.ia() == 0 && !fa.shape.is_empty() {
+                eprintln!("[BQN_MERGE] Merging {} elements, first is empty arr shape={:?}", elems.len(), fa.shape);
+                // Print a short backtrace
+                let bt = std::backtrace::Backtrace::force_capture();
+                let bt_str = format!("{}", bt);
+                for line in bt_str.lines().take(20) {
+                    eprintln!("  {}", line);
+                }
+            }
+        }
+    }
     if elems.is_empty() {
         return tag_arr(BqnArr::empty_harr());
     }

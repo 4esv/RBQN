@@ -602,7 +602,114 @@ fn cells_c2(f: B, w: B, x: B) -> B {
 // falling back to the BQN runtime's Under for computational under.
 // We follow the same pattern: try computational under first, then
 // delegate to the BQN runtime's Under implementation.
+/// Try to handle structural Under natively for common patterns.
+/// Returns Some(result) if handled, None to fall through to runtime.
+fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
+    if !g.is_fun() { return None; }
+    let gid = (g.0 & 0xFFFFFFFFFFFF) >> 3;
+    let gd = crate::derive::get_derived(gid);
+
+    // Pattern: F⌾(arr⊸⊏) x — structural select-under
+    // Applies F to the selected elements and scatters them back.
+    if gd.kind == crate::derive::DerivedKind::Md2D {
+        let modifier = gd.g;
+        if modifier.is_md2() {
+            let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
+            let md = crate::derive::get_derived(mid);
+            if let crate::derive::DerivedKind::NativeMd2 { prim_idx: 55 } = md.kind {
+                // ⊸ (Before) — check if right operand is ⊏ (select, idx=36)
+                let right_op = gd.h;
+                let left_op = gd.f;  // the index array
+                if right_op.is_fun() {
+                    let rid = (right_op.0 & 0xFFFFFFFFFFFF) >> 3;
+                    let rd = crate::derive::get_derived(rid);
+                    if let crate::derive::DerivedKind::NativeFn { prim_idx: 36 } = rd.kind {
+                        // F⌾(arr⊸⊏) x: structural select-under
+                        return Some(structural_select_under(f, left_op, x));
+                    }
+                }
+            }
+        }
+    }
+
+    // Pattern: F⌾⊑ x — modify first element
+    if let crate::derive::DerivedKind::NativeFn { prim_idx: 37 } = gd.kind {
+        // F⌾⊑ x: modify first element
+        if !x.is_arr() { return None; }
+        if let Some(xa) = crate::vm::get_arr(x) {
+            if xa.ia() == 0 { return None; }
+            let first = xa.get(0).ok()?;
+            let modified = c1(f, first);
+            let mut elems = Vec::with_capacity(xa.ia());
+            elems.push(modified);
+            for i in 1..xa.ia() {
+                elems.push(xa.get(i).ok()?);
+            }
+            let out = rbqn_core::array::typed_arr_from_b_vec(elems, xa.shape.clone(), xa.fill);
+            return Some(crate::vm::tag_arr(out));
+        }
+    }
+
+    None
+}
+
+/// Structural select-under: F⌾(indices⊸⊏) x
+/// Applies F to the elements at the given indices, leaving others unchanged.
+fn structural_select_under(f: B, indices_b: B, x: B) -> B {
+    if !x.is_arr() {
+        rbqn_core::error::throw("⌾(⊸⊏): 𝕩 must be an array");
+    }
+    let xa = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾(⊸⊏): 𝕩 array not found"));
+
+    // Get the selected elements
+    let selected = c2(crate::derive::m_native_fn(36), indices_b, x); // indices⊏x
+
+    // Apply F to the selected elements
+    let modified = c1(f, selected);
+
+    // Scatter the modified values back into a copy of x
+    let mod_arr = crate::vm::get_arr(modified);
+
+    // Get indices as i32 array
+    let idx_arr = crate::vm::get_arr(indices_b)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾(⊸⊏): indices must be an array"));
+    let indices = idx_arr.i32_iter()
+        .unwrap_or_else(|_| rbqn_core::error::throw("⌾(⊸⊏): indices must be integers"));
+
+    // Build result: copy of x with modifications at index positions
+    let mut elems: Vec<B> = (0..xa.ia()).map(|i| xa.get(i).unwrap_or(B::SENTINEL)).collect();
+
+    if let Some(ma) = mod_arr {
+        // Modified is an array — scatter its elements back
+        for (j, &idx) in indices.iter().enumerate() {
+            let i = if idx < 0 { (idx + xa.ia() as i32) as usize } else { idx as usize };
+            if i < elems.len() && j < ma.ia() {
+                elems[i] = ma.get(j).unwrap_or(B::SENTINEL);
+            }
+        }
+    } else if modified.is_f64() || modified.is_c32() {
+        // Modified is a scalar — set all indexed positions to this value
+        for &idx in &indices {
+            let i = if idx < 0 { (idx + xa.ia() as i32) as usize } else { idx as usize };
+            if i < elems.len() {
+                elems[i] = modified;
+            }
+        }
+    }
+
+    let out = rbqn_core::array::typed_arr_from_b_vec(elems, xa.shape.clone(), xa.fill);
+    crate::vm::tag_arr(out)
+}
+
 fn under_c1(f: B, g: B, x: B) -> B {
+    // Native structural Under for common patterns before delegating to runtime.
+    // F⌾(arr⊸⊏) x: apply F to selected elements, scatter back.
+    // F⌾(arr⊸/) x: similar for replicate-based selection.
+    if let Some(result) = try_structural_under(f, g, x) {
+        return result;
+    }
+
     // If the BQN runtime's Under is available, use it directly.
     // The BQN runtime's Under handles both computational and structural cases
     // correctly, including the roundtrip assertion and all edge cases.
@@ -694,7 +801,67 @@ fn choose_c2(f: B, g: B, w: B, x: B) -> B {
         let idx = b_to_index(idx_b);
         let garr = arr_of(g);
         let chosen = get_elem(&garr, idx);
-        c2(chosen, w, x)
+        // DEBUG: trace choose_c2 call
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c2(chosen, w, x)
+        }));
+        match result {
+            Ok(v) => v,
+            Err(panic) => {
+                eprintln!("[CHOOSE_C2 CRASH] idx={}, g.ia={}, g.shape={:?}", idx, garr.ia(), garr.shape);
+                if w.is_f64() { eprintln!("  w={}", w.o2f()); }
+                if x.is_f64() { eprintln!("  x={}", x.o2f()); }
+                eprintln!("  chosen={:#x} tag={:#06x}", chosen.0, (chosen.0 >> 48) as u16);
+                if chosen.is_fun() {
+                    let cid = (chosen.0 & 0xFFFFFFFFFFFF) >> 3;
+                    let cd = crate::derive::get_derived(cid);
+                    eprintln!("  chosen kind={:?}", cd.kind);
+                    // If fork, show F, G, H
+                    if cd.kind == crate::derive::DerivedKind::Fork {
+                        eprintln!("  Fork F={:#x} G={:#x} H={:#x}", cd.f.0, cd.g.0, cd.h.0);
+                        if cd.f.is_fun() {
+                            let fid = (cd.f.0 & 0xFFFFFFFFFFFF) >> 3;
+                            let fd = crate::derive::get_derived(fid);
+                            eprintln!("    F kind={:?}", fd.kind);
+                        }
+                        if cd.g.is_fun() {
+                            let gid = (cd.g.0 & 0xFFFFFFFFFFFF) >> 3;
+                            let gd = crate::derive::get_derived(gid);
+                            eprintln!("    G kind={:?}", gd.kind);
+                            if let crate::derive::DerivedKind::NativeFn { prim_idx } = gd.kind {
+                                let prims = rbqn_prim::get_runtime();
+                                eprintln!("    G prim={} (idx={})", prims[prim_idx].glyph, prim_idx);
+                            }
+                        }
+                        if cd.h.is_fun() {
+                            let hid = (cd.h.0 & 0xFFFFFFFFFFFF) >> 3;
+                            let hd = crate::derive::get_derived(hid);
+                            eprintln!("    H kind={:?}", hd.kind);
+                            if hd.kind == crate::derive::DerivedKind::Md1D {
+                                let op = hd.f;
+                                if op.is_arr() {
+                                    if let Some(a) = crate::vm::get_arr(op) {
+                                        eprintln!("    H.operand=arr(ia={}, shape={:?}, el={:?})", a.ia(), a.shape, a.el_type());
+                                        for k in 0..a.ia().min(10) {
+                                            if let Ok(e) = a.get(k) {
+                                                eprintln!("      H.op[{}]={:#x}", k, e.0);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Show all g elements
+                for j in 0..garr.ia().min(10) {
+                    if let Ok(e) = garr.get(j) {
+                        eprintln!("  g[{}]={:#x} tag={:#06x}", j, e.0, (e.0 >> 48) as u16);
+                    }
+                }
+                std::panic::resume_unwind(panic);
+            }
+        }
     } else {
         let chosen = pick_from(idx_b, g);
         c2(chosen, w, x)

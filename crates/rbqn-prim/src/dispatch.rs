@@ -80,7 +80,7 @@ pub fn get_runtime() -> Vec<Primitive> {
         Primitive { name: "shape",   glyph: "⥊", c1: Some(structural::deshape_c1),  c2: Some(structural::reshape_c2) },
         Primitive { name: "join",    glyph: "∾", c1: Some(structural::join_c1),      c2: Some(structural::join_to_c2) },
         Primitive { name: "couple",  glyph: "≍", c1: Some(structural::solo_c1),      c2: Some(structural::couple_c2) },
-        Primitive { name: "pair",    glyph: "⋈", c1: Some(structural::solo_c1),      c2: Some(structural::pair_c2) },
+        Primitive { name: "pair",    glyph: "⋈", c1: Some(structural::pair_c1),      c2: Some(structural::pair_c2) },
         Primitive { name: "take",    glyph: "↑", c1: Some(structural::prefixes_c1),  c2: Some(structural::take_c2) },
         Primitive { name: "drop",    glyph: "↓", c1: Some(structural::suffixes_c1),  c2: Some(structural::drop_c2) },
         Primitive { name: "ud",      glyph: "↕", c1: Some(structural::range_c1),     c2: Some(structural::windows_c2) },
