@@ -115,8 +115,40 @@ impl BqnArr {
                     }
                 })
                 .collect(),
-            _ => Err(BqnError::Type("Expected numeric array".into())),
+            other => {
+                eprintln!("[DEBUG i32_iter] Non-numeric data type: {:?}", std::mem::discriminant(other));
+                Err(BqnError::Type("Expected numeric array".into()))
+            }
         }
+    }
+
+    /// Returns code points as u32 for character arrays, errors for non-char data.
+    pub fn c32_iter(&self) -> Result<Vec<u32>> {
+        match &self.data {
+            ArrData::C8(v) => Ok(v.iter().map(|&x| x as u32).collect()),
+            ArrData::C16(v) => Ok(v.iter().map(|&x| x as u32).collect()),
+            ArrData::C32(v) => Ok(v.clone()),
+            ArrData::Boxed(v) if !v.is_empty() && v.iter().all(|b| b.is_c32()) => {
+                Ok(v.iter().map(|b| b.0 as u32).collect())
+            }
+            _ => Err(BqnError::Type("Expected character array".into())),
+        }
+    }
+
+    /// Returns true if this array contains character data.
+    pub fn is_char_arr(&self) -> bool {
+        matches!(
+            &self.data,
+            ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_)
+        ) || matches!(&self.data, ArrData::Boxed(v) if !v.is_empty() && v.iter().all(|b| b.is_c32()))
+    }
+
+    /// Returns true if this array contains numeric data.
+    pub fn is_num_arr(&self) -> bool {
+        matches!(
+            &self.data,
+            ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) | ArrData::F64(_)
+        ) || matches!(&self.data, ArrData::Boxed(v) if !v.is_empty() && v.iter().all(|b| b.is_f64()))
     }
 
     pub fn f64_iter(&self) -> Result<Vec<f64>> {
@@ -131,7 +163,25 @@ impl BqnArr {
             ArrData::I16(v) => Ok(v.iter().map(|&x| x as f64).collect()),
             ArrData::I32(v) => Ok(v.iter().map(|&x| x as f64).collect()),
             ArrData::F64(v) => Ok(v.clone()),
-            _ => Err(BqnError::Type("Expected numeric array".into())),
+            other => {
+                // Handle Boxed arrays where all elements are f64 scalars
+                if let ArrData::Boxed(v) = other {
+                    if !v.is_empty() && v.iter().all(|b| b.is_f64()) {
+                        return Ok(v.iter().map(|b| b.o2f()).collect());
+                    }
+                    let types: Vec<&str> = v.iter().take(5).map(|b| {
+                        if b.is_f64() { "f64" } else if b.is_c32() { "c32" } else if b.is_arr() { "arr" }
+                        else if b.is_fun() { "fun" } else if b.is_md1() { "md1" } else if b.is_md2() { "md2" }
+                        else { "other" }
+                    }).collect();
+                    eprintln!("[DEBUG f64_iter] Boxed array with {} elements, types: {:?}", v.len(), types);
+                    let bt = std::backtrace::Backtrace::capture();
+                    eprintln!("[DEBUG f64_iter] backtrace:\n{}", bt);
+                } else {
+                    eprintln!("[DEBUG f64_iter] Non-numeric type: {:?}", std::mem::discriminant(other));
+                }
+                Err(BqnError::Type("Expected numeric array".into()))
+            }
         }
     }
 
@@ -190,6 +240,37 @@ impl BqnArr {
     pub fn with_shape(mut self, shape: Vec<usize>) -> Self {
         self.shape = shape;
         self
+    }
+}
+
+/// Convert a Vec<B> of elements into the most specific typed array possible.
+/// Prefers numeric array if all elements are f64/int, char array if all char,
+/// and falls back to Boxed. Use this instead of BqnArr::new_vec_b wherever
+/// the elements were produced by arr.get(i) (which promotes stored types to B).
+pub fn typed_arr_from_b_vec(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
+    if !elems.is_empty() {
+        if elems.iter().all(|b| b.is_f64()) {
+            let vals: Vec<f64> = elems.iter().map(|b| b.o2f()).collect();
+            let arr = BqnArr {
+                shape,
+                data: ArrData::F64(vals),
+                fill: fill.or(Some(B::m_f64(0.0))),
+            };
+            return squeeze_num(arr);
+        }
+        if elems.iter().all(|b| b.is_c32()) {
+            let vals: Vec<u32> = elems.iter().map(|b| b.0 as u32).collect();
+            return BqnArr {
+                shape,
+                data: ArrData::C32(vals),
+                fill: fill.or(Some(B::m_c32(b' ' as u32))),
+            };
+        }
+    }
+    BqnArr {
+        shape,
+        data: ArrData::Boxed(elems),
+        fill,
     }
 }
 
