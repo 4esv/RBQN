@@ -197,7 +197,15 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⥊𝕩: 𝕩 must be an array".into()))?;
     let old_ia = arr.ia();
     if old_ia == 0 {
-        return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty".into()));
+        // BQN allows w⥊⟨⟩ when the result is also empty (new_ia=0).
+        if new_ia == 0 {
+            return Ok(PrimResult::Array(BqnArr {
+                shape: new_shape,
+                data: arr.data.clone(),
+                fill: arr.fill,
+            }));
+        }
+        return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty when result is non-empty".into()));
     }
 
     let mut result = Vec::with_capacity(new_ia);
@@ -298,7 +306,14 @@ fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⥊𝕩: 𝕩 must be an array".into()))?;
     let old_ia = arr.ia();
     if old_ia == 0 {
-        return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty".into()));
+        if new_ia == 0 {
+            return Ok(PrimResult::Array(BqnArr {
+                shape: new_shape,
+                data: arr.data.clone(),
+                fill: arr.fill,
+            }));
+        }
+        return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty when result is non-empty".into()));
     }
 
     let mut result = Vec::with_capacity(new_ia);
@@ -570,6 +585,17 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
         }
     }
+}
+
+// ⋈ monad: enclose in list (⟨x⟩)
+// Unlike ≍ (solo) which adds a leading axis, ⋈ wraps x as a single element in a list.
+// ⋈⟨⟩ → ⟨⟨⟩⟩ (shape ⟨1⟩), not 1‿0⥊⟨⟩ (shape ⟨1,0⟩).
+pub fn pair_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
+    Ok(PrimResult::Array(BqnArr {
+        shape: vec![1],
+        data: ArrData::Boxed(vec![x]),
+        fill: None,
+    }))
 }
 
 // ⋈ dyad: pair
