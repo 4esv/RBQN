@@ -180,6 +180,19 @@ pub fn m_sys_fn(idx: u32) -> B {
 
 pub fn m1_d(m: B, f: B) -> B {
     if m.is_md1() {
+        // NOTE: For immediate 1-modifier blocks (imm=true), execute the block
+        // immediately with args [𝕣, 𝕗]. This matches CBQN's md1Bl_d which calls
+        // execBlock(bl, bl->bodies[0], sc, 2, {m, f}) for immediate modifiers.
+        let mid = (m.0 & 0xFFFFFFFFFFFF) >> 3;
+        let md = get_derived(mid);
+        if md.kind == DerivedKind::Md1Block {
+            let bl = md.bl.as_ref().unwrap().clone();
+            if bl.imm {
+                let psc = md.sc.as_ref().unwrap().clone();
+                let body = bl.bodies[0].clone();
+                return crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[m, f]);
+            }
+        }
         m_md1d(m, f)
     } else {
         rbqn_core::error::throw("Interpreting non-1-modifier as 1-modifier");
@@ -188,6 +201,19 @@ pub fn m1_d(m: B, f: B) -> B {
 
 pub fn m2_d(m: B, f: B, g: B) -> B {
     if m.is_md2() {
+        // NOTE: For immediate 2-modifier blocks (imm=true), execute the block
+        // immediately with args [𝕣, 𝕗, 𝕘]. This matches CBQN's md2Bl_d which calls
+        // execBlock(bl, bl->bodies[0], sc, 3, {m, f, g}) for immediate modifiers.
+        let mid = (m.0 & 0xFFFFFFFFFFFF) >> 3;
+        let md = get_derived(mid);
+        if md.kind == DerivedKind::Md2Block {
+            let bl = md.bl.as_ref().unwrap().clone();
+            if bl.imm {
+                let psc = md.sc.as_ref().unwrap().clone();
+                let body = bl.bodies[0].clone();
+                return crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[m, f, g]);
+            }
+        }
         m_md2d(m, f, g)
     } else {
         rbqn_core::error::throw("Interpreting non-2-modifier as 2-modifier");
