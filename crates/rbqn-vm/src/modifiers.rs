@@ -657,20 +657,67 @@ fn under_c2(f: B, g: B, w: B, x: B) -> B {
 // 2-modifier: ◶ Choose
 // ============================================================
 
+/// Call dyadic pick (w⊑x) via the primitive dispatch.
+/// Used by ◶ when the condition function returns a non-number (array index).
+fn pick_from(w: B, x: B) -> B {
+    let prims = rbqn_prim::get_runtime();
+    // ⊑ is primitive index 37 in the standard BQN ordering
+    let pick_prim = &prims[37];
+    let c2_fn = pick_prim.c2.unwrap();
+    let wa = crate::vm::get_arr(w);
+    let xa = crate::vm::get_arr(x);
+    let result = c2_fn(w, wa.as_ref(), x, xa.as_ref())
+        .unwrap_or_else(|e| rbqn_core::error::throw(format!("◶: pick failed: {}", e)));
+    match result {
+        rbqn_prim::PrimResult::Scalar(b) => b,
+        rbqn_prim::PrimResult::Array(arr) => crate::vm::tag_arr(arr),
+    }
+}
+
 fn choose_c1(f: B, g: B, x: B) -> B {
     let idx_b = c1(f, x);
-    let idx = idx_b.to_usz().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-    let garr = arr_of(g);
-    let chosen = get_elem(&garr, idx);
-    c1(chosen, x)
+    // NOTE: Match CBQN cond_c1 — scalar path (fast) and array path (via pick)
+    if idx_b.is_f64() {
+        let idx = b_to_index(idx_b);
+        let garr = arr_of(g);
+        let chosen = get_elem(&garr, idx);
+        c1(chosen, x)
+    } else {
+        let chosen = pick_from(idx_b, g);
+        c1(chosen, x)
+    }
 }
 
 fn choose_c2(f: B, g: B, w: B, x: B) -> B {
     let idx_b = c2(f, w, x);
-    let idx = idx_b.to_usz().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-    let garr = arr_of(g);
-    let chosen = get_elem(&garr, idx);
-    c2(chosen, w, x)
+    if idx_b.is_f64() {
+        let idx = b_to_index(idx_b);
+        let garr = arr_of(g);
+        let chosen = get_elem(&garr, idx);
+        c2(chosen, w, x)
+    } else {
+        let chosen = pick_from(idx_b, g);
+        c2(chosen, w, x)
+    }
+}
+
+/// Extract an integer index from a B value. Handles both scalars and
+/// single-element arrays (the VM sometimes wraps scalars in 1-element Boxed arrays).
+fn b_to_index(v: B) -> usize {
+    if let Ok(u) = v.to_usz() {
+        return u;
+    }
+    // Try unwrapping a single-element array
+    if let Some(arr) = crate::vm::get_arr(v) {
+        if arr.ia() == 1 {
+            if let Ok(elem) = arr.get(0) {
+                if let Ok(u) = elem.to_usz() {
+                    return u;
+                }
+            }
+        }
+    }
+    rbqn_core::error::throw(format!("◶: Expected number index, got {:#x}", v.0))
 }
 
 // ============================================================

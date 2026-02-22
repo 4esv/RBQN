@@ -808,53 +808,51 @@ pub fn windows_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Res
 
     let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
 
-    if n > first_dim {
-        return Err(BqnError::Domain(format!(
-            "𝕨↕𝕩: window size {n} larger than array length {first_dim}"
-        )));
+    // BQN: result first-dim = max(0, 1 + first_dim - n)
+    // When n > first_dim, result has 0 windows (empty along first axis)
+    let num_windows = if n > first_dim { 0 } else { first_dim - n + 1 };
+
+    if num_windows == 0 {
+        // Return empty array with correct shape: ⟨0, n, ...cell_shape⟩
+        let mut out_shape = vec![0, n];
+        if arr.shape.len() > 1 {
+            out_shape.extend_from_slice(&arr.shape[1..]);
+        }
+        let out = BqnArr { shape: out_shape, data: ArrData::I32(vec![]), fill: arr.fill };
+        return Ok(PrimResult::Array(out));
     }
 
-    let num_windows = first_dim - n + 1;
-
     if arr.rank() <= 1 {
-        // Vector windows
-        let mut windows = Vec::with_capacity(num_windows);
+        // Vector windows: result is a flat numeric array with shape ⟨num_windows, n⟩
+        let total = num_windows * n;
+        let mut result = Vec::with_capacity(total);
         for start in 0..num_windows {
-            let mut win_data = Vec::with_capacity(n);
             for j in 0..n {
-                win_data.push(arr.get(start + j)?);
+                result.push(arr.get(start + j)?);
             }
-            windows.push(box_arr(BqnArr {
-                shape: vec![n],
-                data: ArrData::Boxed(win_data),
-                fill: arr.fill,
-            }));
         }
-        return Ok(PrimResult::Array(BqnArr::new_vec_b(windows)));
+        let out_shape = vec![num_windows, n];
+        let out = typed_arr(result, out_shape, arr.fill);
+        return Ok(PrimResult::Array(out));
     }
 
     // Multi-rank windows: each window is n major cells
     let cell_shape = &arr.shape[1..];
-    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+    let cell_size: usize = cell_shape.iter().product();
 
-    let mut windows = Vec::with_capacity(num_windows);
+    let total = num_windows * n * cell_size;
+    let mut result = Vec::with_capacity(total);
     for start in 0..num_windows {
-        let mut win_data = Vec::with_capacity(n * cell_size);
         for row in start..start + n {
             for j in 0..cell_size {
-                win_data.push(arr.get(row * cell_size + j)?);
+                result.push(arr.get(row * cell_size + j)?);
             }
         }
-        let mut win_shape = vec![n];
-        win_shape.extend_from_slice(cell_shape);
-        windows.push(box_arr(BqnArr {
-            shape: win_shape,
-            data: ArrData::Boxed(win_data),
-            fill: arr.fill,
-        }));
     }
-
-    Ok(PrimResult::Array(BqnArr::new_vec_b(windows)))
+    let mut out_shape = vec![num_windows, n];
+    out_shape.extend_from_slice(cell_shape);
+    let out = typed_arr(result, out_shape, arr.fill);
+    Ok(PrimResult::Array(out))
 }
 
 // « monad: shift after (shift left, fill from right with type fill)

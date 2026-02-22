@@ -836,19 +836,26 @@ fn dispatch_sys_decompose_c1(x: B) -> B {
         let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
         match d.kind {
-            DerivedKind::NativeFn { .. } | DerivedKind::SysFn { .. } | DerivedKind::FunBlock => {
-                // Primitives/blocks: ⟨0, x⟩
+            DerivedKind::NativeFn { .. } | DerivedKind::SysFn { .. } => {
+                // Primitives/system fns: ⟨0, x⟩
                 let arr = BqnArr::from_b_vec(vec![B::m_i32(0), x]);
                 crate::vm::tag_arr(arr)
             }
+            DerivedKind::FunBlock => {
+                // Block functions: ⟨1, x⟩ (CBQN block_decompose returns 1)
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(1), x]);
+                crate::vm::tag_arr(arr)
+            }
             DerivedKind::Md1D => {
-                // 1-modifier derived: ⟨4, m, f⟩
-                let arr = BqnArr::from_b_vec(vec![B::m_i32(4), d.g, d.f]);
+                // 1-modifier derived: ⟨4, f_operand, modifier⟩
+                // NOTE: CBQN order is ⟨type, f, m1⟩ — operand first, modifier second
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(4), d.f, d.g]);
                 crate::vm::tag_arr(arr)
             }
             DerivedKind::Md2D => {
-                // 2-modifier derived: ⟨5, m, f, g⟩
-                let arr = BqnArr::from_b_vec(vec![B::m_i32(5), d.g, d.f, d.h]);
+                // 2-modifier derived: ⟨5, f_operand, modifier, g_operand⟩
+                // NOTE: CBQN order is ⟨type, f, m2, g⟩
+                let arr = BqnArr::from_b_vec(vec![B::m_i32(5), d.f, d.g, d.h]);
                 crate::vm::tag_arr(arr)
             }
             DerivedKind::Atop => {
