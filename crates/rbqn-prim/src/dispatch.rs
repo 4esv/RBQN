@@ -84,10 +84,10 @@ pub fn get_runtime() -> Vec<Primitive> {
         Primitive { name: "take",    glyph: "↑", c1: Some(structural::prefixes_c1),  c2: Some(structural::take_c2) },
         Primitive { name: "drop",    glyph: "↓", c1: Some(structural::suffixes_c1),  c2: Some(structural::drop_c2) },
         Primitive { name: "ud",      glyph: "↕", c1: Some(structural::range_c1),     c2: Some(structural::windows_c2) },
-        Primitive { name: "shifta",  glyph: "«", c1: None,                           c2: Some(structural::shifta_c2) },
+        Primitive { name: "shifta",  glyph: "«", c1: Some(structural::shifta_c1),    c2: Some(structural::shifta_c2) },
 
         // Row 3: »⌽⍉/⍋⍒⊏⊑⊐⊒
-        Primitive { name: "shiftb",    glyph: "»", c1: None,                          c2: Some(structural::shiftb_c2) },
+        Primitive { name: "shiftb",    glyph: "»", c1: Some(structural::shiftb_c1),   c2: Some(structural::shiftb_c2) },
         Primitive { name: "reverse",   glyph: "⌽", c1: Some(structural::reverse_c1),  c2: Some(structural::rotate_c2) },
         Primitive { name: "transp",    glyph: "⍉", c1: Some(structural::transpose_c1),c2: Some(structural::reorder_c2) },
         Primitive { name: "slash",     glyph: "/", c1: Some(slash::indices_c1),        c2: Some(slash::replicate_c2) },

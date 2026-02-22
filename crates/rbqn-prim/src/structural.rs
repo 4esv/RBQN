@@ -460,6 +460,9 @@ pub fn solo_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ≍ dyad: couple
+// In BQN, couple adds a leading axis of length 2.
+// Each argument is treated as a cell. Atoms (rank 0) are valid cells;
+// they get broadcast (replicated) to match the other argument's shape.
 pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     match (wa, xa) {
         // atom ≍ atom → 2-element list
@@ -491,18 +494,37 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             new_shape.extend_from_slice(&warr.shape);
             Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
         }
-        // atom ≍ array or array ≍ atom → shape mismatch error (BQN requires equal shapes)
+        // atom ≍ array → broadcast atom to match array shape, then couple
         (None, Some(xarr)) => {
-            Err(BqnError::Shape(format!(
-                "𝕨≍𝕩: 𝕨 and 𝕩 must have equal shapes (⟨⟩ ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                xarr.shape
-            )))
+            let xia = xarr.ia();
+            let mut result = Vec::with_capacity(xia + xia);
+            // First row: atom broadcast to fill xarr.shape
+            for _ in 0..xia {
+                result.push(w);
+            }
+            // Second row: array elements
+            for i in 0..xia {
+                result.push(xarr.get(i)?);
+            }
+            let mut new_shape = vec![2];
+            new_shape.extend_from_slice(&xarr.shape);
+            Ok(PrimResult::Array(typed_arr(result, new_shape, xarr.fill)))
         }
+        // array ≍ atom → broadcast atom to match array shape, then couple
         (Some(warr), None) => {
-            Err(BqnError::Shape(format!(
-                "𝕨≍𝕩: 𝕨 and 𝕩 must have equal shapes ({:?} ≡ ≢𝕨, ⟨⟩ ≡ ≢𝕩)",
-                warr.shape
-            )))
+            let wia = warr.ia();
+            let mut result = Vec::with_capacity(wia + wia);
+            // First row: array elements
+            for i in 0..wia {
+                result.push(warr.get(i)?);
+            }
+            // Second row: atom broadcast to fill warr.shape
+            for _ in 0..wia {
+                result.push(x);
+            }
+            let mut new_shape = vec![2];
+            new_shape.extend_from_slice(&warr.shape);
+            Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
         }
     }
 }
@@ -792,6 +814,41 @@ pub fn windows_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Res
     Ok(PrimResult::Array(BqnArr::new_vec_b(windows)))
 }
 
+// « monad: shift after (shift left, fill from right with type fill)
+// «⟨1,2,3⟩ → ⟨2,3,0⟩
+pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let arr = xa.ok_or_else(|| BqnError::Type("«𝕩: 𝕩 must be an array".into()))?;
+    let ia = arr.ia();
+    if ia == 0 {
+        return Ok(PrimResult::Array(arr.clone()));
+    }
+    let fill_val = arr.fill.unwrap_or(B::m_i32(0));
+
+    if arr.rank() > 1 {
+        let first_dim = arr.shape[0];
+        let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+        let mut result = Vec::with_capacity(ia);
+        // Copy cells [1..] from original
+        for i in 1..first_dim {
+            for j in 0..cell_size {
+                result.push(arr.get(i * cell_size + j)?);
+            }
+        }
+        // Fill last cell
+        for _ in 0..cell_size {
+            result.push(fill_val);
+        }
+        return Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)));
+    }
+
+    let mut result = Vec::with_capacity(ia);
+    for i in 1..ia {
+        result.push(arr.get(i)?);
+    }
+    result.push(fill_val);
+    Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
+}
+
 // « dyad: shift after
 pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨«𝕩: 𝕩 must be an array".into()))?;
@@ -854,6 +911,41 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         result.push(arr.fill.unwrap_or(B::m_i32(0)));
     }
     result.truncate(ia);
+    Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
+}
+
+// » monad: shift before (shift right, fill from left with type fill)
+// »⟨1,2,3⟩ → ⟨0,1,2⟩
+pub fn shiftb_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let arr = xa.ok_or_else(|| BqnError::Type("»𝕩: 𝕩 must be an array".into()))?;
+    let ia = arr.ia();
+    if ia == 0 {
+        return Ok(PrimResult::Array(arr.clone()));
+    }
+    let fill_val = arr.fill.unwrap_or(B::m_i32(0));
+
+    if arr.rank() > 1 {
+        let first_dim = arr.shape[0];
+        let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+        let mut result = Vec::with_capacity(ia);
+        // Fill first cell
+        for _ in 0..cell_size {
+            result.push(fill_val);
+        }
+        // Copy cells [0..first_dim-1] from original
+        for i in 0..first_dim - 1 {
+            for j in 0..cell_size {
+                result.push(arr.get(i * cell_size + j)?);
+            }
+        }
+        return Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)));
+    }
+
+    let mut result = Vec::with_capacity(ia);
+    result.push(fill_val);
+    for i in 0..ia - 1 {
+        result.push(arr.get(i)?);
+    }
     Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
 }
 
