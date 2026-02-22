@@ -7,6 +7,77 @@ fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
     short.len() <= long.len() && short.iter().zip(long.iter()).all(|(a, b)| a == b)
 }
 
+/// Recursively apply a scalar dyadic function element-wise through Boxed arrays.
+/// This handles depth>1 pervasion: e.g. `3 + ⟨1, 2, ⟨3, 4⟩⟩ → ⟨4, 5, ⟨6, 7⟩⟩`.
+fn pervasive_boxed_scalar_arr(
+    w: B,
+    xa_arr: &BqnArr,
+    scalar_fn: fn(f64, f64) -> f64,
+    name: &str,
+) -> Result<PrimResult> {
+    let n = xa_arr.ia();
+    let mut results: Vec<B> = Vec::with_capacity(n);
+    for i in 0..n {
+        let xi = xa_arr.get(i)?;
+        let xi_arr = get_arr(xi);
+        let r = pervasive_dyad(w, None, xi, xi_arr.as_ref(), scalar_fn, name)?;
+        results.push(prim_result_to_b(r));
+    }
+    let out = array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), xa_arr.fill);
+    Ok(PrimResult::Array(out))
+}
+
+fn pervasive_boxed_arr_scalar(
+    wa_arr: &BqnArr,
+    x: B,
+    scalar_fn: fn(f64, f64) -> f64,
+    name: &str,
+) -> Result<PrimResult> {
+    let n = wa_arr.ia();
+    let mut results: Vec<B> = Vec::with_capacity(n);
+    for i in 0..n {
+        let wi = wa_arr.get(i)?;
+        let wi_arr = get_arr(wi);
+        let r = pervasive_dyad(wi, wi_arr.as_ref(), x, None, scalar_fn, name)?;
+        results.push(prim_result_to_b(r));
+    }
+    let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), wa_arr.fill);
+    Ok(PrimResult::Array(out))
+}
+
+fn pervasive_boxed_arr_arr(
+    wa_arr: &BqnArr,
+    xa_arr: &BqnArr,
+    scalar_fn: fn(f64, f64) -> f64,
+    name: &str,
+) -> Result<PrimResult> {
+    if wa_arr.shape != xa_arr.shape {
+        return Err(BqnError::Shape(format!(
+            "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+            wa_arr.shape, xa_arr.shape
+        )));
+    }
+    let n = wa_arr.ia();
+    let mut results: Vec<B> = Vec::with_capacity(n);
+    for i in 0..n {
+        let wi = wa_arr.get(i)?;
+        let xi = xa_arr.get(i)?;
+        let wi_arr = get_arr(wi);
+        let xi_arr = get_arr(xi);
+        let r = pervasive_dyad(wi, wi_arr.as_ref(), xi, xi_arr.as_ref(), scalar_fn, name)?;
+        results.push(prim_result_to_b(r));
+    }
+    let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), wa_arr.fill);
+    Ok(PrimResult::Array(out))
+}
+
+fn prim_result_to_b(r: PrimResult) -> B {
+    match r {
+        PrimResult::Scalar(b) => b,
+        PrimResult::Array(a) => tag_arr(a),
+    }
+}
+
 fn pervasive_dyad(
     w: B,
     wa: Option<&BqnArr>,
@@ -24,68 +95,72 @@ fn pervasive_dyad(
         }
         // scalar-array
         (None, Some(xa_arr)) => {
-            let wf = w.to_f64().map_err(|_| BqnError::Type(format!("𝕨{name}𝕩: Unexpected argument types")))?;
-            let xvals = xa_arr.f64_iter()?;
-            let result: Vec<f64> = xvals.iter().map(|&xv| scalar_fn(wf, xv)).collect();
-            let mut out = BqnArr::new_vec_f64(result);
-            out.shape = xa_arr.shape.clone();
-            Ok(PrimResult::Array(array::squeeze_num(out)))
+            if let Ok(wf) = w.to_f64() {
+                if let Ok(xvals) = xa_arr.f64_iter() {
+                    let result: Vec<f64> = xvals.iter().map(|&xv| scalar_fn(wf, xv)).collect();
+                    let mut out = BqnArr::new_vec_f64(result);
+                    out.shape = xa_arr.shape.clone();
+                    return Ok(PrimResult::Array(array::squeeze_num(out)));
+                }
+            }
+            // Boxed fallback: recurse element-wise
+            pervasive_boxed_scalar_arr(w, xa_arr, scalar_fn, name)
         }
         // array-scalar
         (Some(wa_arr), None) => {
-            let xf = x.to_f64().map_err(|_| BqnError::Type(format!("𝕨{name}𝕩: Unexpected argument types")))?;
-            let wvals = wa_arr.f64_iter()?;
-            let result: Vec<f64> = wvals.iter().map(|&wv| scalar_fn(wv, xf)).collect();
-            let mut out = BqnArr::new_vec_f64(result);
-            out.shape = wa_arr.shape.clone();
-            Ok(PrimResult::Array(array::squeeze_num(out)))
+            if let Ok(xf) = x.to_f64() {
+                if let Ok(wvals) = wa_arr.f64_iter() {
+                    let result: Vec<f64> = wvals.iter().map(|&wv| scalar_fn(wv, xf)).collect();
+                    let mut out = BqnArr::new_vec_f64(result);
+                    out.shape = wa_arr.shape.clone();
+                    return Ok(PrimResult::Array(array::squeeze_num(out)));
+                }
+            }
+            // Boxed fallback: recurse element-wise
+            pervasive_boxed_arr_scalar(wa_arr, x, scalar_fn, name)
         }
         // array-array: leading axis agreement (prefix broadcasting)
         (Some(wa_arr), Some(xa_arr)) => {
-            if wa_arr.shape == xa_arr.shape {
-                // Fast path: identical shapes
-                let wvals = wa_arr.f64_iter()?;
-                let xvals = xa_arr.f64_iter()?;
-                let result: Vec<f64> = wvals
-                    .iter()
-                    .zip(xvals.iter())
-                    .map(|(&wv, &xv)| scalar_fn(wv, xv))
-                    .collect();
-                let mut out = BqnArr::new_vec_f64(result);
-                out.shape = wa_arr.shape.clone();
-                Ok(PrimResult::Array(array::squeeze_num(out)))
-            } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
-                // 𝕨 has shorter shape, broadcast across leading axes of 𝕩
-                let wvals = wa_arr.f64_iter()?;
-                let xvals = xa_arr.f64_iter()?;
-                let w_ia = wa_arr.ia().max(1);
-                let result: Vec<f64> = xvals
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &xv)| scalar_fn(wvals[i % w_ia], xv))
-                    .collect();
-                let mut out = BqnArr::new_vec_f64(result);
-                out.shape = xa_arr.shape.clone();
-                Ok(PrimResult::Array(array::squeeze_num(out)))
-            } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
-                // 𝕩 has shorter shape, broadcast across leading axes of 𝕨
-                let wvals = wa_arr.f64_iter()?;
-                let xvals = xa_arr.f64_iter()?;
-                let x_ia = xa_arr.ia().max(1);
-                let result: Vec<f64> = wvals
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &wv)| scalar_fn(wv, xvals[i % x_ia]))
-                    .collect();
-                let mut out = BqnArr::new_vec_f64(result);
-                out.shape = wa_arr.shape.clone();
-                Ok(PrimResult::Array(array::squeeze_num(out)))
-            } else {
-                Err(BqnError::Shape(format!(
-                    "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                    wa_arr.shape, xa_arr.shape
-                )))
+            // Try fast numeric path first
+            if let (Ok(wvals), Ok(xvals)) = (wa_arr.f64_iter(), xa_arr.f64_iter()) {
+                if wa_arr.shape == xa_arr.shape {
+                    let result: Vec<f64> = wvals
+                        .iter()
+                        .zip(xvals.iter())
+                        .map(|(&wv, &xv)| scalar_fn(wv, xv))
+                        .collect();
+                    let mut out = BqnArr::new_vec_f64(result);
+                    out.shape = wa_arr.shape.clone();
+                    return Ok(PrimResult::Array(array::squeeze_num(out)));
+                } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
+                    let w_ia = wa_arr.ia().max(1);
+                    let result: Vec<f64> = xvals
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &xv)| scalar_fn(wvals[i % w_ia], xv))
+                        .collect();
+                    let mut out = BqnArr::new_vec_f64(result);
+                    out.shape = xa_arr.shape.clone();
+                    return Ok(PrimResult::Array(array::squeeze_num(out)));
+                } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
+                    let x_ia = xa_arr.ia().max(1);
+                    let result: Vec<f64> = wvals
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &wv)| scalar_fn(wv, xvals[i % x_ia]))
+                        .collect();
+                    let mut out = BqnArr::new_vec_f64(result);
+                    out.shape = wa_arr.shape.clone();
+                    return Ok(PrimResult::Array(array::squeeze_num(out)));
+                } else {
+                    return Err(BqnError::Shape(format!(
+                        "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+                        wa_arr.shape, xa_arr.shape
+                    )));
+                }
             }
+            // Boxed fallback: recurse element-wise
+            pervasive_boxed_arr_arr(wa_arr, xa_arr, scalar_fn, name)
         }
     }
 }
@@ -136,6 +211,11 @@ pub fn add_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
     // char + num → char  or  num + char → char
     if (wk == 'c' && xk == 'n') || (wk == 'n' && xk == 'c') {
         return pervasive_char_add(w, wa, x, xa, wk == 'c');
+    }
+
+    // Boxed/nested arrays: recurse element-wise through pervasive_dyad
+    if wk == 'o' || xk == 'o' {
+        return pervasive_dyad(w, wa, x, xa, |a, b| a + b, "+");
     }
 
     // char + char is a type error in BQN
@@ -398,6 +478,11 @@ pub fn sub_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
     // char - char → num
     if wk == 'c' && xk == 'c' {
         return pervasive_char_sub_char(w, wa, x, xa);
+    }
+
+    // Boxed/nested arrays: recurse element-wise through pervasive_dyad
+    if wk == 'o' || xk == 'o' {
+        return pervasive_dyad(w, wa, x, xa, |a, b| a - b, "-");
     }
 
     // num - char is a type error in BQN
