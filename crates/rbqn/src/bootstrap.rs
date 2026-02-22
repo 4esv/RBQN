@@ -491,6 +491,20 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
         }));
     }
 
+    // Extract BQN runtime's Under (⌾) function from rtObjRaw[57].
+    // CBQN (load.c line 506): gc_add(rt_under = Get(rtObjRaw, n_under));
+    // This is the BQN-defined Under that handles structural cases correctly.
+    // Our native Under is a naive G⁻¹(F(G(x))) which fails for structural G
+    // (e.g. mask⊸/). The BQN runtime's Under handles both computational and
+    // structural cases, matching CBQN's def_fn_uc1 fallback behavior.
+    if let Some(rt_obj_arr) = get_arr(rt_obj_raw) {
+        if let Ok(rt_under_fn) = rt_obj_arr.get(57) {
+            if rt_under_fn.is_md2() {
+                rbqn_vm::modifiers::set_rt_under(rt_under_fn);
+            }
+        }
+    }
+
     // --- Stage 3: Execute compiler (graceful fallback if it panics) ---
     // Swap in bi_casrt for assert during compilation (CBQN does this)
     let c_objs = build_objs(&embedded::COMPILER, &provide, Some(&runtime_0), Some(&runtime));
