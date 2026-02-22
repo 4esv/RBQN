@@ -378,20 +378,19 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ∾ dyad: join to
+// BQN rank rules for dyadic ∾:
+//   - Equal ranks: concatenate along first axis (trailing shapes must match)
+//   - Rank differs by 1: lower-rank arg treated as single cell (prepend 1 to its shape)
+//   - Atom + array: atom treated as rank-0 cell
+//   - Rank differs by >1: error
 pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     match (wa, xa) {
         (Some(warr), Some(xarr)) => {
-            // Multi-rank: concatenate along first axis
-            if warr.rank() > 1 || xarr.rank() > 1 {
-                if warr.rank() != xarr.rank() {
-                    return Err(BqnError::Rank("𝕨∾𝕩: ranks don't match".into()));
-                }
-                // Check trailing shapes match
-                if warr.shape[1..] != xarr.shape[1..] {
-                    return Err(BqnError::Shape("𝕨∾𝕩: trailing shapes don't match".into()));
-                }
-                let mut new_shape = vec![warr.shape[0] + xarr.shape[0]];
-                new_shape.extend_from_slice(&warr.shape[1..]);
+            let wr = warr.rank();
+            let xr = xarr.rank();
+
+            // Both rank 1: simple vector concatenation
+            if wr <= 1 && xr <= 1 {
                 let wia = warr.ia();
                 let xia = xarr.ia();
                 let mut result = Vec::with_capacity(wia + xia);
@@ -401,8 +400,42 @@ pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
                 for i in 0..xia {
                     result.push(xarr.get(i)?);
                 }
-                return Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)));
+                let new_len = wia + xia;
+                return Ok(PrimResult::Array(typed_arr(result, vec![new_len], warr.fill)));
             }
+
+            // Multi-rank join along first axis
+            // Determine effective shapes after rank promotion
+            let (w_shape, x_shape) = if wr == xr {
+                // Equal ranks: use shapes as-is
+                (warr.shape.clone(), xarr.shape.clone())
+            } else if wr == xr + 1 {
+                // 𝕨 has one more rank: promote 𝕩 by prepending 1
+                let mut xs = vec![1usize];
+                xs.extend_from_slice(&xarr.shape);
+                (warr.shape.clone(), xs)
+            } else if xr == wr + 1 {
+                // 𝕩 has one more rank: promote 𝕨 by prepending 1
+                let mut ws = vec![1usize];
+                ws.extend_from_slice(&warr.shape);
+                (ws, xarr.shape.clone())
+            } else {
+                return Err(BqnError::Rank(format!(
+                    "𝕨∾𝕩: rank difference too large ({} vs {})",
+                    wr, xr
+                )));
+            };
+
+            // Check trailing shapes match
+            if w_shape[1..] != x_shape[1..] {
+                return Err(BqnError::Shape(format!(
+                    "𝕨∾𝕩: trailing shapes don't match ({:?} vs {:?})",
+                    &w_shape[1..], &x_shape[1..]
+                )));
+            }
+
+            let mut new_shape = vec![w_shape[0] + x_shape[0]];
+            new_shape.extend_from_slice(&w_shape[1..]);
             let wia = warr.ia();
             let xia = xarr.ia();
             let mut result = Vec::with_capacity(wia + xia);
@@ -412,12 +445,18 @@ pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
             for i in 0..xia {
                 result.push(xarr.get(i)?);
             }
-            let new_len = wia + xia;
-            Ok(PrimResult::Array(typed_arr(result, vec![new_len], warr.fill)))
+            Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
         }
         (None, Some(xarr)) => {
-            if xarr.rank() != 1 {
-                return Err(BqnError::Nyi("∾: non-vector join not yet implemented".into()));
+            // Atom ∾ array: atom is rank 0, array is rank r
+            // If r == 1: prepend atom to vector
+            // If r == 1 (after considering rank-0 as cell of rank-1): same as above
+            // For higher rank: rank 0 can only join rank 1 (differs by 1)
+            if xarr.rank() > 1 {
+                return Err(BqnError::Rank(format!(
+                    "𝕨∾𝕩: rank difference too large (0 vs {})",
+                    xarr.rank()
+                )));
             }
             let xia = xarr.ia();
             let mut result = Vec::with_capacity(1 + xia);
@@ -429,8 +468,12 @@ pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
             Ok(PrimResult::Array(typed_arr(result, vec![len], xarr.fill)))
         }
         (Some(warr), None) => {
-            if warr.rank() != 1 {
-                return Err(BqnError::Nyi("∾: non-vector join not yet implemented".into()));
+            // Array ∾ atom: same logic, atom is rank 0
+            if warr.rank() > 1 {
+                return Err(BqnError::Rank(format!(
+                    "𝕨∾𝕩: rank difference too large ({} vs 0)",
+                    warr.rank()
+                )));
             }
             let wia = warr.ia();
             let mut result = Vec::with_capacity(wia + 1);
