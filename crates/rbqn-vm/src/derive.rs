@@ -445,7 +445,7 @@ pub fn prim_to_b(idx: usize) -> B {
 }
 
 /// Dispatch system function c1.
-/// System value indices: 0=Type, 1=Decompose, 4=Glyph, 7=Fill, 22=GroupLen, 23=GroupOrd
+/// System value indices: 0=Type, 1=Decompose, 4=Glyph, 5=PrimInd, 7=Fill, 22=GroupLen, 23=GroupOrd
 fn dispatch_sys_c1(idx: u32, x: B) -> B {
     let x_arr = crate::vm::get_arr(x);
     match idx {
@@ -461,6 +461,9 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         }
         4 => { // •Glyph
             dispatch_sys_glyph_c1(x)
+        }
+        5 => { // •PrimInd — returns primitive index (0..63) or 64 for non-primitives
+            dispatch_sys_primind_c1(x)
         }
         7 => { // •Fill / •FillFn
             let r = rbqn_prim::sysfn::fill_fn(x, x_arr.as_ref());
@@ -634,4 +637,26 @@ fn dispatch_sys_glyph_c1(x: B) -> B {
     // Non-primitive: return empty string
     let arr = rbqn_core::array::BqnArr::new_vec_c32(vec![]);
     crate::vm::tag_arr(arr)
+}
+
+/// •PrimInd: return the primitive index (0..63) for a primitive, or 64 for non-primitives.
+/// CBQN: primInd_c1 in sysfn.c
+fn dispatch_sys_primind_c1(x: B) -> B {
+    const RT_LEN: i32 = 64;
+    if x.is_fun() {
+        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
+        let d = get_derived(id);
+        if let DerivedKind::NativeFn { prim_idx } = d.kind {
+            return B::m_i32(prim_idx as i32);
+        }
+    } else if x.is_md1() || x.is_md2() {
+        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
+        let d = get_derived(id);
+        match d.kind {
+            DerivedKind::NativeMd1 { prim_idx } => return B::m_i32(prim_idx as i32),
+            DerivedKind::NativeMd2 { prim_idx } => return B::m_i32(prim_idx as i32),
+            _ => {}
+        }
+    }
+    B::m_i32(RT_LEN)
 }

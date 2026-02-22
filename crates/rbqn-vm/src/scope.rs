@@ -137,7 +137,11 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         let s_len = s_arr.ia();
         let x_len = x_arr.ia();
         if s_len != x_len {
-            rbqn_core::error::throw("v_set: destructuring length mismatch");
+            // Debug: print shapes and element details
+            rbqn_core::error::throw(format!(
+                "v_set: destructuring length mismatch ({} targets vs {} values)",
+                s_len, x_len
+            ));
         }
         for i in 0..s_len {
             let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));

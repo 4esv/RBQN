@@ -115,8 +115,18 @@ impl BqnArr {
                     }
                 })
                 .collect(),
-            other => {
-                eprintln!("[DEBUG i32_iter] Non-numeric data type: {:?}", std::mem::discriminant(other));
+            ArrData::Boxed(v) if !v.is_empty() && v.iter().all(|b| b.is_f64()) => {
+                v.iter().map(|b| {
+                    let x = b.o2f();
+                    let i = x as i32;
+                    if x == i as f64 {
+                        Ok(i)
+                    } else {
+                        Err(BqnError::Type("Expected integer".into()))
+                    }
+                }).collect()
+            }
+            _other => {
                 Err(BqnError::Type("Expected numeric array".into()))
             }
         }
