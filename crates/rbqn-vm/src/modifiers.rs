@@ -6,6 +6,21 @@ use rbqn_core::{B, BqnArr, ArrData};
 
 use crate::derive::{c1, c2};
 
+// BQN runtime's Under (⌾) function, set after runtime1 loads.
+// Used as fallback when native Under can't handle a case.
+static RT_UNDER: std::sync::LazyLock<std::sync::Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// Store the BQN runtime's Under function (called from bootstrap after runtime1).
+pub fn set_rt_under(f: B) {
+    *RT_UNDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
+/// Get the BQN runtime's Under function, if available.
+fn get_rt_under() -> Option<B> {
+    *RT_UNDER.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // 1-modifier indices
 const MD1_CONST: usize = 44;  // ˙
 const MD1_SWAP: usize = 45;   // ˜
@@ -582,281 +597,60 @@ fn cells_c2(f: B, w: B, x: B) -> B {
 // 2-modifier: ⌾ Under
 // ============================================================
 
-// Detect if a function is `array⊸/` (before-replicate with constant mask)
-// Returns the mask array if so.
-fn detect_mask_replicate(g: B) -> Option<B> {
-    if !g.is_fun() { return None; }
-    let gid = (g.0 & 0xFFFFFFFFFFFF) >> 3;
-    let gd = crate::derive::get_derived(gid);
-    // Check for Md2D where modifier is ⊸ (Before, prim 55) and right operand is / (prim 33)
-    if gd.kind != crate::derive::DerivedKind::Md2D { return None; }
-    let modifier = gd.g;
-    if !modifier.is_md2() { return None; }
-    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
-    let md = crate::derive::get_derived(mid);
-    match md.kind {
-        crate::derive::DerivedKind::NativeMd2 { prim_idx: 55 } => {} // ⊸ (Before)
-        _ => return None,
-    }
-    let right_fn = gd.h;
-    if !right_fn.is_fun() { return None; }
-    let rid = (right_fn.0 & 0xFFFFFFFFFFFF) >> 3;
-    let rd = crate::derive::get_derived(rid);
-    match rd.kind {
-        crate::derive::DerivedKind::NativeFn { prim_idx: 33 } => {} // / (replicate)
-        _ => return None,
-    }
-    // Left operand is the mask array
-    let mask = gd.f;
-    if mask.is_arr() { Some(mask) } else { None }
-}
-
-// Detect if a function is `array⊸⊏` (before-select with constant indices)
-// Returns the index array if so.
-fn detect_idx_select(g: B) -> Option<B> {
-    if !g.is_fun() { return None; }
-    let gid = (g.0 & 0xFFFFFFFFFFFF) >> 3;
-    let gd = crate::derive::get_derived(gid);
-    if gd.kind != crate::derive::DerivedKind::Md2D { return None; }
-    let modifier = gd.g;
-    if !modifier.is_md2() { return None; }
-    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
-    let md = crate::derive::get_derived(mid);
-    match md.kind {
-        crate::derive::DerivedKind::NativeMd2 { prim_idx: 55 } => {} // ⊸ (Before)
-        _ => return None,
-    }
-    let right_fn = gd.h;
-    if !right_fn.is_fun() { return None; }
-    let rid = (right_fn.0 & 0xFFFFFFFFFFFF) >> 3;
-    let rd = crate::derive::get_derived(rid);
-    match rd.kind {
-        crate::derive::DerivedKind::NativeFn { prim_idx: 36 } => {} // ⊏ (select)
-        _ => return None,
-    }
-    let indices = gd.f;
-    if indices.is_arr() { Some(indices) } else { None }
-}
-
-// F⌾G x: Apply G, then F, then undo G.
+// F⌾G x: Apply F under G.
+// CBQN approach: delegates to G's fn_uc1 handler for structural under,
+// falling back to the BQN runtime's Under for computational under.
+// We follow the same pattern: try computational under first, then
+// delegate to the BQN runtime's Under implementation.
 fn under_c1(f: B, g: B, x: B) -> B {
-    // Compute G(x) and F(G(x)) once
+    // If the BQN runtime's Under is available, use it directly.
+    // The BQN runtime's Under handles both computational and structural cases
+    // correctly, including the roundtrip assertion and all edge cases.
+    if let Some(rt_under) = get_rt_under() {
+        // Build the Under-derived function: rt_under(f, g)
+        let under_fn = crate::derive::m_md2d(rt_under, f, g);
+        return c1(under_fn, x);
+    }
+
+    // Fallback: basic computational under (pre-runtime1)
     let gx = c1(g, x);
     let fgx = c1(f, gx);
-
-    // Try computational under: G⁻¹(F(Gx))
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let g_inv = crate::derive::inv_reg(g);
         c1(g_inv, fgx)
     }));
-    if let Ok(v) = result { return v; }
-
-    // Structural under: detect G pattern and handle specially
-    if let Some(mask_b) = detect_mask_replicate(g) {
-        return structural_under_replicate(mask_b, x, fgx);
+    match result {
+        Ok(v) => v,
+        Err(_) => rbqn_core::error::throw("⌾: inverse failed and runtime Under not available"),
     }
-    if let Some(idx_b) = detect_idx_select(g) {
-        return structural_under_select(idx_b, x, fgx);
-    }
-    // Generic structural under via index-array trick
-    structural_under_generic(g, x, fgx)
 }
 
 // w F⌾G x: Dyadic under.
+// CBQN transforms this to: (G(w)⊸F)⌾G x — binds G(w) as left arg of F,
+// then does monadic Under.
 fn under_c2(f: B, g: B, w: B, x: B) -> B {
-    // Compute G(x) first (common to both computational and structural)
-    let gx = c1(g, x);
+    // If the BQN runtime's Under is available, use CBQN's approach:
+    // Build f2 = (G(w))⊸F, then call monadic under: f2⌾G x
+    if let Some(rt_under) = get_rt_under() {
+        let gw = c1(g, w);
+        let before_md2 = crate::derive::m_native_md2(55); // ⊸ (Before)
+        let f2 = crate::derive::m_md2d(before_md2, gw, f);
+        let under_fn = crate::derive::m_md2d(rt_under, f2, g);
+        return c1(under_fn, x);
+    }
 
-    // Try computational under: G⁻¹((Gw) F (Gx))
+    // Fallback: basic computational under (pre-runtime1)
+    let gx = c1(g, x);
     let comp_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let gw = c1(g, w);
         let fgx = c2(f, gw, gx);
         let g_inv = crate::derive::inv_reg(g);
         c1(g_inv, fgx)
     }));
-    if let Ok(v) = comp_result { return v; }
-
-    // If G selects nothing, return x unchanged
-    if gx.is_arr() {
-        if let Some(ga) = crate::vm::get_arr(gx) {
-            if ga.ia() == 0 { return x; }
-        }
-    }
-
-    // Structural under: w F (G x) — G is NOT applied to w
-    let fgx = c2(f, w, gx);
-
-    if let Some(mask_b) = detect_mask_replicate(g) {
-        return structural_under_replicate(mask_b, x, fgx);
-    }
-    if let Some(idx_b) = detect_idx_select(g) {
-        return structural_under_select(idx_b, x, fgx);
-    }
-    structural_under_generic(g, x, fgx)
-}
-
-// Structural under for mask⊸/ pattern:
-// Put fgx values back at positions where mask=1.
-fn structural_under_replicate(mask_b: B, x: B, fgx: B) -> B {
-    let mask_arr = crate::vm::get_arr(mask_b)
-        .unwrap_or_else(|| rbqn_core::error::throw("⌾: mask must be an array"));
-    let xarr = crate::vm::get_arr(x)
-        .unwrap_or_else(|| rbqn_core::error::throw("⌾: x must be an array"));
-    let xia = xarr.ia();
-
-    // Get mask as i32 values (0 or 1)
-    let mask = mask_arr.i32_iter()
-        .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-
-    // Build result: copy x, overwrite positions where mask=1 with fgx elements
-    let mut result_elems: Vec<B> = Vec::with_capacity(xia);
-    for i in 0..xia {
-        result_elems.push(xarr.get(i).unwrap_or(B::SENTINEL));
-    }
-
-    let fgx_arr = if fgx.is_arr() {
-        crate::vm::get_arr(fgx)
-    } else {
-        None
-    };
-
-    let mut fgx_idx = 0usize;
-    for (i, &m) in mask.iter().enumerate().take(xia) {
-        if m != 0 {
-            if let Some(ref fa) = fgx_arr {
-                if fgx_idx < fa.ia() {
-                    result_elems[i] = fa.get(fgx_idx).unwrap_or(B::SENTINEL);
-                }
-            } else {
-                // fgx is a scalar
-                result_elems[i] = fgx;
-            }
-            fgx_idx += 1;
-        }
-    }
-
-    let result = rbqn_core::array::typed_arr_from_b_vec(
-        result_elems,
-        xarr.shape.clone(),
-        xarr.fill,
-    );
-    crate::vm::tag_arr(result)
-}
-
-// Structural under for indices⊸⊏ pattern:
-// Put fgx values back at the specified indices.
-fn structural_under_select(idx_b: B, x: B, fgx: B) -> B {
-    let idx_arr = crate::vm::get_arr(idx_b)
-        .unwrap_or_else(|| rbqn_core::error::throw("⌾: indices must be an array"));
-    let xarr = crate::vm::get_arr(x)
-        .unwrap_or_else(|| rbqn_core::error::throw("⌾: x must be an array"));
-    let xia = xarr.ia();
-
-    let indices = idx_arr.i32_iter()
-        .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-
-    let mut result_elems: Vec<B> = Vec::with_capacity(xia);
-    for i in 0..xia {
-        result_elems.push(xarr.get(i).unwrap_or(B::SENTINEL));
-    }
-
-    let fgx_arr = if fgx.is_arr() {
-        crate::vm::get_arr(fgx)
-    } else {
-        None
-    };
-
-    for (j, &idx) in indices.iter().enumerate() {
-        let i = idx as usize;
-        if i < xia {
-            if let Some(ref fa) = fgx_arr {
-                if j < fa.ia() {
-                    result_elems[i] = fa.get(j).unwrap_or(B::SENTINEL);
-                }
-            } else {
-                result_elems[i] = fgx;
-            }
-        }
-    }
-
-    let result = rbqn_core::array::typed_arr_from_b_vec(
-        result_elems,
-        xarr.shape.clone(),
-        xarr.fill,
-    );
-    crate::vm::tag_arr(result)
-}
-
-// Generic structural under via index-array trick.
-fn structural_under_generic(g: B, x: B, fgx: B) -> B {
-    if !x.is_arr() {
-        return fgx;
-    }
-    let xarr = crate::vm::get_arr(x)
-        .unwrap_or_else(|| rbqn_core::error::throw("⌾: expected array"));
-    let xia = xarr.ia();
-
-    let idx_arr = crate::vm::tag_arr(rbqn_core::array::BqnArr {
-        shape: xarr.shape.clone(),
-        data: rbqn_core::ArrData::F64((0..xia).map(|i| i as f64).collect()),
-        fill: Some(B::m_f64(0.0)),
-    });
-
-    let selected_result = std::panic::catch_unwind(
-        std::panic::AssertUnwindSafe(|| c1(g, idx_arr))
-    );
-
-    let selected_indices_b = match selected_result {
+    match comp_result {
         Ok(v) => v,
-        Err(_) => rbqn_core::error::throw("⌾: structural under failed — G is not a structural function"),
-    };
-
-    let mut result_elems: Vec<B> = Vec::with_capacity(xia);
-    for i in 0..xia {
-        result_elems.push(xarr.get(i).unwrap_or(B::SENTINEL));
+        Err(_) => rbqn_core::error::throw("⌾: inverse failed and runtime Under not available"),
     }
-
-    if selected_indices_b.is_f64() {
-        let idx = selected_indices_b.to_usz()
-            .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-        if idx < xia {
-            result_elems[idx] = fgx;
-        }
-    } else if selected_indices_b.is_arr() {
-        let sel_arr = crate::vm::get_arr(selected_indices_b)
-            .unwrap_or_else(|| rbqn_core::error::throw("⌾: expected array from G on indices"));
-
-        if fgx.is_arr() {
-            let fgx_arr = crate::vm::get_arr(fgx)
-                .unwrap_or_else(|| rbqn_core::error::throw("⌾: expected array result from F"));
-            let n = sel_arr.ia().min(fgx_arr.ia());
-            for i in 0..n {
-                let idx_val = sel_arr.get(i).unwrap_or(B::m_f64(0.0));
-                let idx = idx_val.to_usz()
-                    .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-                if idx < xia {
-                    result_elems[idx] = fgx_arr.get(i).unwrap_or(B::SENTINEL);
-                }
-            }
-        } else {
-            let n = sel_arr.ia();
-            for i in 0..n {
-                let idx_val = sel_arr.get(i).unwrap_or(B::m_f64(0.0));
-                let idx = idx_val.to_usz()
-                    .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-                if idx < xia {
-                    result_elems[idx] = fgx;
-                }
-            }
-        }
-    }
-
-    let result = rbqn_core::array::typed_arr_from_b_vec(
-        result_elems,
-        xarr.shape.clone(),
-        xarr.fill,
-    );
-    crate::vm::tag_arr(result)
 }
 
 // ============================================================
