@@ -218,6 +218,12 @@ impl B {
         if self.is_c32() && other.is_c32() {
             return self.0 as u32 == other.0 as u32;
         }
+        // NOTE: Functions, modifiers, and other tagged values compare by raw u64 identity.
+        // In BQN, two references to the same primitive/derived function are equal (≡).
+        // This handles: fun ≡ fun, md1 ≡ md1, md2 ≡ md2, etc.
+        if !self.is_f64() && !self.is_c32() && !other.is_f64() && !other.is_c32() {
+            return self.0 == other.0;
+        }
         false
     }
 }

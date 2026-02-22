@@ -6,7 +6,7 @@ use rbqn_core::B;
 use rbqn_prim::Primitive;
 use rbqn_vm::block::eval_fun_block;
 use rbqn_vm::compiler::compile_all;
-use rbqn_vm::derive::{c1, m_native_md2, m_sys_fn, prim_to_b};
+use rbqn_vm::derive::{c1, c2, m_native_md2, m_sys_fn, prim_to_b};
 use rbqn_vm::scope::Scope;
 use rbqn_vm::vm::{get_arr, tag_arr};
 
@@ -462,33 +462,14 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     let set_prims = r1_arr.get(1).ok();
     let set_inv = r1_arr.get(2).ok();
 
-    // Extract the 64-element runtime array
-    let runtime: Vec<B> = if let Some(rt_arr) = get_arr(rt_obj_raw) {
-        (0..rt_arr.ia()).map(|i| rt_arr.get(i).unwrap_or(B::SENTINEL)).collect()
-    } else {
-        eprintln!("rbqn: warning: runtime1 result[0] is not an array. Using fruntime as fallback.");
-        return Ok(Runtime {
-            prims,
-            fruntime: fruntime.clone(),
-            runtime: fruntime,
-            compiler: B::SENTINEL,
-            formatter: None,
-            glyphs,
-        });
-    };
-
-    if runtime.len() != RT_LEN {
-        eprintln!("rbqn: warning: runtime has {} entries, expected {}. Using fruntime as fallback.",
-            runtime.len(), RT_LEN);
-        return Ok(Runtime {
-            prims,
-            fruntime: fruntime.clone(),
-            runtime: fruntime,
-            compiler: B::SENTINEL,
-            formatter: None,
-            glyphs,
-        });
-    }
+    // NOTE: Like CBQN (load.c line 522), use native fruntime primitives for the runtime
+    // array instead of the BQN-defined wrappers from runtime1. CBQN does this when all
+    // builtins are natively implemented (rtComplete[] all true):
+    //   B r = nnbi? Get(rtObjRaw, i) : inc(fruntime[i]);
+    // The BQN wrappers (e.g. `Indices ⊘ Replicate` for `/`) don't have primitive indices,
+    // which breaks the inverse system (⁼) since it uses •PrimInd + •Glyph to look up
+    // inverses by glyph character. Native fruntime entries have correct prim_idx values.
+    let runtime: Vec<B> = fruntime.clone();
 
     // Invoke setPrims callback — registers •Decompose and •PrimInd with the runtime.
     // CBQN: c1(setPrims, ⟨bi_decp, bi_primInd⟩)
@@ -501,12 +482,13 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
 
     // Invoke setInv callback — registers inverse tables for ⁼ and ⌾.
     // CBQN: c2(setInv, bi_setInvSwap, bi_setInvReg) — called dyadically.
-    // We don't have ⁼/⌾ inverse support yet, so pass placeholder functions.
-    // Using no-op sys functions that return identity for now.
+    // bi_setInvSwap = sys_idx 9, bi_setInvReg = sys_idx 8
     if let Some(si) = set_inv {
-        // NOTE: setInv is called dyadically in CBQN. We skip it since we don't
-        // have inverse operations yet. Calling it wrong would cause errors.
-        let _ = si; // suppress unused warning
+        let bi_set_inv_swap = rbqn_vm::derive::m_sys_fn(9);
+        let bi_set_inv_reg = rbqn_vm::derive::m_sys_fn(8);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c2(si, bi_set_inv_swap, bi_set_inv_reg)
+        }));
     }
 
     // --- Stage 3: Execute compiler (graceful fallback if it panics) ---
@@ -526,10 +508,22 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
                 let md2_arr = tag_arr(BqnArr::new_vec_c32(glyphs[2].clone()));
                 tag_arr(BqnArr::from_b_vec(vec![fn_arr, md1_arr, md2_arr]))
             };
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(compgen, glyphs_b))) {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                eprintln!("[BOOTSTRAP] Calling compgen(glyphs)...");
+                let r = c1(compgen, glyphs_b);
+                eprintln!("[BOOTSTRAP] compgen(glyphs) returned successfully: {:#x}", r.0);
+                r
+            })) {
                 Ok(c) => c,
-                Err(_) => {
-                    eprintln!("rbqn: warning: compiler initialization panicked. Compiler unavailable.");
+                Err(p) => {
+                    let msg = if let Some(s) = p.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = p.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    eprintln!("rbqn: warning: compiler initialization panicked: {msg}");
                     B::SENTINEL
                 }
             }

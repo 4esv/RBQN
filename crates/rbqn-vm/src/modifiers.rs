@@ -18,17 +18,21 @@ const MD1_INSERT: usize = 51; // ˝
 const MD1_SCAN: usize = 52;   // `
 
 // 2-modifier indices
-const MD2_ATOP: usize = 53;   // ∘
-const MD2_OVER: usize = 54;   // ○
-const MD2_BEFORE: usize = 55; // ⊸
-const MD2_AFTER: usize = 56;  // ⟜
-const MD2_UNDER: usize = 57;  // ⌾
-const MD2_VAL: usize = 58;    // ⊘
-const MD2_COND: usize = 59;   // ◶
-const MD2_RANK: usize = 60;   // ⎉
-const MD2_DEPTH: usize = 61;  // ⚇
-const MD2_REPEAT: usize = 62; // ⍟
-const MD2_CATCH: usize = 63;  // ⎊
+const MD2_ATOP: usize = 53;     // ∘
+const MD2_OVER: usize = 54;     // ○
+const MD2_BEFORE: usize = 55;   // ⊸
+const MD2_AFTER: usize = 56;    // ⟜
+const MD2_UNDER: usize = 57;    // ⌾
+const MD2_VAL: usize = 58;      // ⊘
+const MD2_COND: usize = 59;     // ◶
+const MD2_RANK: usize = 60;     // ⎉
+const MD2_DEPTH: usize = 61;    // ⚇
+const MD2_REPEAT: usize = 62;   // ⍟
+const MD2_CATCH: usize = 63;    // ⎊
+// NOTE: special system 2-modifiers beyond the fruntime table
+// •_fillBy_: F •_fillBy_ G applies F and uses G only for fill element computation.
+// Since we don't track fill elements, this just forwards to F.
+pub const MD2_FILL_BY: usize = 64; // •_fillBy_
 
 // ============================================================
 // Top-level dispatch
@@ -41,7 +45,17 @@ pub fn native_md1_c1(prim_idx: usize, operand: B, _self_val: B, x: B) -> B {
         MD1_CELL => cells_c1(operand, x),
         MD1_EACH => each_c1(operand, x),
         MD1_TBL => each_c1(operand, x),
-        MD1_UNDO => rbqn_core::error::throw("⁼: inverse not yet implemented"),
+        MD1_UNDO => {
+            // F⁼ x: look up the inverse of F, then call it monadically on x
+            eprintln!("[DEBUG ⁼ c1] operand={:#x} is_fun={} is_md1={}", operand.0, operand.is_fun(), operand.is_md1());
+            if operand.is_fun() {
+                let id = (operand.0 & 0xFFFFFFFFFFFF) >> 3;
+                let d = crate::derive::get_derived(id);
+                eprintln!("[DEBUG ⁼ c1] derived kind={:?}", d.kind);
+            }
+            let inv_fn = crate::derive::inv_reg(operand);
+            c1(inv_fn, x)
+        }
         MD1_FOLD => fold_c1(operand, x),
         MD1_INSERT => insert_c1(operand, x),
         MD1_SCAN => scan_c1(operand, x),
@@ -58,7 +72,11 @@ pub fn native_md1_c2(prim_idx: usize, operand: B, _self_val: B, w: B, x: B) -> B
         MD1_CELL => cells_c2(operand, w, x),
         MD1_EACH => each_c2(operand, w, x),
         MD1_TBL => table_c2(operand, w, x),
-        MD1_UNDO => rbqn_core::error::throw("⁼: inverse not yet implemented"),
+        MD1_UNDO => {
+            // w F⁼ x: look up the inverse of F, then call it dyadically
+            let inv_fn = crate::derive::inv_reg(operand);
+            c2(inv_fn, w, x)
+        }
         MD1_FOLD => fold_c2(operand, w, x),
         MD1_INSERT => insert_c2(operand, w, x),
         MD1_SCAN => scan_c2(operand, w, x),
@@ -87,6 +105,8 @@ pub fn native_md2_c1(prim_idx: usize, f: B, g: B, _self_val: B, x: B) -> B {
         MD2_DEPTH => rbqn_core::error::throw("⚇: depth not yet implemented"),
         MD2_REPEAT => repeat_c1(f, g, x),
         MD2_CATCH => catch_c1(f, g, x),
+        // NOTE: •_fillBy_: F •_fillBy_ G applies F; G only provides fill element (ignored here)
+        MD2_FILL_BY => c1(f, x),
         _ => rbqn_core::error::throw(format!(
             "native 2-modifier idx {} c1 not implemented", prim_idx
         )),
@@ -116,6 +136,8 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
         MD2_DEPTH => rbqn_core::error::throw("⚇: depth not yet implemented"),
         MD2_REPEAT => repeat_c2(f, g, w, x),
         MD2_CATCH => catch_c2(f, g, w, x),
+        // NOTE: •_fillBy_: F •_fillBy_ G applies F; G only provides fill element (ignored here)
+        MD2_FILL_BY => c2(f, w, x),
         _ => rbqn_core::error::throw(format!(
             "native 2-modifier idx {} c2 not implemented", prim_idx
         )),
@@ -129,6 +151,8 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
 /// Convert a Vec<B> of results into a typed array.
 /// If all results are numeric scalars, produces a numeric array (applying squeeze).
 /// If all results are characters, produces a character array.
+/// If all results are arrays with the same shape, merges them into a higher-rank array
+/// (prepending the result shape as leading dimensions).
 /// Otherwise, keeps as Boxed.
 fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
     if results.is_empty() {
@@ -136,18 +160,57 @@ fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
         out.shape = shape;
         return crate::vm::tag_arr(out);
     }
+    // All scalar numbers → numeric array
     if results.iter().all(|b| b.is_f64()) {
         let vals: Vec<f64> = results.iter().map(|b| b.o2f()).collect();
         let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
         out.shape = shape;
         return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
     }
+    // All scalar characters → char array
     if results.iter().all(|b| b.is_c32()) {
         let vals: Vec<u32> = results.iter().map(|b| b.0 as u32).collect();
         let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
         out.shape = shape;
         return crate::vm::tag_arr(out);
     }
+    // All arrays with the same cell shape → merge into higher-rank array
+    if results.iter().all(|b| b.is_arr()) {
+        let arrs: Vec<BqnArr> = results.iter()
+            .filter_map(|b| crate::vm::get_arr(*b))
+            .collect();
+        if arrs.len() == results.len() && !arrs.is_empty() {
+            let cell_shape = &arrs[0].shape;
+            if arrs.iter().all(|a| &a.shape == cell_shape) {
+                // All cells have the same shape — merge into one array
+                let mut merged_shape = shape.clone();
+                merged_shape.extend_from_slice(cell_shape);
+                let mut flat: Vec<B> = Vec::with_capacity(arrs.iter().map(|a| a.ia()).sum());
+                for a in &arrs {
+                    for i in 0..a.ia() {
+                        flat.push(a.get(i).unwrap_or(B::SENTINEL));
+                    }
+                }
+                // Try to produce a typed (non-boxed) result
+                if flat.iter().all(|b| b.is_f64()) {
+                    let vals: Vec<f64> = flat.iter().map(|b| b.o2f()).collect();
+                    let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
+                    out.shape = merged_shape;
+                    return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
+                }
+                if flat.iter().all(|b| b.is_c32()) {
+                    let vals: Vec<u32> = flat.iter().map(|b| b.0 as u32).collect();
+                    let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
+                    out.shape = merged_shape;
+                    return crate::vm::tag_arr(out);
+                }
+                let mut out = BqnArr::new_vec_b(flat);
+                out.shape = merged_shape;
+                return crate::vm::tag_arr(out);
+            }
+        }
+    }
+    // Fallback: boxed array
     let mut out = BqnArr::new_vec_b(results);
     out.shape = shape;
     crate::vm::tag_arr(out)
@@ -204,7 +267,9 @@ fn each_c1(f: B, x: B) -> B {
     let n = arr.ia();
     let mut results = Vec::with_capacity(n);
     for i in 0..n {
-        results.push(c1(f, get_elem(&arr, i)));
+        let elem = get_elem(&arr, i);
+        let result = c1(f, elem);
+        results.push(result);
     }
     results_to_arr(results, arr.shape.clone())
 }
@@ -373,11 +438,22 @@ fn scan_c2(f: B, w: B, x: B) -> B {
 // ============================================================
 
 fn cells_c1(f: B, x: B) -> B {
-    let arr = arr_of(x);
-    if arr.rank() <= 1 {
+    if x.is_atom() {
+        // Rank 0: the single cell is the atom itself
         return c1(f, x);
     }
+    let arr = arr_of(x);
     let lead = arr.shape[0];
+    if arr.rank() == 1 {
+        // Rank 1: cells are individual elements (rank-0 atoms)
+        let mut results = Vec::with_capacity(lead);
+        for i in 0..lead {
+            let elem = get_elem(&arr, i);
+            results.push(c1(f, elem));
+        }
+        return results_to_arr(results, vec![lead]);
+    }
+    // Rank >= 2: cells are subarrays along the leading axis
     let cell_size: usize = arr.shape[1..].iter().product();
     let cell_shape = arr.shape[1..].to_vec();
     let mut results = Vec::with_capacity(lead);
@@ -389,11 +465,46 @@ fn cells_c1(f: B, x: B) -> B {
 }
 
 fn cells_c2(f: B, w: B, x: B) -> B {
-    let xarr = arr_of(x);
-    if xarr.rank() <= 1 {
+    // NOTE: ˘ applies F to each major cell of 𝕩 (and 𝕨 if it has matching leading axis).
+    // For rank-1 arrays, the cells are individual elements (rank-0 atoms).
+    // For rank-0 (atom) 𝕩, just call F directly.
+    if x.is_atom() {
         return c2(f, w, x);
     }
+    let xarr = arr_of(x);
     let lead = xarr.shape[0];
+    if xarr.rank() == 1 {
+        // Rank 1: cells are individual elements
+        if w.is_arr() {
+            let warr = arr_of(w);
+            if warr.rank() == 1 && warr.shape[0] == lead {
+                // Both rank 1 with same length: pair up elements
+                let mut results = Vec::with_capacity(lead);
+                for i in 0..lead {
+                    results.push(c2(f, get_elem(&warr, i), get_elem(&xarr, i)));
+                }
+                return results_to_arr(results, vec![lead]);
+            }
+            if warr.rank() >= 2 && warr.shape[0] == lead {
+                // w has higher rank, extract w cells
+                let w_cell_size: usize = warr.shape[1..].iter().product();
+                let w_cell_shape = warr.shape[1..].to_vec();
+                let mut results = Vec::with_capacity(lead);
+                for i in 0..lead {
+                    let wc = crate::vm::tag_arr(extract_cell(&warr, i, w_cell_size, &w_cell_shape));
+                    results.push(c2(f, wc, get_elem(&xarr, i)));
+                }
+                return results_to_arr(results, vec![lead]);
+            }
+        }
+        // w is atom or doesn't match: broadcast w to each x element
+        let mut results = Vec::with_capacity(lead);
+        for i in 0..lead {
+            results.push(c2(f, w, get_elem(&xarr, i)));
+        }
+        return results_to_arr(results, vec![lead]);
+    }
+    // Rank >= 2: cells are subarrays along the leading axis
     let cell_size: usize = xarr.shape[1..].iter().product();
     let cell_shape = xarr.shape[1..].to_vec();
     if w.is_arr() {
