@@ -151,8 +151,6 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
 /// Convert a Vec<B> of results into a typed array.
 /// If all results are numeric scalars, produces a numeric array (applying squeeze).
 /// If all results are characters, produces a character array.
-/// If all results are arrays with the same shape, merges them into a higher-rank array
-/// (prepending the result shape as leading dimensions).
 /// Otherwise, keeps as Boxed.
 fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
     if results.is_empty() {
@@ -160,21 +158,49 @@ fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
         out.shape = shape;
         return crate::vm::tag_arr(out);
     }
-    // All scalar numbers → numeric array
     if results.iter().all(|b| b.is_f64()) {
         let vals: Vec<f64> = results.iter().map(|b| b.o2f()).collect();
         let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
         out.shape = shape;
         return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
     }
-    // All scalar characters → char array
     if results.iter().all(|b| b.is_c32()) {
         let vals: Vec<u32> = results.iter().map(|b| b.0 as u32).collect();
         let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
         out.shape = shape;
         return crate::vm::tag_arr(out);
     }
-    // All arrays with the same cell shape → merge into higher-rank array
+    let mut out = BqnArr::new_vec_b(results);
+    out.shape = shape;
+    crate::vm::tag_arr(out)
+}
+
+/// Merge cell results into a higher-rank array.
+/// Used by ˘ (cells) where results from each cell are combined with
+/// shape = leading_shape ∾ cell_result_shape.
+/// If all results are scalars, produces a simple array.
+/// If all results are arrays of the same shape, flattens and concatenates.
+fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
+    if results.is_empty() {
+        let mut out = BqnArr::new_vec_b(results);
+        out.shape = lead_shape;
+        return crate::vm::tag_arr(out);
+    }
+    // All scalar numbers
+    if results.iter().all(|b| b.is_f64()) {
+        let vals: Vec<f64> = results.iter().map(|b| b.o2f()).collect();
+        let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
+        out.shape = lead_shape;
+        return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
+    }
+    // All scalar characters
+    if results.iter().all(|b| b.is_c32()) {
+        let vals: Vec<u32> = results.iter().map(|b| b.0 as u32).collect();
+        let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
+        out.shape = lead_shape;
+        return crate::vm::tag_arr(out);
+    }
+    // All arrays with same cell shape → merge into higher-rank
     if results.iter().all(|b| b.is_arr()) {
         let arrs: Vec<BqnArr> = results.iter()
             .filter_map(|b| crate::vm::get_arr(*b))
@@ -182,16 +208,15 @@ fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
         if arrs.len() == results.len() && !arrs.is_empty() {
             let cell_shape = &arrs[0].shape;
             if arrs.iter().all(|a| &a.shape == cell_shape) {
-                // All cells have the same shape — merge into one array
-                let mut merged_shape = shape.clone();
+                let mut merged_shape = lead_shape;
                 merged_shape.extend_from_slice(cell_shape);
-                let mut flat: Vec<B> = Vec::with_capacity(arrs.iter().map(|a| a.ia()).sum());
+                let total: usize = arrs.iter().map(|a| a.ia()).sum();
+                let mut flat: Vec<B> = Vec::with_capacity(total);
                 for a in &arrs {
                     for i in 0..a.ia() {
                         flat.push(a.get(i).unwrap_or(B::SENTINEL));
                     }
                 }
-                // Try to produce a typed (non-boxed) result
                 if flat.iter().all(|b| b.is_f64()) {
                     let vals: Vec<f64> = flat.iter().map(|b| b.o2f()).collect();
                     let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
@@ -212,7 +237,7 @@ fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
     }
     // Fallback: boxed array
     let mut out = BqnArr::new_vec_b(results);
-    out.shape = shape;
+    out.shape = lead_shape;
     crate::vm::tag_arr(out)
 }
 
@@ -451,7 +476,7 @@ fn cells_c1(f: B, x: B) -> B {
             let elem = get_elem(&arr, i);
             results.push(c1(f, elem));
         }
-        return results_to_arr(results, vec![lead]);
+        return merge_cells_result(results, vec![lead]);
     }
     // Rank >= 2: cells are subarrays along the leading axis
     let cell_size: usize = arr.shape[1..].iter().product();
@@ -461,7 +486,7 @@ fn cells_c1(f: B, x: B) -> B {
         let cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
         results.push(c1(f, cell));
     }
-    results_to_arr(results, vec![lead])
+    merge_cells_result(results, vec![lead])
 }
 
 fn cells_c2(f: B, w: B, x: B) -> B {
@@ -483,7 +508,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
                 for i in 0..lead {
                     results.push(c2(f, get_elem(&warr, i), get_elem(&xarr, i)));
                 }
-                return results_to_arr(results, vec![lead]);
+                return merge_cells_result(results, vec![lead]);
             }
             if warr.rank() >= 2 && warr.shape[0] == lead {
                 // w has higher rank, extract w cells
@@ -494,7 +519,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
                     let wc = crate::vm::tag_arr(extract_cell(&warr, i, w_cell_size, &w_cell_shape));
                     results.push(c2(f, wc, get_elem(&xarr, i)));
                 }
-                return results_to_arr(results, vec![lead]);
+                return merge_cells_result(results, vec![lead]);
             }
         }
         // w is atom or doesn't match: broadcast w to each x element
@@ -502,7 +527,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
         for i in 0..lead {
             results.push(c2(f, w, get_elem(&xarr, i)));
         }
-        return results_to_arr(results, vec![lead]);
+        return merge_cells_result(results, vec![lead]);
     }
     // Rank >= 2: cells are subarrays along the leading axis
     let cell_size: usize = xarr.shape[1..].iter().product();
@@ -518,7 +543,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
                 let xc = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
                 results.push(c2(f, wc, xc));
             }
-            return results_to_arr(results, vec![lead]);
+            return merge_cells_result(results, vec![lead]);
         }
     }
     let mut results = Vec::with_capacity(lead);
@@ -526,7 +551,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
         let cell = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
         results.push(c2(f, w, cell));
     }
-    results_to_arr(results, vec![lead])
+    merge_cells_result(results, vec![lead])
 }
 
 // ============================================================
