@@ -126,7 +126,9 @@ pub fn bc_len(op: Op) -> u32 {
         Op::FLDG => 2,
         Op::ADDI | Op::ADDU => 3, // op + 2xu32 for the u64
         Op::FN1Ci | Op::FN1Oi => 3,
-        Op::FN2Ci | Op::FN2Oi => 3,
+        Op::FN2Ci => 3,
+        // FIX: FN2Oi encodes TWO u64 immediates (monadic + dyadic fn ptr)
+        Op::FN2Oi => 5,
         Op::SETNi | Op::SETUi | Op::SETMi | Op::SETCi => 3,
         Op::SETNv | Op::SETUv | Op::SETMv | Op::SETCv => 3,
         Op::SETH1 => 3, // op + 2xu32 (one u64 body ptr)
@@ -164,11 +166,17 @@ pub fn stack_diff(op: Op) -> i32 {
         Op::MD2L => -1,
         Op::MD2R => -1,
         Op::SETN | Op::SETU => -1,
-        Op::SETM | Op::SETC => -2,
+        // FIX: SETM pops 3 (s,f,x) pushes 1 = -2; SETC pops 2 (s,f) pushes 1 = -1
+        Op::SETM => -2,
+        Op::SETC => -1,
         Op::SETNi | Op::SETUi => 0,
-        Op::SETMi | Op::SETCi => -1,
+        // FIX: SETMi pops 2 (f,x) pushes 1 = -1; SETCi pops 1 (f) pushes 1 = 0
+        Op::SETMi => -1,
+        Op::SETCi => 0,
         Op::SETNv | Op::SETUv => -1,
-        Op::SETMv | Op::SETCv => -2,
+        // FIX: SETMv pops 2 (f,x) pushes 0 = -2; SETCv pops 1 (f) pushes 0 = -1
+        Op::SETMv => -2,
+        Op::SETCv => -1,
         Op::SETH | Op::SETH1 | Op::SETH2 => -2,
         Op::PRED | Op::PRED1 | Op::PRED2 => -1,
         Op::FLDO | Op::FLDM | Op::FLDG => 0,
@@ -204,11 +212,17 @@ pub fn stack_consumed(op: Op) -> i32 {
         Op::MD2L => 2,
         Op::MD2R => 2,
         Op::SETN | Op::SETU => 2,
-        Op::SETM | Op::SETC => 3,
+        // FIX: SETM consumes 3 (s,f,x); SETC consumes 2 (s,f)
+        Op::SETM => 3,
+        Op::SETC => 2,
         Op::SETNi | Op::SETUi => 1,
-        Op::SETMi | Op::SETCi => 2,
+        // FIX: SETMi consumes 2 (f,x); SETCi consumes 1 (f)
+        Op::SETMi => 2,
+        Op::SETCi => 1,
         Op::SETNv | Op::SETUv => 1,
-        Op::SETMv | Op::SETCv => 2,
+        // FIX: SETMv consumes 2 (f,x); SETCv consumes 1 (f)
+        Op::SETMv => 2,
+        Op::SETCv => 1,
         Op::SETH | Op::SETH1 | Op::SETH2 => 2,
         Op::PRED | Op::PRED1 | Op::PRED2 => 1,
         Op::FLDO | Op::FLDM | Op::FLDG => 1,
