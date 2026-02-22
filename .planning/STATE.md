@@ -16,6 +16,7 @@ Last activity: 2026-02-21 - Completed plan 01-03: formatter loading + integratio
 - Repr placeholder uses B::SENTINEL instead of m_sys_fn(1) to avoid Decompose conflict
 - Mode::Eval (-e) prints output for REPL-like behavior
 - Formatter tests gracefully skip when compiler unavailable rather than failing
+- [Phase 01]: Root cause of runtime1 pick-on-empty crash: Arc::make_mut cloned parent scopes, making child writes invisible. Fix: Mutex<Vec<B>> interior mutability + Arc<Scope> sharing.
 
 ## Implementation Status
 
