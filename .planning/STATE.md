@@ -7,9 +7,10 @@ M1: Core Language Completeness
 01-fix-bootstrap-pipeline — Plans 01 and 03 COMPLETE, Plan 02 pending
 
 ## Last Session
-Last activity: 2026-02-23 - Completed quick task 2: RBQN_PRIM_TRACE env-var primitive tracing
+Last activity: 2026-02-23 - Completed quick task 3: Assess progress toward CBQN-compatible GPU-accelerated BQN
 
 ## Decisions Made
+- Assessment recommends bypassing runtime0 overrides (Option B) over debugging VM execution (Option A), given 19 failed fix iterations
 - Fork c1: `(f g h) x = (f x) g (h x)` — fixed broken 3-step dispatch in derive.rs
 - `results_to_arr` helper: modifier outputs use typed arrays (numeric/char) not Boxed
 - Integration tests in `crates/rbqn-vm/tests/` (binary crate has no lib.rs)
@@ -113,7 +114,7 @@ None currently blocking runtime0. Fixed:
 - ~~`+¨` (each with add): type error~~ FIXED
 
 ## Blockers
-- Runtime1/compiler correctness depends on runtime0 being correct (now unblocked)
+- Runtime override pipeline broken: 3/21 CBQN compat tests pass (14%). Most primitives return args unchanged through compiled path. 19 fix iterations haven't resolved it. Option B (bypass overrides, use native Rust primitives) recommended as next approach.
 
 ### Quick Tasks Completed
 
@@ -121,3 +122,4 @@ None currently blocking runtime0. Fixed:
 |---|-------------|------|--------|-----------|
 | 1 | Start GPU-accelerated ML primitives | 2026-02-21 | 1997575 | [1-start-gpu-accelerated-ml-primitives](./quick/1-start-gpu-accelerated-ml-primitives/) |
 | 2 | Add tracing to compiler-used primitives | 2026-02-23 | 386b409 | [2-add-tracing-to-compiler-used-primitives-](./quick/2-add-tracing-to-compiler-used-primitives-/) |
+| 3 | Assess progress toward CBQN-compatible GPU-accelerated BQN | 2026-02-23 | 8b3da9e | [3-assess-progress-toward-cbqn-compatible-g](./quick/3-assess-progress-toward-cbqn-compatible-g/) |
