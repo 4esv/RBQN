@@ -55,7 +55,7 @@ pub fn get_derived(id: u64) -> Arc<Derived> {
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-static DERIVED_STORE: std::sync::LazyLock<Mutex<HashMap<u64, Arc<Derived>>>> =
+pub static DERIVED_STORE: std::sync::LazyLock<Mutex<HashMap<u64, Arc<Derived>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // Global inverse lookup functions, set by setInv callback during bootstrap.
@@ -744,8 +744,17 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
         }
-        100 => { // •BQN placeholder c1 — return SENTINEL for now
-            B::SENTINEL
+        100 => { // •BQN / System value lookup
+            // FIX: The compiler calls System(names) to resolve system value names.
+            // For empty arrays (no system values), return the empty array as-is.
+            // For non-empty arrays, each element is a system value name string;
+            // we would need to look up each one. For now, return x unchanged
+            // (correct for empty arrays, placeholder for non-empty).
+            if x.is_arr() {
+                x
+            } else {
+                B::SENTINEL
+            }
         }
         201 => { // Internal: /⁼ (inverse of indices)
             let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());

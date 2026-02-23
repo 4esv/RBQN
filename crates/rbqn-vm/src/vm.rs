@@ -77,6 +77,156 @@ pub fn vm_trace_dump() -> Vec<String> {
     VM_TRACE.with(|t| t.borrow().clone())
 }
 
+// NOTE: RBQN_PRIM_TRACE env-var gate — checked once at startup, zero cost when unset
+static PRIM_TRACE_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("RBQN_PRIM_TRACE").is_ok());
+
+/// Returns true when RBQN_PRIM_TRACE is set in the environment.
+pub fn prim_trace_enabled() -> bool {
+    *PRIM_TRACE_ENABLED
+}
+
+/// Format a B value in a short form suitable for trace lines.
+pub fn fmt_b_short(b: B) -> String {
+    if b.q_n() {
+        return "·".to_string();
+    }
+    if b.is_f64() {
+        let v = b.o2f();
+        if v < 0.0 {
+            return format!("¯{}", -v);
+        }
+        return format!("{}", v);
+    }
+    if b.is_c32() {
+        let ch = char::from_u32(b.0 as u32).unwrap_or('?');
+        return format!("'{}'", ch);
+    }
+    if b.is_arr() {
+        if let Some(arr) = get_arr(b) {
+            let shape_str = arr.shape.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("×");
+            let el = format!("{:?}", arr.el_type());
+            let ia = arr.ia();
+            let n = ia.min(3);
+            let mut elems = Vec::with_capacity(n);
+            for i in 0..n {
+                if let Ok(elem) = arr.get(i) {
+                    // depth=1: format scalars only, no recursive arrays
+                    elems.push(fmt_b_scalar(elem));
+                }
+            }
+            let first3 = elems.join(",");
+            if ia > 3 {
+                return format!("arr([{}] {} [{},...])", shape_str, el, first3);
+            } else {
+                return format!("arr([{}] {} [{}])", shape_str, el, first3);
+            }
+        }
+        return "arr(?)".to_string();
+    }
+    if b.is_fun() {
+        let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
+        if let Some(d) = DERIVED_STORE.lock().ok().and_then(|m| m.get(&id).cloned()) {
+            return match &d.kind {
+                crate::derive::DerivedKind::NativeFn { prim_idx } => format!("fun(prim={})", prim_idx),
+                crate::derive::DerivedKind::FunBlock => "fun(block)".to_string(),
+                crate::derive::DerivedKind::Fork => "fun(fork)".to_string(),
+                crate::derive::DerivedKind::Atop => "fun(atop)".to_string(),
+                crate::derive::DerivedKind::Md1D => "fun(md1d)".to_string(),
+                crate::derive::DerivedKind::Md2D => "fun(md2d)".to_string(),
+                crate::derive::DerivedKind::SysFn { sys_idx } => format!("fun(sys={})", sys_idx),
+                _ => "fun(?)".to_string(),
+            };
+        }
+        return "fun(?)".to_string();
+    }
+    if b.is_md() {
+        let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
+        if let Some(d) = DERIVED_STORE.lock().ok().and_then(|m| m.get(&id).cloned()) {
+            return match &d.kind {
+                crate::derive::DerivedKind::NativeMd1 { prim_idx } => format!("md1(prim={})", prim_idx),
+                crate::derive::DerivedKind::NativeMd2 { prim_idx } => format!("md2(prim={})", prim_idx),
+                crate::derive::DerivedKind::Md1Block => "md1(block)".to_string(),
+                crate::derive::DerivedKind::Md2Block => "md2(block)".to_string(),
+                _ => "md(?)".to_string(),
+            };
+        }
+        return "md(?)".to_string();
+    }
+    format!("{:#018x}", b.0)
+}
+
+/// Format a scalar B value without recursing into arrays (used for array element display).
+fn fmt_b_scalar(b: B) -> String {
+    if b.q_n() { return "·".to_string(); }
+    if b.is_f64() {
+        let v = b.o2f();
+        if v < 0.0 { return format!("¯{}", -v); }
+        return format!("{}", v);
+    }
+    if b.is_c32() {
+        let ch = char::from_u32(b.0 as u32).unwrap_or('?');
+        return format!("'{}'", ch);
+    }
+    if b.is_arr() { return "arr(...)".to_string(); }
+    if b.is_fun() { return "fun".to_string(); }
+    format!("{:#x}", b.0)
+}
+
+/// Format a B value with more detail (used for tracing results).
+/// Shows full shape, element type, and up to 10 elements.
+/// For char arrays, shows string content.
+pub fn fmt_b_detail(b: B) -> String {
+    if b.q_n() { return "·".to_string(); }
+    if b.is_f64() {
+        let v = b.o2f();
+        if v < 0.0 { return format!("¯{}", -v); }
+        return format!("{}", v);
+    }
+    if b.is_c32() {
+        let ch = char::from_u32(b.0 as u32).unwrap_or('?');
+        return format!("'{}'", ch);
+    }
+    if b.is_arr() {
+        if let Some(arr) = get_arr(b) {
+            let shape_str = arr.shape.iter().map(|s| s.to_string()).collect::<Vec<_>>().join("×");
+            let el = format!("{:?}", arr.el_type());
+            let ia = arr.ia();
+            // For char arrays, show string content
+            if arr.el_type().is_chr() {
+                let chars: String = (0..ia.min(60)).filter_map(|i| {
+                    arr.get(i).ok().and_then(|b| {
+                        if b.is_c32() { char::from_u32(b.0 as u32) } else { None }
+                    })
+                }).collect();
+                if ia > 60 {
+                    return format!("arr([{}] {} \"{}...\")", shape_str, el, chars);
+                } else {
+                    return format!("arr([{}] {} \"{}\")", shape_str, el, chars);
+                }
+            }
+            let n = ia.min(10);
+            let mut elems = Vec::with_capacity(n);
+            for i in 0..n {
+                if let Ok(elem) = arr.get(i) {
+                    elems.push(fmt_b_scalar(elem));
+                }
+            }
+            let elem_str = elems.join(",");
+            if ia > 10 {
+                return format!("arr([{}] {} [{},...])", shape_str, el, elem_str);
+            } else {
+                return format!("arr([{}] {} [{}])", shape_str, el, elem_str);
+            }
+        }
+        return "arr(?)".to_string();
+    }
+    fmt_b_short(b)
+}
+
+// NOTE: re-export the DERIVED_STORE accessor for fmt_b_short
+use crate::derive::DERIVED_STORE;
+
 pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     let bc = &bl.bc;
     let bc_offset = body.bc_offset;
