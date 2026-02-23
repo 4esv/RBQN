@@ -27,12 +27,14 @@ RBQN has the architecture in place: five crates, NaN-boxed values, a working VM,
   3. REPL maintains variable state: `a←5` entered on one line is accessible on the next
   4. `•Out "hello"` prints to stdout; `•BQN "1+1"` evaluates to `2`; `•Exit 0` terminates
   5. Runtime1, compiler, and formatter all load without panicking
-**Plans:** 3 plans
+**Plans:** 5 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Fix compiler/VM correctness bugs and verify bypass pipeline (PIPE-01..06)
-- [ ] 01-02-PLAN.md — Implement critical system functions: •BQN, •Out, •Fmt, •Exit, environment (SYS-01..05)
-- [ ] 01-03-PLAN.md — REPL variable persistence and end-to-end CLI verification (PIPE-07, PIPE-08)
+- [x] 01-01-PLAN.md — Fix compiler/VM correctness bugs and verify bypass pipeline (PIPE-01..06)
+- [x] 01-02-PLAN.md — Implement critical system functions: •BQN, •Out, •Fmt, •Exit, environment (SYS-01..05)
+- [x] 01-03-PLAN.md — Formatter loading, exec_string pipeline, fallback formatting
+- [ ] 01-04-PLAN.md — [gap closure] Fix string literal compilation and dyadic/fold ops through compiler (PIPE-01..06, PIPE-08, SYS-01..02)
+- [ ] 01-05-PLAN.md — [gap closure] REPL variable persistence and Phase 1 verification tests (PIPE-07, PIPE-08, SYS-03..05)
 
 ### Phase 2: Test Baseline
 **Goal**: Official BQN test harness wired and running, with the four structurally-simplest test files passing
