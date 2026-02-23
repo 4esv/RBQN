@@ -5,6 +5,10 @@ use rbqn_core::{B, FUN_TAG, MD1_TAG, MD2_TAG, tagu64};
 use crate::block::Block;
 use crate::scope::Scope;
 
+// NOTE: BQN primitive glyphs in fruntime order (0-63).
+// Used for human-readable trace output when RBQN_PRIM_TRACE is set.
+const PRIM_GLYPHS: &str = "+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥≡≢⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/⍋⍒⊏⊑⊐⊒∊⍷⊔!˙˜˘¨⌜⁼´˝`∘○⊸⟜⌾⊘◶⎉⚇⍟⎊";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedKind {
     Fork,
@@ -409,10 +413,17 @@ pub fn c1(f: B, x: B) -> B {
             }
             DerivedKind::FunBlock => {
                 crate::vm::vm_trace_push(format!("c1 FunBlock id={} x={:#x} x_is_arr={} nblocks={}", id, x.0, x.is_arr(), d.bl.as_ref().map_or(0, |b| b.blocks.len())));
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[BLOCK c1] id={} x={}", id, crate::vm::fmt_b_short(x));
+                }
                 let bl = d.bl.as_ref().unwrap().clone();
                 let psc = d.sc.as_ref().unwrap().clone();
                 let body = bl.bodies[0].clone();
-                crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, B::SENTINEL])
+                let result = crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, B::SENTINEL]);
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[BLOCK c1] id={} -> {}", id, crate::vm::fmt_b_short(result));
+                }
+                result
             }
             DerivedKind::Md1D => {
                 let modifier = d.g;
@@ -481,14 +492,32 @@ pub fn c1(f: B, x: B) -> B {
                     (x.0 >> 48) as u16,
                     x_arr.as_ref().map_or(-1i64, |a| a.ia() as i64),
                 ));
+                if crate::vm::prim_trace_enabled() {
+                    let glyph = PRIM_GLYPHS.chars().nth(prim_idx).map(|c| c.to_string())
+                        .unwrap_or_else(|| prim.glyph.to_string());
+                    eprintln!("[PRIM c1] {} x={}", glyph, crate::vm::fmt_b_short(x));
+                }
                 let result = match c1_fn(x, x_arr.as_ref()) {
                     Ok(r) => r,
                     Err(e) => rbqn_core::error::throw(e.to_string()),
                 };
-                prim_result_to_b(result)
+                let result_b = prim_result_to_b(result);
+                if crate::vm::prim_trace_enabled() {
+                    let glyph = PRIM_GLYPHS.chars().nth(prim_idx).map(|c| c.to_string())
+                        .unwrap_or_else(|| prim.glyph.to_string());
+                    eprintln!("[PRIM c1] {} -> {}", glyph, crate::vm::fmt_b_detail(result_b));
+                }
+                result_b
             }
             DerivedKind::SysFn { sys_idx } => {
-                dispatch_sys_c1(sys_idx, x)
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[SYS c1] sys={} x={}", sys_idx, crate::vm::fmt_b_short(x));
+                }
+                let result = dispatch_sys_c1(sys_idx, x);
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[SYS c1] sys={} -> {}", sys_idx, crate::vm::fmt_b_detail(result));
+                }
+                result
             }
             DerivedKind::LazyInvReg => {
                 // Lazy inverse-reg: d.f is the original function, find its inverse and apply
@@ -524,10 +553,17 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 c1(d.g, hx)
             }
             DerivedKind::FunBlock => {
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[BLOCK c2] id={} w={} x={}", id, crate::vm::fmt_b_short(w), crate::vm::fmt_b_short(x));
+                }
                 let bl = d.bl.as_ref().unwrap().clone();
                 let psc = d.sc.as_ref().unwrap().clone();
                 let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
-                crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, w])
+                let result = crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, w]);
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[BLOCK c2] id={} -> {}", id, crate::vm::fmt_b_short(result));
+                }
+                result
             }
             DerivedKind::Md1D => {
                 let modifier = d.g;
@@ -595,6 +631,12 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     (x.0 >> 48) as u16,
                     x_arr.as_ref().map_or(-1i64, |a| a.ia() as i64),
                 ));
+                if crate::vm::prim_trace_enabled() {
+                    let glyph = PRIM_GLYPHS.chars().nth(prim_idx).map(|c| c.to_string())
+                        .unwrap_or_else(|| prim.glyph.to_string());
+                    eprintln!("[PRIM c2] w={} {} x={} (prim_idx={})",
+                        crate::vm::fmt_b_short(w), glyph, crate::vm::fmt_b_short(x), prim_idx);
+                }
                 let result = match c2_fn(w, w_arr.as_ref(), x, x_arr.as_ref()) {
                     Ok(r) => r,
                     Err(e) => {
@@ -604,10 +646,23 @@ pub fn c2(f: B, w: B, x: B) -> B {
                         rbqn_core::error::throw(e.to_string())
                     },
                 };
-                prim_result_to_b(result)
+                let result_b = prim_result_to_b(result);
+                if crate::vm::prim_trace_enabled() {
+                    let glyph = PRIM_GLYPHS.chars().nth(prim_idx).map(|c| c.to_string())
+                        .unwrap_or_else(|| prim.glyph.to_string());
+                    eprintln!("[PRIM c2] {} -> {}", glyph, crate::vm::fmt_b_detail(result_b));
+                }
+                result_b
             }
             DerivedKind::SysFn { sys_idx } => {
-                dispatch_sys_c2(sys_idx, w, x)
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[SYS c2] sys={} w={} x={}", sys_idx, crate::vm::fmt_b_short(w), crate::vm::fmt_b_short(x));
+                }
+                let result = dispatch_sys_c2(sys_idx, w, x);
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[SYS c2] sys={} -> {}", sys_idx, crate::vm::fmt_b_detail(result));
+                }
+                result
             }
             DerivedKind::LazyInvReg => {
                 let inv_fn = inv_reg(d.f);
