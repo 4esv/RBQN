@@ -1,111 +1,135 @@
-# RBQN Requirements
+# Requirements: RBQN v2.0
 
-## Requirement Categories
+**Defined:** 2026-02-23
+**Core Value:** Correct BQN execution with identical behavior to CBQN
 
-### R-BOOT: Bootstrap Pipeline
-| ID | Requirement | Status | Priority |
-|----|------------|--------|----------|
-| R-BOOT-1 | Provide array (40 native functions) correctly populated | Validated | Critical |
-| R-BOOT-2 | Runtime0 executes and produces ~24 core runtime functions | Partial (7/9) | Critical |
-| R-BOOT-3 | Runtime1 executes using runtime0 output, produces 64-value runtime | Partial | Critical |
-| R-BOOT-4 | SetPrims callback enables •Decompose and •Glyph | Not started | Critical |
-| R-BOOT-5 | SetInv callback sets up inverse tables for ⁼ and ⌾ | Not started | Critical |
-| R-BOOT-6 | Compiler loads and can compile BQN source strings | Partial | Critical |
-| R-BOOT-7 | Formatter loads and provides •Fmt and •Repr | Partial (fallback works, self-hosted blocked by runtime1) | High |
-| R-BOOT-8 | REPL mode with variable persistence across evaluations | Not started | Medium |
+## v2.0 Requirements
 
-### R-PRIM: Primitive Functions (44 functions)
-| ID | Requirement | Status | Priority |
-|----|------------|--------|----------|
-| R-PRIM-1 | All 10 arithmetic functions (+-×÷⋆√⌊⌈\|¬) monadic + dyadic | Validated | Critical |
-| R-PRIM-2 | All 10 comparison functions (∧∨<>≠=≤≥≡≢) monadic + dyadic | Validated | Critical |
-| R-PRIM-3 | All 14 structural functions (⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/) monadic + dyadic | Validated | Critical |
-| R-PRIM-4 | All 10 search/sort/group functions (⍋⍒⊏⊑⊐⊒∊⍷⊔!) monadic + dyadic | Validated | Critical |
-| R-PRIM-5 | Pervasive extension (deep array arithmetic) | Not started | Critical |
-| R-PRIM-6 | Fill element propagation (all rules per spec) | Partial | High |
-| R-PRIM-7 | Identity elements for fold on empty arrays | Not started | High |
-| R-PRIM-8 | Character arithmetic (char±num, char-char) | Validated | Critical |
+### PIPE: Runtime Pipeline (Bypass + Compiler)
+- [ ] **PIPE-01**: Runtime bypass verified — native Rust primitives serve as runtime, not runtime0 BQN overrides
+- [ ] **PIPE-02**: PrimInd assertion — `•PrimInd "+"` returns correct index through bypass path
+- [ ] **PIPE-03**: SetInv callback wires inverse tables for ⁼ and ⌾ correctly (dyadic call)
+- [ ] **PIPE-04**: Runtime1 executes successfully with bypass in place
+- [ ] **PIPE-05**: Compiler loads and compiles arbitrary BQN source strings
+- [ ] **PIPE-06**: Formatter loads and provides •Fmt and •Repr
+- [ ] **PIPE-07**: REPL mode with variable persistence across evaluations
+- [ ] **PIPE-08**: `rbqn -e '1+1'` outputs `2`
 
-### R-MOD: Modifiers (20 modifiers)
-| ID | Requirement | Status | Priority |
-|----|------------|--------|----------|
-| R-MOD-1 | 1-modifiers: ˙ ˜ ˘ ¨ ⌜ ´ ˝ ` | Validated | Critical |
-| R-MOD-2 | 2-modifiers: ∘ ○ ⊸ ⟜ ⊘ ◶ ⍟ ⎊ | Validated | Critical |
-| R-MOD-3 | Undo (⁼) — inverse resolution for all required functions/modifiers | Not started | Critical |
-| R-MOD-4 | Under (⌾) — structural and invertible under | Not started | Critical |
-| R-MOD-5 | Rank (⎉) — apply function at specified rank | Not started | Critical |
-| R-MOD-6 | Depth (⚇) — apply function at specified depth | Not started | Critical |
+### MOD: Missing Modifiers
+- [ ] **MOD-01**: Undo (⁼) — native inverse table for 12 required primitives (+, -, ÷, ⋆, √, ∧, ¬, ⊢, ⊣, <, ⌽, ⍉, /)
+- [ ] **MOD-02**: Under (⌾) — structural mode for common cases, computational fallback
+- [ ] **MOD-03**: Rank (⎉) — apply function at specified rank
+- [ ] **MOD-04**: Depth (⚇) — apply function at specified depth
 
-### R-VM: Virtual Machine
-| ID | Requirement | Status | Priority |
-|----|------------|--------|----------|
-| R-VM-1 | All 31 standard opcodes executing correctly | Validated | Critical |
-| R-VM-2 | 18 optimized internal opcodes (EXTO, FN1Ci, SETNi, etc.) | Validated | Critical |
-| R-VM-3 | Block definition and closure creation (DFND) | Validated | Critical |
-| R-VM-4 | Train construction (TR2D, TR3D, TR3O) | Validated | Critical |
-| R-VM-5 | Header matching and predicates (SETH, PRED) | Validated | Critical |
-| R-VM-6 | Namespace support (FLDO, FLDM, ALIM, RETD) | Validated | Critical |
-| R-VM-7 | Multiple body dispatch (monadic/dyadic, case headers) | Validated | High |
+### PRIM: Primitive Completeness
+- [ ] **PRIM-01**: Pervasive extension (deep array arithmetic on nested arrays)
+- [ ] **PRIM-02**: Fill element propagation through all structural operations (↑, «, », >, ⥊↑)
+- [ ] **PRIM-03**: Identity elements for fold on empty arrays
+- [ ] **PRIM-04**: All edge cases in official test suite (empty arrays, rank-0, high-rank)
 
-### R-SYS: System Functions (~50 functions)
-| ID | Requirement | Status | Priority |
-|----|------------|--------|----------|
-| R-SYS-1 | •Type, •Decompose, •Glyph, •Fill | Partial | Critical |
-| R-SYS-2 | •BQN / •ReBQN (eval) | Not started | Critical |
-| R-SYS-3 | •Show, •Out, •Fmt, •Repr | Not started | High |
-| R-SYS-4 | •Import (file loading with caching) | Not started | High |
-| R-SYS-5 | •FChars, •FLines, •FBytes (file read) | Not started | High |
-| R-SYS-6 | •file namespace (full: path, At, List, Bytes, Chars, Lines, Open, etc.) | Not started | High |
-| R-SYS-7 | •args, •path, •name, •wdpath, •state | Not started | High |
-| R-SYS-8 | •math namespace (trig, combinatorial, Cbrt, Hypot, Erf, GCD, etc.) | Not started | Medium |
-| R-SYS-9 | •UnixTime, •MonoTime, •Delay | Not started | Medium |
-| R-SYS-10 | •MakeRand / •rand (Range, Deal, Subset) | Not started | Medium |
-| R-SYS-11 | •HashMap | Not started | Medium |
-| R-SYS-12 | •platform namespace (os, cpu.arch, bqn.impl, etc.) | Not started | Medium |
-| R-SYS-13 | •SH (shell execution) | Not started | Medium |
-| R-SYS-14 | •FFI (foreign function interface) | Not started | Low |
-| R-SYS-15 | •bit namespace (bitwise operations) | Not started | Low |
-| R-SYS-16 | •term namespace (terminal I/O) | Not started | Low |
-| R-SYS-17 | •_while_ (loop modifier) | Not started | Low |
-| R-SYS-18 | •ns namespace (introspection) | Not started | Low |
-| R-SYS-19 | •Exit, •ParseFloat, •Hash, •Cmp | Not started | Low |
-| R-SYS-20 | •FromUTF8, •ToUTF8, •CurrentError | Not started | Low |
+### SYS: System Functions (~50 total)
 
-### R-GPU: GPU Acceleration
-| ID | Requirement | Status | Priority |
-|----|------------|--------|----------|
-| R-GPU-1 | GPU context initialization (wgpu, Metal/Vulkan/DX12) | Validated | High |
-| R-GPU-2 | Buffer pool with size-bucketed reuse | Partial | High |
-| R-GPU-3 | Threshold-gated dispatch (CPU below ~50K elements) | Scaffolding | High |
-| R-GPU-4 | Element-wise arithmetic kernels (add, sub, mul, div for f32/i32) | Scaffolding | High |
-| R-GPU-5 | Reduction kernels (sum, min, max, and, or) | Scaffolding | High |
-| R-GPU-6 | Scan kernels (prefix sum, Blelloch) | Scaffolding | High |
-| R-GPU-7 | Sort kernels (radix sort) | Scaffolding | Medium |
-| R-GPU-8 | Kernel fusion for chained element-wise operations | Minimal | Medium |
-| R-GPU-9 | f64 support via SHADER_F64 feature detection + f32 fallback | Not started | High |
-| R-GPU-10 | VM integration (dispatch to GPU from primitive evaluation) | Not started | High |
-| R-GPU-11 | Benchmark harness with wgpu-profiler | Not started | Medium |
+#### Critical (test suite blockers)
+- [ ] **SYS-01**: •BQN / •ReBQN (eval BQN source)
+- [ ] **SYS-02**: •Out, •Show (output)
+- [ ] **SYS-03**: •Repr, •Fmt (formatting)
+- [ ] **SYS-04**: •args, •path, •name, •wdpath, •state (environment)
+- [ ] **SYS-05**: •Exit (process control)
+- [ ] **SYS-06**: •FChars, •FLines, •FBytes (file read)
+- [ ] **SYS-07**: •file.List, •file.At, •file.Name, •file.Parent (file paths)
 
-### R-TEST: Testing & Verification
-| ID | Requirement | Status | Priority |
-|----|------------|--------|----------|
-| R-TEST-1 | Pass simple.bqn (basic arithmetic, operations) | Not started | Critical |
-| R-TEST-2 | Pass literal.bqn (number/string/char literals) | Not started | Critical |
-| R-TEST-3 | Pass syntax.bqn (assignment, trains, blocks, lists) | Not started | Critical |
-| R-TEST-4 | Pass bytecode.bqn (VM opcode behavior) | Not started | Critical |
-| R-TEST-5 | Pass prim.bqn (all primitive operations) | Not started | Critical |
-| R-TEST-6 | Pass token.bqn (tokenizer edge cases) | Not started | High |
-| R-TEST-7 | Pass header.bqn (block headers, pattern matching) | Not started | High |
-| R-TEST-8 | Pass unhead.bqn (headerless multi-body blocks) | Not started | High |
-| R-TEST-9 | Pass namespace.bqn (creation, access, mutation) | Not started | High |
-| R-TEST-10 | Pass fill.bqn (fill element propagation) | Not started | Medium |
-| R-TEST-11 | Pass identity.bqn (fold/insert identity elements) | Not started | Medium |
-| R-TEST-12 | Pass under.bqn (⌾ operation) | Not started | Medium |
-| R-TEST-13 | Pass undo.bqn (⁼ operation) | Not started | Medium |
+#### High (real-world use)
+- [ ] **SYS-08**: •Import (file loading with caching)
+- [ ] **SYS-09**: •file.Lines, •file.Chars, •file.Bytes (write variants)
+- [ ] **SYS-10**: •file.Open, •file.CreateDir, •file.Rename, •file.Remove, •file.Exists, •file.Type
+- [ ] **SYS-11**: •Type, •Decompose, •Glyph, •Fill (introspection — partially done)
+- [ ] **SYS-12**: •GroupLen, •GroupOrd (group support — done)
+- [ ] **SYS-13**: •ParseFloat, •Hash, •Cmp (utility)
+- [ ] **SYS-14**: •FromUTF8, •ToUTF8 (encoding)
+- [ ] **SYS-15**: •CurrentError (error handling)
 
-### R-SELF: Self-Hosting
-| ID | Requirement | Status | Priority |
-|----|------------|--------|----------|
-| R-SELF-1 | Compile BQN compiler source using RBQN's own compiler | Not started | Milestone |
-| R-SELF-2 | Eliminate CBQN_PATH build-time dependency | Not started | Milestone |
-| R-SELF-3 | Embed pre-compiled bytecode in binary | Not started | Milestone |
+#### Medium (extended functionality)
+- [ ] **SYS-16**: •math namespace (Sin, Cos, Tan, Asin, Acos, Atan, Log, Cbrt, Hypot, Erf, Comb, Fact, GCD, LCM)
+- [ ] **SYS-17**: •UnixTime, •MonoTime, •Delay (time)
+- [ ] **SYS-18**: •MakeRand / •rand.Range, •rand.Deal, •rand.Subset (randomness)
+- [ ] **SYS-19**: •platform namespace (os, cpu.arch, bqn.impl, etc.)
+- [ ] **SYS-20**: •SH (shell execution)
+- [ ] **SYS-21**: •_while_ (loop modifier)
+
+#### Low (full parity)
+- [ ] **SYS-22**: •FFI (foreign function interface)
+- [ ] **SYS-23**: •bit namespace (bitwise operations)
+- [ ] **SYS-24**: •term namespace (terminal I/O, RawMode, CharB, Flush)
+- [ ] **SYS-25**: •ns namespace (Keys, Values, Has, Get)
+- [ ] **SYS-26**: •HashMap (hash map operations)
+
+### TEST: Official Test Suite (13 files)
+- [ ] **TEST-01**: Pass simple.bqn
+- [ ] **TEST-02**: Pass literal.bqn
+- [ ] **TEST-03**: Pass syntax.bqn
+- [ ] **TEST-04**: Pass bytecode.bqn
+- [ ] **TEST-05**: Pass prim.bqn
+- [ ] **TEST-06**: Pass token.bqn
+- [ ] **TEST-07**: Pass header.bqn
+- [ ] **TEST-08**: Pass unhead.bqn
+- [ ] **TEST-09**: Pass namespace.bqn
+- [ ] **TEST-10**: Pass fill.bqn
+- [ ] **TEST-11**: Pass identity.bqn
+- [ ] **TEST-12**: Pass under.bqn
+- [ ] **TEST-13**: Pass undo.bqn
+
+### GPU: GPU Acceleration
+- [ ] **GPU-01**: Array transfer layer (BqnArr ↔ GpuBuffer, f64→f32 conversion)
+- [ ] **GPU-02**: Precision guard — only dispatch integer-valued or ordinal ops to GPU
+- [ ] **GPU-03**: Dispatch hooks in hot primitives (arithmetic, sort/grade, reduce, scan)
+- [ ] **GPU-04**: Element-wise arithmetic kernels (add, sub, mul, div for f32/i32)
+- [ ] **GPU-05**: Reduction kernels (sum, min, max, and, or)
+- [ ] **GPU-06**: Scan kernels (prefix sum)
+- [ ] **GPU-07**: Sort/grade kernels (fix sign-bit bug in radix sort)
+- [ ] **GPU-08**: Kernel fusion for chained element-wise operations
+- [ ] **GPU-09**: Threshold validation — benchmark 50K/100K on Apple Silicon with criterion
+- [ ] **GPU-10**: Measurable speedup demonstrated on arrays >50K elements
+
+### SELF: Self-Hosting
+- [ ] **SELF-01**: Compile BQN compiler source (c.bqn) using RBQN's compiler
+- [ ] **SELF-02**: Verify output bytecode matches CBQN-generated bytecode
+- [ ] **SELF-03**: Embed pre-compiled bytecode in binary (commit to repo)
+- [ ] **SELF-04**: build.rs falls back to embedded bytecode when CBQN_PATH absent
+- [ ] **SELF-05**: `cargo install rbqn` works with no external dependencies
+
+## Future Requirements
+
+### Performance
+- **PERF-01**: SIMD-accelerated primitive dispatch for CPU path
+- **PERF-02**: Type-specialized dispatch (avoid boxing for homogeneous arrays)
+- **PERF-03**: Array squeeze (compress storage for small-range integers)
+
+### Advanced
+- **ADV-01**: Multi-threaded execution (requires removing global Mutex stores)
+- **ADV-02**: Custom GPU kernel API for user-defined compute shaders
+- **ADV-03**: JIT compilation for hot BQN functions
+
+## Out of Scope
+
+| Feature | Reason |
+|---------|--------|
+| Multi-threaded execution | Global mutex stores (ARR_STORE, DERIVED_STORE, NS_STORE) prevent this; architectural change |
+| Custom GPU kernel API | Internal optimization only — no user-facing GPU interface this milestone |
+| JIT compilation | Premature optimization — get correct first |
+| GUI/IDE integration | Not part of CLI drop-in replacement |
+| Package manager | Not in CBQN, not needed for drop-in |
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| (to be filled by roadmapper) | | |
+
+**Coverage:**
+- v2.0 requirements: 57 total
+- Mapped to phases: 0
+- Unmapped: 57
+
+---
+*Requirements defined: 2026-02-23*
+*Last updated: 2026-02-23 after v2.0 milestone definition*
