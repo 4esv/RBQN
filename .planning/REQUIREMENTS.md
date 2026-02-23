@@ -30,11 +30,11 @@
 ### SYS: System Functions (~50 total)
 
 #### Critical (test suite blockers)
-- [ ] **SYS-01**: •BQN / •ReBQN (eval BQN source)
-- [ ] **SYS-02**: •Out, •Show (output)
-- [ ] **SYS-03**: •Repr, •Fmt (formatting)
-- [ ] **SYS-04**: •args, •path, •name, •wdpath, •state (environment)
-- [ ] **SYS-05**: •Exit (process control)
+- [x] **SYS-01**: •BQN / •ReBQN (eval BQN source)
+- [x] **SYS-02**: •Out, •Show (output)
+- [x] **SYS-03**: •Repr, •Fmt (formatting)
+- [x] **SYS-04**: •args, •path, •name, •wdpath, •state (environment)
+- [x] **SYS-05**: •Exit (process control)
 - [ ] **SYS-06**: •FChars, •FLines, •FBytes (file read)
 - [ ] **SYS-07**: •file.List, •file.At, •file.Name, •file.Parent (file paths)
 
@@ -131,11 +131,11 @@
 | PIPE-06 | Phase 1 | Pending |
 | PIPE-07 | Phase 1 | Pending |
 | PIPE-08 | Phase 1 | Pending |
-| SYS-01 | Phase 1 | Pending |
-| SYS-02 | Phase 1 | Pending |
-| SYS-03 | Phase 1 | Pending |
-| SYS-04 | Phase 1 | Pending |
-| SYS-05 | Phase 1 | Pending |
+| SYS-01 | Phase 1 | Complete |
+| SYS-02 | Phase 1 | Complete |
+| SYS-03 | Phase 1 | Complete |
+| SYS-04 | Phase 1 | Complete |
+| SYS-05 | Phase 1 | Complete |
 | TEST-01 | Phase 2 | Pending |
 | TEST-02 | Phase 2 | Pending |
 | TEST-03 | Phase 2 | Pending |

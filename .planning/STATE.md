@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 1 of 6 (Runtime Bypass and Working Pipeline)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-02-23 — Roadmap v2.0 created; milestone replanned from scratch with Option B strategy
+Plan: 2 of 3 in current phase
+Status: In progress
+Last activity: 2026-02-23 — Completed plan 01-02 (system functions)
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 10%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
-- Average duration: —
-- Total execution time: 0 hours
+- Total plans completed: 1
+- Average duration: 2 min
+- Total execution time: 0.03 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01 | 1 | 2min | 2min |
 
 **Recent Trend:**
-- Last 5 plans: —
-- Trend: —
+- Last 5 plans: 01-02 (2min)
+- Trend: Starting
 
 *Updated after each plan completion*
 
@@ -43,6 +43,9 @@ Progress: [░░░░░░░░░░] 0%
 - [Pre-planning]: Scrapped M1 roadmap entirely; replanned for v2.0 with GPU scope included
 - [Pre-planning]: Full CBQN test suite (13 files) required; GPU integration in-scope this milestone
 - [Pre-planning]: Runtime bypass already implemented in bootstrap.rs — Phase 1 is verification, not new implementation
+- [01-02]: System functions use global Mutex<Option<SysRuntime>> for •BQN re-evaluation state
+- [01-02]: Environment values resolved at lookup time, not as callable functions
+- [01-02]: •Out/•BQN tests blocked on pre-existing compiler string literal bug
 
 ### Pending Todos
 
@@ -58,5 +61,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-23
-Stopped at: Roadmap created; ready to plan Phase 1
+Stopped at: Completed 01-02-PLAN.md (system functions)
 Resume file: None
