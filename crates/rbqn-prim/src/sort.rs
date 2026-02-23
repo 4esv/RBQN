@@ -1,4 +1,5 @@
 use rbqn_core::*;
+use rbqn_core::array;
 use crate::dispatch::PrimResult;
 
 fn grade(arr: &BqnArr, ascending: bool) -> Result<Vec<i32>> {
@@ -65,6 +66,32 @@ pub fn grade_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍒𝕩: 𝕩 must be an array".into()))?;
     let indices = grade(arr, false)?;
     Ok(PrimResult::Array(BqnArr::new_vec_i32(indices)))
+}
+
+// ∧ monad: sort up (ascending) — returns sorted values, NOT the grade
+pub fn sort_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let arr = xa.ok_or_else(|| BqnError::Type("∧𝕩: 𝕩 must be an array".into()))?;
+    let indices = grade(arr, true)?;
+    // Apply the permutation to get sorted values
+    let mut result = Vec::with_capacity(indices.len());
+    for &idx in &indices {
+        result.push(arr.get(idx as usize)?);
+    }
+    let out = array::typed_arr_from_b_vec(result, arr.shape.clone(), arr.fill);
+    Ok(PrimResult::Array(out))
+}
+
+// ∨ monad: sort down (descending) — returns sorted values, NOT the grade
+pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let arr = xa.ok_or_else(|| BqnError::Type("∨𝕩: 𝕩 must be an array".into()))?;
+    let indices = grade(arr, false)?;
+    // Apply the permutation to get sorted values
+    let mut result = Vec::with_capacity(indices.len());
+    for &idx in &indices {
+        result.push(arr.get(idx as usize)?);
+    }
+    let out = array::typed_arr_from_b_vec(result, arr.shape.clone(), arr.fill);
+    Ok(PrimResult::Array(out))
 }
 
 // ⍋ dyad: bins (ascending)

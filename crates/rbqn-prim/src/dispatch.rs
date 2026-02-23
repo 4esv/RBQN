@@ -63,8 +63,8 @@ pub fn get_runtime() -> Vec<Primitive> {
         Primitive { name: "not",   glyph: "¬", c1: Some(arith_monad::not_c1),   c2: Some(arith_dyad::not_c2) },
 
         // Row 1: ∧∨<>≠=≤≥≡≢
-        Primitive { name: "and",   glyph: "∧", c1: Some(sort::grade_up_c1),    c2: Some(arith_dyad::and_c2) },
-        Primitive { name: "or",    glyph: "∨", c1: Some(sort::grade_down_c1),  c2: Some(arith_dyad::or_c2) },
+        Primitive { name: "and",   glyph: "∧", c1: Some(sort::sort_up_c1),     c2: Some(arith_dyad::and_c2) },
+        Primitive { name: "or",    glyph: "∨", c1: Some(sort::sort_down_c1),   c2: Some(arith_dyad::or_c2) },
         Primitive { name: "lt",    glyph: "<", c1: Some(structural::enclose_c1), c2: Some(compare::lt_c2) },
         Primitive { name: "gt",    glyph: ">", c1: Some(structural::merge_c1),   c2: Some(compare::gt_c2) },
         Primitive { name: "ne",    glyph: "≠", c1: Some(structural::length_c1),  c2: Some(compare::ne_c2) },
