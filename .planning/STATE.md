@@ -7,7 +7,7 @@ M1: Core Language Completeness
 01-fix-bootstrap-pipeline — Plans 01 and 03 COMPLETE, Plan 02 pending
 
 ## Last Session
-Last activity: 2026-02-21 - Completed plan 01-03: formatter loading + integration tests
+Last activity: 2026-02-23 - Completed quick task 2: RBQN_PRIM_TRACE env-var primitive tracing
 
 ## Decisions Made
 - Fork c1: `(f g h) x = (f x) g (h x)` — fixed broken 3-step dispatch in derive.rs
@@ -120,3 +120,4 @@ None currently blocking runtime0. Fixed:
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 1 | Start GPU-accelerated ML primitives | 2026-02-21 | 1997575 | [1-start-gpu-accelerated-ml-primitives](./quick/1-start-gpu-accelerated-ml-primitives/) |
+| 2 | Add tracing to compiler-used primitives | 2026-02-23 | 386b409 | [2-add-tracing-to-compiler-used-primitives-](./quick/2-add-tracing-to-compiler-used-primitives-/) |
