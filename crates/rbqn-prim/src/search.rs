@@ -60,6 +60,26 @@ pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
         }
         result.push(found);
     }
+
+    // Trace: detect glyph lookups during compilation (array ⊐ array with chars)
+    if std::env::var("RBQN_COMP_TRACE").is_ok() && xia > 0 {
+        if let Ok(x0) = xarr.get(0) {
+            if x0.is_c32() && wia >= 10 {
+                let xchars: String = (0..xia.min(10)).filter_map(|i| {
+                    xarr.get(i).ok().and_then(|b| {
+                        if b.is_c32() { char::from_u32(b.0 as u32) } else { None }
+                    })
+                }).collect();
+                let wchars: String = (0..wia.min(20)).filter_map(|i| {
+                    warr.get(i).ok().and_then(|b| {
+                        if b.is_c32() { char::from_u32(b.0 as u32) } else { None }
+                    })
+                }).collect();
+                eprintln!("[⊐ TRACE arr] w=\"{}\"({}) ⊐ x=\"{}\"({}) → {:?}", wchars, wia, xchars, xia, &result);
+            }
+        }
+    }
+
     let mut out = BqnArr::new_vec_i32(result);
     out.shape = xarr.shape.clone();
     Ok(PrimResult::Array(out))

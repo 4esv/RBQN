@@ -172,6 +172,25 @@ fn exec_string_inner(
     if std::env::var("RBQN_COMP_TRACE").is_ok() {
         eprintln!("[COMP] bc={:?}", bc);
 
+        // Trace raw objs_b
+        if let Some(objs_arr) = get_arr(objs_b) {
+            eprintln!("[COMP] objs_b: ia={} shape={:?} data_kind={}", objs_arr.ia(), objs_arr.shape, match &objs_arr.data {
+                rbqn_core::array::ArrData::Boxed(_) => "Boxed",
+                rbqn_core::array::ArrData::F64(_) => "F64",
+                rbqn_core::array::ArrData::I32(_) => "I32",
+                rbqn_core::array::ArrData::I16(_) => "I16",
+                rbqn_core::array::ArrData::I8(_) => "I8",
+                rbqn_core::array::ArrData::C32(_) => "C32",
+                rbqn_core::array::ArrData::C16(_) => "C16",
+                rbqn_core::array::ArrData::C8(_) => "C8",
+                rbqn_core::array::ArrData::Bit(_) => "Bit",
+            });
+            for i in 0..objs_arr.ia() {
+                let raw = objs_arr.get(i).unwrap_or(B::SENTINEL);
+                eprintln!("[COMP]   objs_b[{}] = {:#018x} is_val={} is_fun={} is_f64={} is_arr={}", i, raw.0, raw.is_val(), raw.is_fun(), raw.is_f64(), raw.is_arr());
+            }
+        }
+
         // Format objects
         if let Some(objs_arr) = get_arr(objs_b) {
             let n = objs_arr.ia();
@@ -179,14 +198,14 @@ fn exec_string_inner(
             for i in 0..n {
                 let b = objs_arr.get(i).unwrap_or(B::SENTINEL);
                 let desc = if b.is_f64() {
-                    format!("f64({})", b.o2f())
+                    format!("f64({}) raw={:#018x}", b.o2f(), b.0)
                 } else if b.is_c32() {
                     let ch = char::from_u32(b.0 as u32).unwrap_or('?');
-                    format!("c32('{}')", ch)
+                    format!("c32('{}') raw={:#018x}", ch, b.0)
                 } else if b.is_fun() {
                     let fid = (b.0 & 0xFFFFFFFFFFFF) >> 3;
                     let fd = rbqn_vm::derive::get_derived(fid);
-                    format!("fun({:?})", fd.kind)
+                    format!("fun({:?}) raw={:#018x}", fd.kind, b.0)
                 } else if b.is_md1() {
                     "md1".to_string()
                 } else if b.is_md2() {
