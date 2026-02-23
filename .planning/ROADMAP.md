@@ -43,10 +43,12 @@ Plans:
   2. `simple.bqn` passes: basic arithmetic, assignment, and simple conditionals all correct
   3. `literal.bqn` passes: number literals, character literals, and string literals all parse and evaluate correctly
   4. `syntax.bqn` and `bytecode.bqn` pass: block syntax and compiled bytecode correctness verified
-**Plans**: TBD
+**Plans:** 3 plans
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md — Wire official test harness: implement •file namespace (Lines, List), run baseline
+- [ ] 02-02-PLAN.md — Fix simple.bqn (20 tests) and bytecode.bqn (37 tests) to 0 failures
+- [ ] 02-03-PLAN.md — Fix literal.bqn (69 tests) and syntax.bqn (244 tests) to 0 failures
 
 ### Phase 3: Language Completeness
 **Goal**: All 20 modifiers work, primitive edge cases match spec, and essential system functions exist — everything the hard test files require
@@ -114,7 +116,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Runtime Bypass and Working Pipeline | 0/3 | Planning complete | - |
-| 2. Test Baseline | 0/? | Not started | - |
+| 2. Test Baseline | 0/3 | Planning complete | - |
 | 3. Language Completeness | 0/? | Not started | - |
 | 4. Full Test Suite Green | 0/? | Not started | - |
 | 5. GPU Integration | 0/? | Not started | - |
