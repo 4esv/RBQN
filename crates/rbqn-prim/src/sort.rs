@@ -2,10 +2,15 @@ use rbqn_core::*;
 use crate::dispatch::PrimResult;
 
 fn grade(arr: &BqnArr, ascending: bool) -> Result<Vec<i32>> {
-    let ia = arr.ia();
-    let mut indices: Vec<i32> = (0..ia as i32).collect();
+    // NOTE: BQN grade operates on the first axis (rows for 2D arrays).
+    // For rank-1 arrays, each element is a cell. For rank-N, each cell is a
+    // row-major sub-array. The result length equals arr.shape[0] (nrows).
+    let nrows = if arr.rank() == 0 { 1 } else { arr.shape[0] };
+    let cell_size: usize = if arr.rank() <= 1 { 1 } else { arr.shape[1..].iter().product() };
+    let mut indices: Vec<i32> = (0..nrows as i32).collect();
 
-    if arr.el_type().is_num() {
+    if cell_size == 1 && arr.el_type().is_num() {
+        // Fast path: rank-1 numeric array — compare scalars directly
         let vals = arr.f64_iter()?;
         indices.sort_by(|&a, &b| {
             let va = vals[a as usize];
@@ -16,20 +21,32 @@ fn grade(arr: &BqnArr, ascending: bool) -> Result<Vec<i32>> {
                 vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal)
             }
         });
-    } else {
-        let mut vals = Vec::with_capacity(ia);
-        for i in 0..ia {
+    } else if cell_size == 1 {
+        // rank-1 non-numeric: compare elements
+        let mut vals = Vec::with_capacity(nrows);
+        for i in 0..nrows {
             vals.push(arr.get(i)?);
         }
         indices.sort_by(|&a, &b| {
             let va = vals[a as usize];
             let vb = vals[b as usize];
             let cmp = compare::compare(va, vb);
-            if ascending {
-                cmp.cmp(&0)
-            } else {
-                0.cmp(&cmp)
+            if ascending { cmp.cmp(&0) } else { 0.cmp(&cmp) }
+        });
+    } else {
+        // Higher-rank: compare rows lexicographically, cell by cell
+        indices.sort_by(|&row_a, &row_b| {
+            let base_a = row_a as usize * cell_size;
+            let base_b = row_b as usize * cell_size;
+            for col in 0..cell_size {
+                let va = arr.get(base_a + col).unwrap_or(B::SENTINEL);
+                let vb = arr.get(base_b + col).unwrap_or(B::SENTINEL);
+                let cmp = compare::compare(va, vb);
+                if cmp != 0 {
+                    return if ascending { cmp.cmp(&0) } else { 0.cmp(&cmp) };
+                }
             }
+            std::cmp::Ordering::Equal
         });
     }
 

@@ -15,12 +15,11 @@ use rbqn_vm::vm::{get_arr, tag_arr};
 use std::sync::Arc;
 
 fn main() {
-    let args = cli::parse_args();
+    // Suppress default panic output — BQN errors use panic-based throw()
+    // and we catch them with catch_unwind for clean error messages.
+    std::panic::set_hook(Box::new(|_| {}));
 
-    if let cli::Mode::Help = args.mode {
-        cli::print_help();
-        return;
-    }
+    let args = cli::parse_args();
 
     let rt = match bootstrap::bootstrap() {
         Ok(rt) => rt,
@@ -30,46 +29,56 @@ fn main() {
         }
     };
 
+    // NOTE: Register the global runtime state for •BQN re-evaluation after bootstrap.
+    rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
+
+    // Set •args to empty for -e/-p mode (file args will override when executing a file)
+    rbqn_vm::derive::set_sys_args(&[]);
+    // Set •path and •name to empty for -e/-p mode
+    rbqn_vm::derive::set_sys_path("");
+
     let _ = args.heap_max; // TODO: enforce heap limit
 
-    let result = match args.mode {
-        cli::Mode::Help => unreachable!(),
-        cli::Mode::Repl => {
-            repl::run_repl(&rt);
-            Ok(())
-        }
-        cli::Mode::Eval(code) => {
-            exec_string(&rt, &code).map(|r| {
-                // NOTE: BQN -e prints the last expression result for REPL-like behavior
+    // Execute pre-REPL arguments
+    for action in &args.actions {
+        let result = match action {
+            cli::Action::Eval(code) => exec_string(&rt, code).map(|_| ()),
+            cli::Action::Print(code) => exec_string(&rt, code).map(|r| {
                 println!("{}", format_result(&rt, &r));
-            })
-        }
-        cli::Mode::Print(code) => {
-            exec_string(&rt, &code).map(|r| {
-                println!("{}", format_result(&rt, &r));
-            })
-        }
-        cli::Mode::Output(code) => {
-            exec_string(&rt, &code).map(|r| {
-                println!("{}", format_result(&rt, &r));
-            })
-        }
-        cli::Mode::File(path, _file_args) => {
-            if path == "-" {
-                let code = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
-                exec_string(&rt, &code).map(|_| ())
-            } else {
-                match std::fs::read_to_string(&path) {
-                    Ok(code) => exec_string(&rt, &code).map(|_| ()),
-                    Err(e) => Err(BqnError::Domain(format!("cannot read {path}: {e}"))),
+            }),
+            cli::Action::Output(code) => exec_string(&rt, code).and_then(|r| {
+                output_raw(&r)
+            }),
+            cli::Action::File(path, file_args) => {
+                if path == "-" {
+                    // stdin: set path/name to empty
+                    rbqn_vm::derive::set_sys_path("");
+                    rbqn_vm::derive::set_sys_args(file_args);
+                    let code = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
+                    exec_string(&rt, &code).map(|_| ())
+                } else {
+                    // Set •path to absolute path, •name to basename, •args to file args
+                    let abs_path = std::fs::canonicalize(path)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|_| path.to_string());
+                    rbqn_vm::derive::set_sys_path(&abs_path);
+                    rbqn_vm::derive::set_sys_args(file_args);
+                    match std::fs::read_to_string(path) {
+                        Ok(code) => exec_string(&rt, &code).map(|_| ()),
+                        Err(e) => Err(BqnError::Domain(format!("cannot read {path}: {e}"))),
+                    }
                 }
             }
+        };
+        if let Err(e) = result {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
         }
-    };
+    }
 
-    if let Err(e) = result {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
+    // REPL if requested or no actions given
+    if args.repl {
+        repl::run_repl(&rt, args.silent);
     }
 }
 
@@ -83,15 +92,61 @@ fn exec_string(
         ));
     }
 
+    // Wrap in catch_unwind: BQN errors use panic-based throw()
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        exec_string_inner(rt, code)
+    })) {
+        Ok(result) => result,
+        Err(panic) => {
+            let msg = if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "unknown error".into()
+            };
+            // Strip "Domain error: " prefix since BqnError::Domain adds it
+            let msg = msg.strip_prefix("Domain error: ")
+                .or_else(|| msg.strip_prefix("Not yet implemented: "))
+                .unwrap_or(&msg);
+            Err(BqnError::Domain(msg.to_string()))
+        }
+    }
+}
+
+fn exec_string_inner(
+    rt: &bootstrap::Runtime,
+    code: &str,
+) -> rbqn_core::Result<B> {
     // Build compiler arguments: ⟨runtime, •BQN_SYS, varNames, varDepths⟩
-    // For top-level execution: no outer scope vars
     let rt_arr = tag_arr(BqnArr::from_b_vec(rt.runtime.clone()));
-    let sys_fn = rbqn_vm::derive::m_sys_fn(100); // placeholder for •BQN system
+
+    // Verify runtime array integrity
+    if std::env::var("RBQN_COMP_TRACE").is_ok() {
+        if let Some(rta) = get_arr(rt_arr) {
+            eprintln!("[COMP] runtime array: {} elems, data_kind={}", rta.ia(), match &rta.data {
+                rbqn_core::array::ArrData::Boxed(_) => "Boxed",
+                rbqn_core::array::ArrData::F64(_) => "F64",
+                _ => "other",
+            });
+            for i in [0, 1, 2, 3, 37] {
+                let b = rta.get(i).unwrap();
+                if b.is_fun() {
+                    let fid = (b.0 & 0xFFFFFFFFFFFF) >> 3;
+                    let fd = rbqn_vm::derive::get_derived(fid);
+                    eprintln!("[COMP]   rt[{}] = fun({:?}) raw={:#018x}", i, fd.kind, b.0);
+                } else {
+                    eprintln!("[COMP]   rt[{}] = tag={:#06x} raw={:#018x}", i, (b.0 >> 48) as u16, b.0);
+                }
+            }
+        }
+    }
+
+    let sys_fn = rbqn_vm::derive::m_sys_fn(100);
     let var_names = tag_arr(BqnArr::empty_harr());
     let var_depths = tag_arr(BqnArr::new_vec_i32(vec![]));
     let comp_args = tag_arr(BqnArr::from_b_vec(vec![rt_arr, sys_fn, var_names, var_depths]));
 
-    // Encode source as char array
     let src_chars: Vec<u32> = code.chars().map(|c| c as u32).collect();
     let src_b = tag_arr(BqnArr::new_vec_c32(src_chars));
 
@@ -105,22 +160,116 @@ fn exec_string(
     let objs_b = comp_arr.get(1).map_err(|e| BqnError::Domain(e.to_string()))?;
     let blocks_b = comp_arr.get(2).map_err(|e| BqnError::Domain(e.to_string()))?;
     let bodies_b = comp_arr.get(3).map_err(|e| BqnError::Domain(e.to_string()))?;
+
     let indices_b = comp_arr.get(4).unwrap_or(B::SENTINEL);
     let token_info_b = comp_arr.get(5).unwrap_or(B::SENTINEL);
 
-    // Extract bytecode as i32 slice
     let bc_arr = get_arr(bc_b)
         .ok_or_else(|| BqnError::Domain("compiler bc is not an array".into()))?;
     let bc: Vec<i32> = bc_arr.i32_iter().map_err(|e| BqnError::Domain(e.to_string()))?;
 
-    // Extract objects as Vec<B>
+    // Compiler trace: gated behind RBQN_COMP_TRACE=1
+    if std::env::var("RBQN_COMP_TRACE").is_ok() {
+        eprintln!("[COMP] bc={:?}", bc);
+
+        // Format objects
+        if let Some(objs_arr) = get_arr(objs_b) {
+            let n = objs_arr.ia();
+            let mut descs = Vec::with_capacity(n);
+            for i in 0..n {
+                let b = objs_arr.get(i).unwrap_or(B::SENTINEL);
+                let desc = if b.is_f64() {
+                    format!("f64({})", b.o2f())
+                } else if b.is_c32() {
+                    let ch = char::from_u32(b.0 as u32).unwrap_or('?');
+                    format!("c32('{}')", ch)
+                } else if b.is_fun() {
+                    let fid = (b.0 & 0xFFFFFFFFFFFF) >> 3;
+                    let fd = rbqn_vm::derive::get_derived(fid);
+                    format!("fun({:?})", fd.kind)
+                } else if b.is_md1() {
+                    "md1".to_string()
+                } else if b.is_md2() {
+                    "md2".to_string()
+                } else if b.is_arr() {
+                    if let Some(a) = get_arr(b) {
+                        format!("arr(len={})", a.ia())
+                    } else {
+                        "arr(?)".to_string()
+                    }
+                } else if b.q_n() {
+                    "nothing".to_string()
+                } else {
+                    format!("{:#018x}", b.0)
+                };
+                descs.push(desc);
+            }
+            eprintln!("[COMP] objs: {} items [{}]", n, descs.join(", "));
+        } else {
+            eprintln!("[COMP] objs: not an array");
+        }
+
+        // Format blocks
+        if let Some(blocks_arr) = get_arr(blocks_b) {
+            eprintln!("[COMP] blocks: {} items", blocks_arr.ia());
+            for i in 0..blocks_arr.ia() {
+                if let Ok(blk) = blocks_arr.get(i) {
+                    if let Some(ba) = get_arr(blk) {
+                        let elems: Vec<String> = (0..ba.ia())
+                            .map(|j| {
+                                let e = ba.get(j).unwrap_or(B::SENTINEL);
+                                if e.is_f64() { format!("{}", e.o2f() as i32) }
+                                else { format!("{:#018x}", e.0) }
+                            })
+                            .collect();
+                        eprintln!("[COMP]   block[{}]: [{}]", i, elems.join(", "));
+                    }
+                }
+            }
+        } else {
+            eprintln!("[COMP] blocks: not an array");
+        }
+
+        // Format bodies
+        if let Some(bodies_arr) = get_arr(bodies_b) {
+            eprintln!("[COMP] bodies: {} items", bodies_arr.ia());
+            for i in 0..bodies_arr.ia() {
+                if let Ok(bod) = bodies_arr.get(i) {
+                    if let Some(ba) = get_arr(bod) {
+                        let elems: Vec<String> = (0..ba.ia())
+                            .map(|j| {
+                                let e = ba.get(j).unwrap_or(B::SENTINEL);
+                                if e.is_f64() { format!("{}", e.o2f() as i32) }
+                                else if e.is_arr() {
+                                    if let Some(inner) = get_arr(e) {
+                                        let vals: Vec<String> = (0..inner.ia())
+                                            .map(|k| {
+                                                let v = inner.get(k).unwrap_or(B::SENTINEL);
+                                                if v.is_f64() { format!("{}", v.o2f() as i32) }
+                                                else { format!("{:#018x}", v.0) }
+                                            })
+                                            .collect();
+                                        format!("[{}]", vals.join(","))
+                                    } else { "arr(?)".to_string() }
+                                }
+                                else { format!("{:#018x}", e.0) }
+                            })
+                            .collect();
+                        eprintln!("[COMP]   body[{}]: [{}]", i, elems.join(", "));
+                    }
+                }
+            }
+        } else {
+            eprintln!("[COMP] bodies: not an array");
+        }
+    }
+
     let objs: Vec<B> = if let Some(objs_arr) = get_arr(objs_b) {
         (0..objs_arr.ia()).map(|i| objs_arr.get(i).unwrap_or(B::SENTINEL)).collect()
     } else {
         vec![]
     };
 
-    // Blocks and bodies stay as B arrays for compile_all
     let blocks: Vec<B> = if let Some(blocks_arr) = get_arr(blocks_b) {
         (0..blocks_arr.ia()).map(|i| blocks_arr.get(i).unwrap_or(B::SENTINEL)).collect()
     } else {
@@ -133,7 +282,6 @@ fn exec_string(
         vec![]
     };
 
-    // Compile the user code
     let src_chars2: Vec<u32> = code.chars().map(|c| c as u32).collect();
     let src_b2 = tag_arr(BqnArr::new_vec_c32(src_chars2));
     let block = compile_all(
@@ -144,18 +292,44 @@ fn exec_string(
         indices_b,
         token_info_b,
         src_b2,
-        B::SENTINEL, // fullpath
-        None,         // sc
-        0,            // ns_result
+        B::SENTINEL,
+        None,
+        0,
     );
 
-    // After compile_block swap, bodies[0] is the first monadic body
     let body = block.bodies[0].clone();
     let var_am = body.var_am;
     let root_scope = Arc::new(Scope::new(body.clone(), None, var_am, &[]));
-    let result = eval_fun_block(block, root_scope);
+    Ok(eval_fun_block(block, root_scope))
+}
 
-    Ok(result)
+/// Raw output for -o: write characters directly, error on non-characters
+fn output_raw(val: &B) -> rbqn_core::Result<()> {
+    use std::io::Write;
+    if val.is_arr() {
+        if let Some(arr) = get_arr(*val) {
+            let mut out = std::io::stdout().lock();
+            for i in 0..arr.ia() {
+                let b = arr.get(i).map_err(|e| BqnError::Domain(e.to_string()))?;
+                if b.is_c32() {
+                    let c = b.o2c().map_err(|_| BqnError::Domain("Trying to output non-character".into()))?;
+                    if let Some(ch) = char::from_u32(c) {
+                        let mut buf = [0u8; 4];
+                        let s = ch.encode_utf8(&mut buf);
+                        out.write_all(s.as_bytes()).map_err(|e| BqnError::Domain(e.to_string()))?;
+                    }
+                } else {
+                    return Err(BqnError::Domain("Trying to output non-character".into()));
+                }
+            }
+            out.flush().map_err(|e| BqnError::Domain(e.to_string()))?;
+            Ok(())
+        } else {
+            Err(BqnError::Domain("Trying to output non-character".into()))
+        }
+    } else {
+        Err(BqnError::Domain("Trying to output non-character".into()))
+    }
 }
 
 fn format_result(rt: &bootstrap::Runtime, val: &B) -> String {

@@ -3,7 +3,7 @@ use rustyline::DefaultEditor;
 
 use crate::bootstrap::Runtime;
 
-pub fn run_repl(rt: &Runtime) {
+pub fn run_repl(rt: &Runtime, silent: bool) {
     let mut rl = match DefaultEditor::new() {
         Ok(rl) => rl,
         Err(e) => {
@@ -25,7 +25,7 @@ pub fn run_repl(rt: &Runtime) {
                     continue;
                 }
                 let _ = rl.add_history_entry(&line);
-                eval_line(rt, &line);
+                eval_line(rt, &line, silent);
             }
             Err(ReadlineError::Interrupted) => {
                 continue;
@@ -46,7 +46,7 @@ pub fn run_repl(rt: &Runtime) {
     }
 }
 
-fn eval_line(rt: &Runtime, line: &str) {
+fn eval_line(rt: &Runtime, line: &str, silent: bool) {
     // Handle REPL commands
     if line.starts_with(')') {
         let cmd = line[1..].trim();
@@ -59,8 +59,10 @@ fn eval_line(rt: &Runtime, line: &str) {
 
     match crate::exec_string(rt, line) {
         Ok(result) => {
-            let formatted = crate::format_result(rt, &result);
-            println!("{formatted}");
+            if !silent {
+                let formatted = crate::format_result(rt, &result);
+                println!("{formatted}");
+            }
         }
         Err(e) => {
             eprintln!("Error: {e}");
