@@ -24,18 +24,34 @@ pub fn self_indexOf_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
 // ⊐ dyad: index of
 #[allow(non_snake_case)]
-pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊐𝕩: 𝕨 must be an array".into()))?;
-    let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊐𝕩: 𝕩 must be an array".into()))?;
     let wia = warr.ia();
-    let xia = xarr.ia();
-    if xia == 0 {
-        eprintln!("[DEBUG indexOf] empty x (xia=0), wia={}", wia);
+
+    // Trace: detect glyph lookups during compilation
+    if std::env::var("RBQN_COMP_TRACE").is_ok() && x.is_c32() {
+        let ch = char::from_u32(x.0 as u32).unwrap_or('?');
+        eprintln!("[⊐ TRACE] atom char '{}' (u32={}) in array of {} elems", ch, x.0 as u32, wia);
     }
+
+    // Handle atom x: w⊐atom returns scalar index
+    if x.is_atom() {
+        let mut found = wia as i32;
+        for j in 0..wia {
+            if x.atom_equal(warr.get(j)?) {
+                found = j as i32;
+                break;
+            }
+        }
+        return Ok(PrimResult::Scalar(B::m_i32(found)));
+    }
+
+    let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊐𝕩: 𝕩 must be an array".into()))?;
+    let xia = xarr.ia();
     let mut result = Vec::with_capacity(xia);
     for i in 0..xia {
         let xv = xarr.get(i)?;
-        let mut found = wia as i32; // not found → ≠𝕨
+        let mut found = wia as i32;
         for j in 0..wia {
             if xv.atom_equal(warr.get(j)?) {
                 found = j as i32;

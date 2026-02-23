@@ -5,6 +5,72 @@ use rbqn_core::{B, FUN_TAG, MD1_TAG, MD2_TAG, tagu64};
 use crate::block::Block;
 use crate::scope::Scope;
 
+// --- Global state for system functions ---
+
+/// Global BQN runtime state for •BQN re-evaluation.
+/// Set after bootstrap completes.
+pub static SYS_RUNTIME: std::sync::LazyLock<Mutex<Option<SysRuntime>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Snapshot of what •BQN needs to evaluate code.
+pub struct SysRuntime {
+    pub compiler: B,
+    pub runtime: Vec<B>,
+    pub formatter: Option<(B, B)>,
+}
+
+// NOTE: B contains a u64 which is Send-safe; all B values are NaN-boxed pointers or scalars.
+// The Arc<Derived> data structure is immutable after creation.
+unsafe impl Send for SysRuntime {}
+
+/// Set the global runtime state for •BQN (called after bootstrap).
+pub fn set_sys_runtime(compiler: B, runtime: Vec<B>, formatter: Option<(B, B)>) {
+    *SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner()) = Some(SysRuntime {
+        compiler,
+        runtime,
+        formatter,
+    });
+}
+
+/// Global •args value — set before executing any user code.
+pub static SYS_ARGS: std::sync::LazyLock<Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Global •path value — set from the file path being executed, or "" for -e/-p.
+pub static SYS_PATH: std::sync::LazyLock<Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Global •name value — basename of current file, or "" for -e/-p.
+pub static SYS_NAME: std::sync::LazyLock<Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Set •args from a slice of strings.
+pub fn set_sys_args(args: &[String]) {
+    let arr = rbqn_core::array::BqnArr::from_b_vec(
+        args.iter().map(|s| {
+            let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+        }).collect()
+    );
+    *SYS_ARGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::vm::tag_arr(arr));
+}
+
+/// Set •path and •name from the executing file path.
+pub fn set_sys_path(path: &str) {
+    let path_chars: Vec<u32> = path.chars().map(|c| c as u32).collect();
+    let path_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(path_chars));
+    *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(path_b);
+
+    // Compute name as basename
+    let name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let name_chars: Vec<u32> = name.chars().map(|c| c as u32).collect();
+    let name_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(name_chars));
+    *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()) = Some(name_b);
+}
+
 // NOTE: BQN primitive glyphs in fruntime order (0-63).
 // Used for human-readable trace output when RBQN_PRIM_TRACE is set.
 const PRIM_GLYPHS: &str = "+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥≡≢⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/⍋⍒⊏⊑⊐⊒∊⍷⊔!˙˜˘¨⌜⁼´˝`∘○⊸⟜⌾⊘◶⎉⚇⍟⎊";
@@ -640,9 +706,11 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 let result = match c2_fn(w, w_arr.as_ref(), x, x_arr.as_ref()) {
                     Ok(r) => r,
                     Err(e) => {
-                        let trace = crate::vm::vm_trace_dump();
-                        eprintln!("=== VM TRACE (last {} ops) ===", trace.len());
-                        for t in &trace { eprintln!("  {}", t); }
+                        if crate::vm::prim_trace_enabled() {
+                            let trace = crate::vm::vm_trace_dump();
+                            eprintln!("=== VM TRACE (last {} ops) ===", trace.len());
+                            for t in &trace { eprintln!("  {}", t); }
+                        }
                         rbqn_core::error::throw(e.to_string())
                     },
                 };
@@ -799,17 +867,113 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
         }
-        100 => { // •BQN / System value lookup
-            // FIX: The compiler calls System(names) to resolve system value names.
-            // For empty arrays (no system values), return the empty array as-is.
-            // For non-empty arrays, each element is a system value name string;
-            // we would need to look up each one. For now, return x unchanged
-            // (correct for empty arrays, placeholder for non-empty).
-            if x.is_arr() {
-                x
-            } else {
-                B::SENTINEL
+        // NOTE: •ReBQN (alias for •BQN for now)
+        31 => {
+            let src = b_to_string(x);
+            dispatch_sys_bqn_eval(&src)
+        }
+        // NOTE: •Out
+        32 => {
+            // c1: print x (must be a string — char array) to stdout with newline, return x.
+            let s = b_to_string(x);
+            println!("{}", s);
+            x
+        }
+        // NOTE: •Show
+        33 => {
+            // c1: format x and print to stderr with newline, return x.
+            let s = format_b_for_show(x);
+            eprintln!("{}", s);
+            x
+        }
+        // NOTE: •BQN
+        30 => {
+            // c1: evaluate BQN source string x, return result.
+            let src = b_to_string(x);
+            dispatch_sys_bqn_eval(&src)
+        }
+        // NOTE: •Fmt
+        34 => {
+            // c1: format x as a BQN value string, return as char array.
+            let s = format_b_for_show(x);
+            let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+        }
+        // NOTE: •Repr
+        35 => {
+            // c1: return the BQN source representation of x (quoted string for strings, etc.)
+            let s = format_b_repr(x);
+            let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+        }
+        // NOTE: •Exit
+        36 => {
+            // c1: terminate the process with exit code x (must be a number)
+            let code = if x.is_f64() { x.o2f() as i32 } else { 0 };
+            std::process::exit(code);
+        }
+        // NOTE: •args
+        37 => {
+            // Return command-line arguments as a list of strings
+            SYS_ARGS.lock().unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| crate::vm::tag_arr(rbqn_core::array::BqnArr::empty_harr()))
+        }
+        // NOTE: •path
+        38 => {
+            // Return the path of the current file, or "" for -e/-p
+            SYS_PATH.lock().unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| {
+                    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(vec![]))
+                })
+        }
+        // NOTE: •name
+        39 => {
+            // Return the name (basename) of the current file, or "" for -e/-p
+            SYS_NAME.lock().unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| {
+                    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(vec![]))
+                })
+        }
+        // NOTE: •wdpath
+        40 => {
+            // Return the current working directory as a string
+            let wd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let chars: Vec<u32> = wd.chars().map(|c| c as u32).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+        }
+        // NOTE: •state (placeholder namespace)
+        41 => {
+            // Return a placeholder — empty namespace-like value
+            // For now return SENTINEL (nothing) since full namespace support is deferred
+            B::SENTINEL
+        }
+        100 => { // System value name resolver
+            // The compiler calls System(names) to resolve system value names.
+            // x is either:
+            //   - An empty array: return it unchanged (no system values needed)
+            //   - An array of name strings: return an array of B values (functions or values)
+            //     each corresponding to the named system value.
+            if !x.is_arr() {
+                return B::SENTINEL;
             }
+            let arr = match crate::vm::get_arr(x) {
+                Some(a) => a,
+                None => return x,
+            };
+            if arr.ia() == 0 {
+                return x;
+            }
+            // Each element is a char array (system value name, lowercase)
+            let mut results = Vec::with_capacity(arr.ia());
+            for i in 0..arr.ia() {
+                let name_b = arr.get(i).unwrap_or(B::SENTINEL);
+                let name = b_to_string(name_b);
+                let val = sys_name_to_b(&name);
+                results.push(val);
+            }
+            crate::vm::b_vec_to_arr(results)
         }
         201 => { // Internal: /⁼ (inverse of indices)
             let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());
@@ -1012,4 +1176,213 @@ fn dispatch_sys_primind_c1(x: B) -> B {
         }
     }
     B::m_i32(RT_LEN)
+}
+
+// --- System value name resolver ---
+
+/// Map a system value name (lowercase) to its B value.
+/// Returns SENTINEL for unknown names (signals to BQN runtime: value unavailable).
+fn sys_name_to_b(name: &str) -> B {
+    match name {
+        // Basic system values (indices matching CBQN sysfn numbering)
+        "type"      => m_sys_fn(0),
+        "decompose" => m_sys_fn(1),
+        "glyph"     => m_sys_fn(4),
+        "primind"   => m_sys_fn(5),
+        "fill"      => m_sys_fn(7),
+        // Runtime I/O and evaluation (callable functions)
+        "bqn"       => m_sys_fn(30),
+        "rebqn"     => m_sys_fn(31),  // NOTE: alias for •BQN for now
+        "out"       => m_sys_fn(32),
+        "show"      => m_sys_fn(33),
+        "fmt"       => m_sys_fn(34),
+        "repr"      => m_sys_fn(35),
+        "exit"      => m_sys_fn(36),
+        // Environment values (returned as immediate values, not functions)
+        "args"      => dispatch_sys_env(37),
+        "path"      => dispatch_sys_env(38),
+        "name"      => dispatch_sys_env(39),
+        "wdpath"    => dispatch_sys_env(40),
+        "state"     => dispatch_sys_env(41),
+        _ => B::SENTINEL,
+    }
+}
+
+/// Return environment value for the given sys_idx.
+/// Used both from sys_name_to_b and from sysv_lookup for immediate env values.
+pub fn dispatch_sys_env(idx: u32) -> B {
+    match idx {
+        37 => { // •args
+            SYS_ARGS.lock().unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| crate::vm::tag_arr(rbqn_core::array::BqnArr::empty_harr()))
+        }
+        38 => { // •path
+            SYS_PATH.lock().unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(vec![])))
+        }
+        39 => { // •name
+            SYS_NAME.lock().unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(vec![])))
+        }
+        40 => { // •wdpath
+            let wd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let chars: Vec<u32> = wd.chars().map(|c| c as u32).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+        }
+        41 => B::SENTINEL, // •state placeholder
+        _ => B::SENTINEL,
+    }
+}
+
+/// Convert a B value (character array) to a Rust String.
+/// Returns empty string if x is not a character array.
+fn b_to_string(x: B) -> String {
+    if x.is_arr() {
+        if let Some(arr) = crate::vm::get_arr(x) {
+            let chars: String = (0..arr.ia())
+                .filter_map(|i| arr.get(i).ok())
+                .filter_map(|b| {
+                    if b.is_c32() { char::from_u32(b.0 as u32) } else { None }
+                })
+                .collect();
+            return chars;
+        }
+    }
+    String::new()
+}
+
+/// Format a B value for •Show/•Fmt — tries the bootstrap formatter first,
+/// falls back to the basic debug format.
+fn format_b_for_show(x: B) -> String {
+    // Try to use the bootstrap formatter (rt.formatter.0) if available
+    let fmt_fn = {
+        let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().and_then(|rt| rt.formatter.map(|(f, _)| f))
+    };
+    if let Some(fmt) = fmt_fn {
+        if let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c1(fmt, x)
+        })) {
+            let s = b_to_string(result);
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    // Fallback: basic value description
+    crate::vm::fmt_b_detail(x)
+}
+
+/// Format a B value for •Repr — quoted strings for strings, numbers as-is, etc.
+fn format_b_repr(x: B) -> String {
+    // Try to use the bootstrap repr function (rt.formatter.1) if available
+    let repr_fn = {
+        let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().and_then(|rt| rt.formatter.map(|(_, r)| r))
+    };
+    if let Some(repr) = repr_fn {
+        if let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c1(repr, x)
+        })) {
+            let s = b_to_string(result);
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    // Fallback
+    format_b_for_show(x)
+}
+
+/// Execute a BQN source string using the stored global runtime.
+/// This is the implementation of •BQN.
+fn dispatch_sys_bqn_eval(src: &str) -> B {
+    // Retrieve the global runtime state
+    let (compiler, runtime, formatter) = {
+        let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(rt) => (rt.compiler, rt.runtime.clone(), rt.formatter),
+            None => rbqn_core::error::throw("•BQN: runtime not initialized"),
+        }
+    };
+
+    if compiler.q_n() || compiler.0 == B::SENTINEL.0 {
+        rbqn_core::error::throw("•BQN: compiler not available");
+    }
+
+    // Build compiler arguments (same as exec_string_inner in main.rs)
+    let rt_arr = crate::vm::tag_arr(rbqn_core::array::BqnArr::from_b_vec(runtime));
+    let sys_fn = m_sys_fn(100);
+    let var_names = crate::vm::tag_arr(rbqn_core::array::BqnArr::empty_harr());
+    let var_depths = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_i32(vec![]));
+    let comp_args = crate::vm::tag_arr(rbqn_core::array::BqnArr::from_b_vec(
+        vec![rt_arr, sys_fn, var_names, var_depths]
+    ));
+
+    let src_chars: Vec<u32> = src.chars().map(|c| c as u32).collect();
+    let src_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(src_chars));
+
+    // Call compiler: compiler(comp_args, src_b) → ⟨bc, objs, blocks, bodies, ...⟩
+    let comp_result = c2(compiler, comp_args, src_b);
+
+    let comp_arr = match crate::vm::get_arr(comp_result) {
+        Some(a) => a,
+        None => rbqn_core::error::throw("•BQN: compiler did not return an array"),
+    };
+
+    let bc_b = comp_arr.get(0).unwrap_or_else(|_| rbqn_core::error::throw("•BQN: missing bc"));
+    let objs_b = comp_arr.get(1).unwrap_or_else(|_| rbqn_core::error::throw("•BQN: missing objs"));
+    let blocks_b = comp_arr.get(2).unwrap_or_else(|_| rbqn_core::error::throw("•BQN: missing blocks"));
+    let bodies_b = comp_arr.get(3).unwrap_or_else(|_| rbqn_core::error::throw("•BQN: missing bodies"));
+
+    let indices_b = comp_arr.get(4).unwrap_or(B::SENTINEL);
+    let token_info_b = comp_arr.get(5).unwrap_or(B::SENTINEL);
+
+    let bc_arr = match crate::vm::get_arr(bc_b) {
+        Some(a) => a,
+        None => rbqn_core::error::throw("•BQN: bc is not an array"),
+    };
+    let bc: Vec<i32> = bc_arr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+
+    let objs: Vec<B> = if let Some(objs_arr) = crate::vm::get_arr(objs_b) {
+        (0..objs_arr.ia()).map(|i| objs_arr.get(i).unwrap_or(B::SENTINEL)).collect()
+    } else { vec![] };
+
+    let blocks: Vec<B> = if let Some(blocks_arr) = crate::vm::get_arr(blocks_b) {
+        (0..blocks_arr.ia()).map(|i| blocks_arr.get(i).unwrap_or(B::SENTINEL)).collect()
+    } else { vec![] };
+
+    let bodies: Vec<B> = if let Some(bodies_arr) = crate::vm::get_arr(bodies_b) {
+        (0..bodies_arr.ia()).map(|i| bodies_arr.get(i).unwrap_or(B::SENTINEL)).collect()
+    } else { vec![] };
+
+    let src_chars2: Vec<u32> = src.chars().map(|c| c as u32).collect();
+    let src_b2 = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(src_chars2));
+
+    let block = rbqn_vm_compile_all(
+        &bc, objs, &blocks, &bodies,
+        indices_b, token_info_b, src_b2, B::SENTINEL,
+    );
+
+    let body = block.bodies[0].clone();
+    let var_am = body.var_am;
+    let root_scope = Arc::new(crate::scope::Scope::new(body.clone(), None, var_am, &[]));
+    crate::block::eval_fun_block(block, root_scope)
+}
+
+/// Wrapper to call rbqn_vm::compiler::compile_all from within derive.rs
+/// (avoids needing to import it directly in the module).
+fn rbqn_vm_compile_all(
+    bc: &[i32],
+    objs: Vec<B>,
+    blocks: &[B],
+    bodies: &[B],
+    indices: B,
+    token_info: B,
+    src: B,
+    fullpath: B,
+) -> Arc<crate::block::Block> {
+    crate::compiler::compile_all(bc, objs, blocks, bodies, indices, token_info, src, fullpath, None, 0)
 }

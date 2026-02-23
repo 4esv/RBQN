@@ -1,27 +1,26 @@
 use std::process;
 
 pub struct Args {
-    pub mode: Mode,
+    pub actions: Vec<Action>,
+    pub repl: bool,
+    pub silent: bool,
     pub heap_max: Option<u64>,
 }
 
-pub enum Mode {
-    Repl,
+pub enum Action {
     Eval(String),
     Print(String),
     Output(String),
     File(String, Vec<String>),
-    Help,
 }
 
 pub fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
     let program = &args[0];
 
-    if args.len() == 1 {
-        return Args { mode: Mode::Repl, heap_max: None };
-    }
-
+    let mut actions: Vec<Action> = Vec::new();
+    let mut repl = false;
+    let mut silent = false;
     let mut heap_max = None;
     let mut i = 1;
 
@@ -32,17 +31,19 @@ pub fn parse_args() -> Args {
             // Positional argument — treat as file
             let file = arg.clone();
             let file_args: Vec<String> = args[i + 1..].to_vec();
-            return Args { mode: Mode::File(file, file_args), heap_max };
+            actions.push(Action::File(file, file_args));
+            break;
         }
 
         if arg == "-" {
-            // Read from stdin
             let file_args: Vec<String> = args[i + 1..].to_vec();
-            return Args { mode: Mode::File("-".into(), file_args), heap_max };
+            actions.push(Action::File("-".into(), file_args));
+            break;
         }
 
         if arg == "--help" {
-            return Args { mode: Mode::Help, heap_max: None };
+            print_help();
+            process::exit(0);
         }
 
         if arg == "--version" {
@@ -56,10 +57,15 @@ pub fn parse_args() -> Args {
         while j < chars.len() {
             match chars[j] {
                 'h' => {
-                    return Args { mode: Mode::Help, heap_max: None };
+                    print_help();
+                    process::exit(0);
                 }
                 'r' => {
-                    return Args { mode: Mode::Repl, heap_max };
+                    repl = true;
+                }
+                's' => {
+                    repl = true;
+                    silent = true;
                 }
                 'e' => {
                     if j + 1 < chars.len() {
@@ -71,7 +77,7 @@ pub fn parse_args() -> Args {
                         eprintln!("{program}: -e requires an argument");
                         process::exit(1);
                     }
-                    return Args { mode: Mode::Eval(args[i].clone()), heap_max };
+                    actions.push(Action::Eval(args[i].clone()));
                 }
                 'p' => {
                     if j + 1 < chars.len() {
@@ -83,7 +89,7 @@ pub fn parse_args() -> Args {
                         eprintln!("{program}: -p requires an argument");
                         process::exit(1);
                     }
-                    return Args { mode: Mode::Print(args[i].clone()), heap_max };
+                    actions.push(Action::Print(args[i].clone()));
                 }
                 'o' => {
                     if j + 1 < chars.len() {
@@ -95,7 +101,7 @@ pub fn parse_args() -> Args {
                         eprintln!("{program}: -o requires an argument");
                         process::exit(1);
                     }
-                    return Args { mode: Mode::Output(args[i].clone()), heap_max };
+                    actions.push(Action::Output(args[i].clone()));
                 }
                 'f' => {
                     if j + 1 < chars.len() {
@@ -109,7 +115,9 @@ pub fn parse_args() -> Args {
                     }
                     let file = args[i].clone();
                     let file_args: Vec<String> = args[i + 1..].to_vec();
-                    return Args { mode: Mode::File(file, file_args), heap_max };
+                    actions.push(Action::File(file, file_args));
+                    i = args.len(); // consume remaining
+                    break;
                 }
                 'M' => {
                     if j + 1 < chars.len() {
@@ -139,7 +147,12 @@ pub fn parse_args() -> Args {
         i += 1;
     }
 
-    Args { mode: Mode::Repl, heap_max }
+    // If no actions and no explicit -r/-s, default to REPL
+    if actions.is_empty() && !repl {
+        repl = true;
+    }
+
+    Args { actions, repl, silent, heap_max }
 }
 
 pub fn print_help() {
@@ -147,12 +160,13 @@ pub fn print_help() {
     println!(
         "Usage: {name} [options] [file.bqn [arguments]]\n\
          Options:\n\
-         \x20 -f file    execute the contents of the file with all further arguments as *args\n\
+         \x20 -f file    execute the contents of the file with all further arguments as •args\n\
          \x20 -e code    execute the argument as BQN\n\
          \x20 -p code    execute the argument as BQN and print its result pretty-printed\n\
          \x20 -o code    execute the argument as BQN and print its raw result\n\
          \x20 -M num     set maximum heap size to num megabytes\n\
-         \x20 -r         start the REPL\n\
+         \x20 -r         start the REPL after executing all arguments\n\
+         \x20 -s         start a silent REPL\n\
          \x20 --help     show this help text\n\
          \x20 --version  display version information"
     );

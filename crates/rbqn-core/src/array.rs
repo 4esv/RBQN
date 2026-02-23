@@ -180,16 +180,6 @@ impl BqnArr {
                     if v.is_empty() || v.iter().all(|b| b.is_f64()) {
                         return Ok(v.iter().map(|b| b.o2f()).collect());
                     }
-                    let types: Vec<&str> = v.iter().take(5).map(|b| {
-                        if b.is_f64() { "f64" } else if b.is_c32() { "c32" } else if b.is_arr() { "arr" }
-                        else if b.is_fun() { "fun" } else if b.is_md1() { "md1" } else if b.is_md2() { "md2" }
-                        else { "other" }
-                    }).collect();
-                    eprintln!("[DEBUG f64_iter] Boxed array with {} elements, types: {:?}", v.len(), types);
-                    let bt = std::backtrace::Backtrace::capture();
-                    eprintln!("[DEBUG f64_iter] backtrace:\n{}", bt);
-                } else {
-                    eprintln!("[DEBUG f64_iter] Non-numeric type: {:?}", std::mem::discriminant(other));
                 }
                 Err(BqnError::Type("Expected numeric array".into()))
             }

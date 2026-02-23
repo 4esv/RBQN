@@ -28,7 +28,8 @@ pub fn group_indices_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ⊔ dyad: group
 // 𝕨⊔𝕩: groups elements of 𝕩 by index list 𝕨.
 // BQN spec: ≠𝕨 can equal ≠𝕩 or 1+≠𝕩.
-// If ≠𝕨 = 1+≠𝕩, the last element of 𝕨 specifies the minimum result length minus 1.
+// If ≠𝕨 = 1+≠𝕩, the last element of 𝕨 directly specifies the minimum result length.
+// (i.e., the result has at least max(0, last_element) groups)
 pub fn group_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊔𝕩: 𝕨 must be an array".into()))?;
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊔𝕩: 𝕩 must be an array".into()))?;
@@ -38,9 +39,10 @@ pub fn group_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 
     // Determine indices for grouping and minimum result length
     let (indices, min_len) = if all_indices.len() == xia + 1 {
-        // Last element specifies minimum result length - 1
+        // FIX: Last element directly specifies minimum result length (not length-1).
+        // Verified against CBQN: ⟨0⟩⊔⟨⟩ → ⟨⟩ (len 0), ⟨1⟩⊔⟨⟩ → ⟨⟨⟩⟩ (len 1)
         let last = *all_indices.last().unwrap();
-        let min = (last + 1).max(0) as usize;
+        let min = last.max(0) as usize;
         (&all_indices[..xia], min)
     } else if all_indices.len() == xia {
         (&all_indices[..], 0usize)

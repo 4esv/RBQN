@@ -2,15 +2,66 @@ use rbqn_core::*;
 use crate::dispatch::PrimResult;
 
 // ! monad: assert
-pub fn assert_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: CBQN semantics (from sysfn.c asrt_c1):
+//   ! 1      → succeeds, returns 1
+//   ! 0      → fails with "Assertion error"  (x is a non-1 float)
+//   ! x      → throws x directly when x is not a float
+// The ⟨msg, cond⟩ form used in CBQN's compiler is casrt_c2 (dyadic assert during
+// compilation), not user-level !. User-level ! just throws the whole value if not 1.
+pub fn assert_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_f64() {
         let v = x.o2f();
         if v == 1.0 {
             return Ok(PrimResult::Scalar(x));
         }
-        return Err(BqnError::Assert(format!("!{v}: Assertion failed")));
+        return Err(BqnError::Assert(format!("Assertion failed: {}", format_assert_val(x))));
     }
-    Err(BqnError::Type("!𝕩: 𝕩 must be 0 or 1".into()))
+    // For non-float x: throw the value directly (CBQN: thr(x))
+    // Format the thrown value as a string for the error message.
+    let msg = format_assert_msg(x);
+    Err(BqnError::Assert(msg))
+}
+
+/// Format a B value as an assertion message string.
+fn format_assert_msg(x: B) -> String {
+    if x.is_f64() {
+        return format!("{}", x.o2f());
+    }
+    if x.is_c32() {
+        if let Some(ch) = char::from_u32(x.0 as u32) {
+            return ch.to_string();
+        }
+    }
+    if let Some(arr) = rbqn_core::get_arr(x) {
+        // Try to decode as a char array (string)
+        if let Ok(chars) = arr.c32_iter() {
+            let s: String = chars.iter().filter_map(|&c| char::from_u32(c)).collect();
+            if !s.is_empty() {
+                return s;
+            }
+        }
+        // Try to decode as boxed array of strings (nested message)
+        if let rbqn_core::array::ArrData::Boxed(ref v) = arr.data {
+            let parts: Vec<String> = v.iter().map(|&b| format_assert_msg(b)).collect();
+            return parts.join(": ");
+        }
+        // Numeric array — format as numbers
+        if let Ok(f64s) = arr.f64_iter() {
+            let nums: Vec<String> = f64s.iter().map(|&n| format!("{}", n)).collect();
+            return format!("[{}]", nums.join(", "));
+        }
+        return format!("Assertion failed (array ia={})", arr.ia());
+    }
+    "Assertion failed".to_string()
+}
+
+/// Format a B value for a failed assert message.
+fn format_assert_val(x: B) -> String {
+    if x.is_f64() {
+        format!("{}", x.o2f())
+    } else {
+        "value".to_string()
+    }
 }
 
 // ! dyad: assert with message

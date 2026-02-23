@@ -503,6 +503,12 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
                 rbqn_vm::modifiers::set_rt_under(rt_under_fn);
             }
         }
+        // Extract BQN runtime's Depth (⚇) function from rtObjRaw[61]
+        if let Ok(rt_depth_fn) = rt_obj_arr.get(61) {
+            if rt_depth_fn.is_md2() {
+                rbqn_vm::modifiers::set_rt_depth(rt_depth_fn);
+            }
+        }
     }
 
     // --- Stage 3: Execute compiler (graceful fallback if it panics) ---
@@ -523,10 +529,7 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
                 tag_arr(BqnArr::from_b_vec(vec![fn_arr, md1_arr, md2_arr]))
             };
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                eprintln!("[BOOTSTRAP] Calling compgen(glyphs)...");
-                let r = c1(compgen, glyphs_b);
-                eprintln!("[BOOTSTRAP] compgen(glyphs) returned successfully: {:#x}", r.0);
-                r
+                c1(compgen, glyphs_b)
             })) {
                 Ok(c) => c,
                 Err(p) => {

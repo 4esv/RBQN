@@ -21,6 +21,21 @@ fn get_rt_under() -> Option<B> {
     *RT_UNDER.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+// BQN runtime's Depth (⚇) function, set after runtime1 loads.
+// Used as fallback for non-zero depth values.
+static RT_DEPTH: std::sync::LazyLock<std::sync::Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// Store the BQN runtime's Depth function (called from bootstrap after runtime1).
+pub fn set_rt_depth(f: B) {
+    *RT_DEPTH.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
+/// Get the BQN runtime's Depth function, if available.
+fn get_rt_depth() -> Option<B> {
+    *RT_DEPTH.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // 1-modifier indices
 const MD1_CONST: usize = 44;  // ˙
 const MD1_SWAP: usize = 45;   // ˜
@@ -110,8 +125,8 @@ pub fn native_md2_c1(prim_idx: usize, f: B, g: B, _self_val: B, x: B) -> B {
         MD2_UNDER => under_c1(f, g, x),
         MD2_VAL => c1(f, x),
         MD2_COND => choose_c1(f, g, x),
-        MD2_RANK => rbqn_core::error::throw("⎉: rank not yet implemented"),
-        MD2_DEPTH => rbqn_core::error::throw("⚇: depth not yet implemented"),
+        MD2_RANK => rank_c1(f, g, x),
+        MD2_DEPTH => depth_c1(f, g, x),
         MD2_REPEAT => repeat_c1(f, g, x),
         MD2_CATCH => catch_c1(f, g, x),
         // NOTE: •_fillBy_: F •_fillBy_ G applies F; G only provides fill element (ignored here)
@@ -141,8 +156,8 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
         MD2_UNDER => under_c2(f, g, w, x),
         MD2_VAL => c2(g, w, x),
         MD2_COND => choose_c2(f, g, w, x),
-        MD2_RANK => rbqn_core::error::throw("⎉: rank not yet implemented"),
-        MD2_DEPTH => rbqn_core::error::throw("⚇: depth not yet implemented"),
+        MD2_RANK => rank_c2(f, g, w, x),
+        MD2_DEPTH => depth_c2(f, g, w, x),
         MD2_REPEAT => repeat_c2(f, g, w, x),
         MD2_CATCH => catch_c2(f, g, w, x),
         // NOTE: •_fillBy_: F •_fillBy_ G applies F; G only provides fill element (ignored here)
@@ -801,67 +816,7 @@ fn choose_c2(f: B, g: B, w: B, x: B) -> B {
         let idx = b_to_index(idx_b);
         let garr = arr_of(g);
         let chosen = get_elem(&garr, idx);
-        // DEBUG: trace choose_c2 call
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            c2(chosen, w, x)
-        }));
-        match result {
-            Ok(v) => v,
-            Err(panic) => {
-                eprintln!("[CHOOSE_C2 CRASH] idx={}, g.ia={}, g.shape={:?}", idx, garr.ia(), garr.shape);
-                if w.is_f64() { eprintln!("  w={}", w.o2f()); }
-                if x.is_f64() { eprintln!("  x={}", x.o2f()); }
-                eprintln!("  chosen={:#x} tag={:#06x}", chosen.0, (chosen.0 >> 48) as u16);
-                if chosen.is_fun() {
-                    let cid = (chosen.0 & 0xFFFFFFFFFFFF) >> 3;
-                    let cd = crate::derive::get_derived(cid);
-                    eprintln!("  chosen kind={:?}", cd.kind);
-                    // If fork, show F, G, H
-                    if cd.kind == crate::derive::DerivedKind::Fork {
-                        eprintln!("  Fork F={:#x} G={:#x} H={:#x}", cd.f.0, cd.g.0, cd.h.0);
-                        if cd.f.is_fun() {
-                            let fid = (cd.f.0 & 0xFFFFFFFFFFFF) >> 3;
-                            let fd = crate::derive::get_derived(fid);
-                            eprintln!("    F kind={:?}", fd.kind);
-                        }
-                        if cd.g.is_fun() {
-                            let gid = (cd.g.0 & 0xFFFFFFFFFFFF) >> 3;
-                            let gd = crate::derive::get_derived(gid);
-                            eprintln!("    G kind={:?}", gd.kind);
-                            if let crate::derive::DerivedKind::NativeFn { prim_idx } = gd.kind {
-                                let prims = rbqn_prim::get_runtime();
-                                eprintln!("    G prim={} (idx={})", prims[prim_idx].glyph, prim_idx);
-                            }
-                        }
-                        if cd.h.is_fun() {
-                            let hid = (cd.h.0 & 0xFFFFFFFFFFFF) >> 3;
-                            let hd = crate::derive::get_derived(hid);
-                            eprintln!("    H kind={:?}", hd.kind);
-                            if hd.kind == crate::derive::DerivedKind::Md1D {
-                                let op = hd.f;
-                                if op.is_arr() {
-                                    if let Some(a) = crate::vm::get_arr(op) {
-                                        eprintln!("    H.operand=arr(ia={}, shape={:?}, el={:?})", a.ia(), a.shape, a.el_type());
-                                        for k in 0..a.ia().min(10) {
-                                            if let Ok(e) = a.get(k) {
-                                                eprintln!("      H.op[{}]={:#x}", k, e.0);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                // Show all g elements
-                for j in 0..garr.ia().min(10) {
-                    if let Ok(e) = garr.get(j) {
-                        eprintln!("  g[{}]={:#x} tag={:#06x}", j, e.0, (e.0 >> 48) as u16);
-                    }
-                }
-                std::panic::resume_unwind(panic);
-            }
-        }
+        c2(chosen, w, x)
     } else {
         let chosen = pick_from(idx_b, g);
         c2(chosen, w, x)
@@ -885,6 +840,313 @@ fn b_to_index(v: B) -> usize {
         }
     }
     rbqn_core::error::throw(format!("◶: Expected number index, got {:#x}", v.0))
+}
+
+// ============================================================
+// 2-modifier: ⎉ Rank
+// ============================================================
+
+/// Compute cell rank from array rank and k parameter.
+/// Negative k counts from the end, positive k is clamped to array rank.
+fn cell_rank(r: usize, k: f64) -> usize {
+    if k < 0.0 {
+        let v = k + r as f64;
+        if v < 0.0 { 0 } else { v as usize }
+    } else {
+        let v = k as usize;
+        if v > r { r } else { v }
+    }
+}
+
+/// Extract rank value from g for monadic rank.
+/// If g is a number, use directly. If g is an array, use the last element.
+fn get_rank_val_c1(g: B, x: B) -> f64 {
+    if g.is_f64() {
+        return g.o2f();
+    }
+    if g.is_fun() {
+        let r = c1(g, x);
+        return r.o2f();
+    }
+    if g.is_arr() {
+        let arr = arr_of(g);
+        let n = arr.ia();
+        if n == 0 {
+            rbqn_core::error::throw("⎉: rank specification array is empty");
+        }
+        // For monadic: use last element
+        return get_elem(&arr, n - 1).o2f();
+    }
+    rbqn_core::error::throw("⎉: invalid rank specification")
+}
+
+/// Extract rank pair from g for dyadic rank.
+/// Returns (w_rank_spec, x_rank_spec).
+fn get_rank_pair(g: B, w: B, x: B) -> (f64, f64) {
+    if g.is_f64() {
+        let v = g.o2f();
+        return (v, v);
+    }
+    if g.is_fun() {
+        let r = c2(g, w, x);
+        if r.is_f64() {
+            let v = r.o2f();
+            return (v, v);
+        }
+        if r.is_arr() {
+            let arr = arr_of(r);
+            let n = arr.ia();
+            if n >= 2 {
+                return (get_elem(&arr, n - 2).o2f(), get_elem(&arr, n - 1).o2f());
+            }
+            if n == 1 {
+                let v = get_elem(&arr, 0).o2f();
+                return (v, v);
+            }
+        }
+        rbqn_core::error::throw("⎉: rank function must return number or array");
+    }
+    if g.is_arr() {
+        let arr = arr_of(g);
+        let n = arr.ia();
+        if n >= 2 {
+            return (get_elem(&arr, n - 2).o2f(), get_elem(&arr, n - 1).o2f());
+        }
+        if n == 1 {
+            let v = get_elem(&arr, 0).o2f();
+            return (v, v);
+        }
+        rbqn_core::error::throw("⎉: rank specification array is empty");
+    }
+    rbqn_core::error::throw("⎉: invalid rank specification")
+}
+
+fn rank_c1(f: B, g: B, x: B) -> B {
+    let k = get_rank_val_c1(g, x);
+
+    if x.is_atom() {
+        return c1(f, x);
+    }
+    let xarr = arr_of(x);
+    let xr = xarr.rank() as usize;
+    let cr = cell_rank(xr, k);
+    if cr == xr {
+        return c1(f, x);
+    }
+
+    let frame_rank = xr - cr;
+    let cam: usize = xarr.shape[..frame_rank].iter().product();
+    let cell_size: usize = xarr.shape[frame_rank..].iter().product();
+    let cell_shape = xarr.shape[frame_rank..].to_vec();
+    let frame_shape = xarr.shape[..frame_rank].to_vec();
+
+    let mut results = Vec::with_capacity(cam);
+    for i in 0..cam {
+        let cell = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
+        results.push(c1(f, cell));
+    }
+    merge_cells_result(results, frame_shape)
+}
+
+fn rank_c2(f: B, g: B, w: B, x: B) -> B {
+    let (wf, xf) = get_rank_pair(g, w, x);
+
+    let w_atom = w.is_atom();
+    let x_atom = x.is_atom();
+
+    let (wr, wcr) = if w_atom {
+        (0usize, 0usize)
+    } else {
+        let warr = arr_of(w);
+        let wr = warr.rank() as usize;
+        (wr, cell_rank(wr, wf))
+    };
+    let (xr, xcr) = if x_atom {
+        (0usize, 0usize)
+    } else {
+        let xarr = arr_of(x);
+        let xr = xarr.rank() as usize;
+        (xr, cell_rank(xr, xf))
+    };
+
+    let w_full = w_atom || wcr == wr;
+    let x_full = x_atom || xcr == xr;
+
+    if w_full && x_full {
+        return c2(f, w, x);
+    }
+    if w_full {
+        return rank_c2_sa(f, w, x, xcr);
+    }
+    if x_full {
+        return rank_c2_as(f, w, x, wcr);
+    }
+    rank_c2_aa(f, w, x, wcr, xcr)
+}
+
+/// Dyadic rank: only x decomposed, w passed whole to each call.
+fn rank_c2_sa(f: B, w: B, x: B, xcr: usize) -> B {
+    let xarr = arr_of(x);
+    let xr = xarr.rank() as usize;
+    let frame_rank = xr - xcr;
+    let cam: usize = xarr.shape[..frame_rank].iter().product();
+    let cell_size: usize = xarr.shape[frame_rank..].iter().product();
+    let cell_shape = xarr.shape[frame_rank..].to_vec();
+    let frame_shape = xarr.shape[..frame_rank].to_vec();
+
+    let mut results = Vec::with_capacity(cam);
+    for i in 0..cam {
+        let xc = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
+        results.push(c2(f, w, xc));
+    }
+    merge_cells_result(results, frame_shape)
+}
+
+/// Dyadic rank: only w decomposed, x passed whole to each call.
+fn rank_c2_as(f: B, w: B, x: B, wcr: usize) -> B {
+    let warr = arr_of(w);
+    let wr = warr.rank() as usize;
+    let frame_rank = wr - wcr;
+    let cam: usize = warr.shape[..frame_rank].iter().product();
+    let cell_size: usize = warr.shape[frame_rank..].iter().product();
+    let cell_shape = warr.shape[frame_rank..].to_vec();
+    let frame_shape = warr.shape[..frame_rank].to_vec();
+
+    let mut results = Vec::with_capacity(cam);
+    for i in 0..cam {
+        let wc = crate::vm::tag_arr(extract_cell(&warr, i, cell_size, &cell_shape));
+        results.push(c2(f, wc, x));
+    }
+    merge_cells_result(results, frame_shape)
+}
+
+/// Dyadic rank: both w and x decomposed with frame matching.
+fn rank_c2_aa(f: B, w: B, x: B, wcr: usize, xcr: usize) -> B {
+    let warr = arr_of(w);
+    let xarr = arr_of(x);
+    let wr = warr.rank() as usize;
+    let xr = xarr.rank() as usize;
+    let wk = wr - wcr;
+    let xk = xr - xcr;
+
+    // Determine outer and inner frames
+    let outer_k = wk.max(xk);
+    let inner_k = wk.min(xk);
+
+    // The common frame portion (first inner_k axes) must match
+    if warr.shape[..inner_k] != xarr.shape[..inner_k] {
+        rbqn_core::error::throw("⎉: frame shapes don't agree");
+    }
+
+    // Outer frame shape
+    let outer_shape = if wk >= xk {
+        warr.shape[..outer_k].to_vec()
+    } else {
+        xarr.shape[..outer_k].to_vec()
+    };
+    let outer_cam: usize = outer_shape.iter().product();
+
+    // Cell sizes
+    let w_cell_size: usize = warr.shape[wk..].iter().product();
+    let w_cell_shape = warr.shape[wk..].to_vec();
+    let x_cell_size: usize = xarr.shape[xk..].iter().product();
+    let x_cell_shape = xarr.shape[xk..].to_vec();
+
+    // Number of cells for shorter-frame arg within each outer cell
+    let w_inner: usize = if wk < outer_k { 1 } else { warr.shape[inner_k..wk].iter().product() };
+    let x_inner: usize = if xk < outer_k { 1 } else { xarr.shape[inner_k..xk].iter().product() };
+
+    let mut results = Vec::with_capacity(outer_cam);
+    for i in 0..outer_cam {
+        let wi = if wk >= xk { i } else { i / x_inner };
+        let xi = if xk >= wk { i } else { i / w_inner };
+        let wc = crate::vm::tag_arr(extract_cell(&warr, wi, w_cell_size, &w_cell_shape));
+        let xc = crate::vm::tag_arr(extract_cell(&xarr, xi, x_cell_size, &x_cell_shape));
+        results.push(c2(f, wc, xc));
+    }
+    merge_cells_result(results, outer_shape)
+}
+
+// ============================================================
+// 2-modifier: ⚇ Depth
+// ============================================================
+
+/// Recursively apply f to all atoms of x (depth-0 monadic).
+fn depthf_c1(f: B, x: B) -> B {
+    if x.is_arr() {
+        let arr = arr_of(x);
+        let n = arr.ia();
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            results.push(depthf_c1(f, get_elem(&arr, i)));
+        }
+        results_to_arr(results, arr.shape.clone())
+    } else {
+        c1(f, x)
+    }
+}
+
+/// Recursively apply f to all atom pairs of w and x (depth-0 dyadic).
+fn depthf_c2(f: B, w: B, x: B) -> B {
+    let w_arr = w.is_arr();
+    let x_arr = x.is_arr();
+    if !w_arr && !x_arr {
+        return c2(f, w, x);
+    }
+    if w_arr && x_arr {
+        let warr = arr_of(w);
+        let xarr = arr_of(x);
+        if warr.shape != xarr.shape {
+            rbqn_core::error::throw("⚇: 𝕨 and 𝕩 shapes don't match");
+        }
+        let n = warr.ia();
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            results.push(depthf_c2(f, get_elem(&warr, i), get_elem(&xarr, i)));
+        }
+        return results_to_arr(results, warr.shape.clone());
+    }
+    if w_arr {
+        let warr = arr_of(w);
+        let n = warr.ia();
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            results.push(depthf_c2(f, get_elem(&warr, i), x));
+        }
+        return results_to_arr(results, warr.shape.clone());
+    }
+    // x_arr
+    let xarr = arr_of(x);
+    let n = xarr.ia();
+    let mut results = Vec::with_capacity(n);
+    for i in 0..n {
+        results.push(depthf_c2(f, w, get_elem(&xarr, i)));
+    }
+    results_to_arr(results, xarr.shape.clone())
+}
+
+fn depth_c1(f: B, g: B, x: B) -> B {
+    if g.is_f64() && g.o2f() == 0.0 {
+        return depthf_c1(f, x);
+    }
+    // Delegate to BQN runtime's Depth for non-zero depths
+    if let Some(rt_depth) = get_rt_depth() {
+        let depth_fn = crate::derive::m_md2d(rt_depth, f, g);
+        return c1(depth_fn, x);
+    }
+    rbqn_core::error::throw("⚇: non-zero depth requires runtime Depth (not yet loaded)")
+}
+
+fn depth_c2(f: B, g: B, w: B, x: B) -> B {
+    if g.is_f64() && g.o2f() == 0.0 {
+        return depthf_c2(f, w, x);
+    }
+    // Delegate to BQN runtime's Depth for non-zero depths
+    if let Some(rt_depth) = get_rt_depth() {
+        let depth_fn = crate::derive::m_md2d(rt_depth, f, g);
+        return c2(depth_fn, w, x);
+    }
+    rbqn_core::error::throw("⚇: non-zero depth requires runtime Depth (not yet loaded)")
 }
 
 // ============================================================

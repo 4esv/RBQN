@@ -53,8 +53,21 @@ fn sysv_lookup(idx: u32) -> B {
     //  0: Type    1: Decompose   4: Glyph   5: PrimInd   7: Fill/FillFn
     //  8: setInvReg  9: setInvSwap  10: nativeInvReg  11: nativeInvSwap
     // 22: GroupLen  23: GroupOrd
+    // 30: •BQN  31: •ReBQN  32: •Out  33: •Show  34: •Fmt  35: •Repr  36: •Exit
+    // 37: •args  38: •path  39: •name  40: •wdpath  41: •state
+    // 100: system value name resolver
     match idx {
         0 | 1 | 4 | 5 | 7 | 8 | 9 | 10 | 11 | 22 | 23 => crate::derive::m_sys_fn(idx),
+        // NOTE: these system values are resolved at call-time (c1), not at lookup time,
+        // except for environment values (37-41) which return current values immediately.
+        30..=36 => crate::derive::m_sys_fn(idx),
+        // Environment values: return the value directly
+        37 => crate::derive::dispatch_sys_env(37),
+        38 => crate::derive::dispatch_sys_env(38),
+        39 => crate::derive::dispatch_sys_env(39),
+        40 => crate::derive::dispatch_sys_env(40),
+        41 => crate::derive::dispatch_sys_env(41),
+        100 => crate::derive::m_sys_fn(100),
         _ => B::SENTINEL,
     }
 }
@@ -897,21 +910,6 @@ pub fn b_vec_to_arr(elems: Vec<B>) -> B {
 /// Each element should be an array of the same shape. The result has shape
 /// `(len(elems)) ∾ inner_shape`. Scalar elements are treated as 0-rank (no inner dims).
 fn bqn_merge(elems: Vec<B>) -> B {
-    // DEBUG: trace merge calls that produce [n, 0] shapes
-    if elems.len() > 0 && elems.iter().all(|b| b.is_arr()) {
-        let first_arr = get_arr(elems[0]);
-        if let Some(ref fa) = first_arr {
-            if fa.ia() == 0 && !fa.shape.is_empty() {
-                eprintln!("[BQN_MERGE] Merging {} elements, first is empty arr shape={:?}", elems.len(), fa.shape);
-                // Print a short backtrace
-                let bt = std::backtrace::Backtrace::force_capture();
-                let bt_str = format!("{}", bt);
-                for line in bt_str.lines().take(20) {
-                    eprintln!("  {}", line);
-                }
-            }
-        }
-    }
     if elems.is_empty() {
         return tag_arr(BqnArr::empty_harr());
     }
