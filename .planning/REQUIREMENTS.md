@@ -123,13 +123,82 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (to be filled by roadmapper) | | |
+| PIPE-01 | Phase 1 | Pending |
+| PIPE-02 | Phase 1 | Pending |
+| PIPE-03 | Phase 1 | Pending |
+| PIPE-04 | Phase 1 | Pending |
+| PIPE-05 | Phase 1 | Pending |
+| PIPE-06 | Phase 1 | Pending |
+| PIPE-07 | Phase 1 | Pending |
+| PIPE-08 | Phase 1 | Pending |
+| SYS-01 | Phase 1 | Pending |
+| SYS-02 | Phase 1 | Pending |
+| SYS-03 | Phase 1 | Pending |
+| SYS-04 | Phase 1 | Pending |
+| SYS-05 | Phase 1 | Pending |
+| TEST-01 | Phase 2 | Pending |
+| TEST-02 | Phase 2 | Pending |
+| TEST-03 | Phase 2 | Pending |
+| TEST-04 | Phase 2 | Pending |
+| MOD-01 | Phase 3 | Pending |
+| MOD-02 | Phase 3 | Pending |
+| MOD-03 | Phase 3 | Pending |
+| MOD-04 | Phase 3 | Pending |
+| PRIM-01 | Phase 3 | Pending |
+| PRIM-02 | Phase 3 | Pending |
+| PRIM-03 | Phase 3 | Pending |
+| PRIM-04 | Phase 3 | Pending |
+| SYS-06 | Phase 3 | Pending |
+| SYS-07 | Phase 3 | Pending |
+| SYS-08 | Phase 3 | Pending |
+| SYS-09 | Phase 3 | Pending |
+| SYS-10 | Phase 3 | Pending |
+| SYS-11 | Phase 3 | Pending |
+| SYS-12 | Phase 3 | Pending |
+| SYS-13 | Phase 3 | Pending |
+| SYS-14 | Phase 3 | Pending |
+| SYS-15 | Phase 3 | Pending |
+| SYS-16 | Phase 3 | Pending |
+| SYS-17 | Phase 3 | Pending |
+| SYS-18 | Phase 3 | Pending |
+| SYS-19 | Phase 3 | Pending |
+| SYS-20 | Phase 3 | Pending |
+| SYS-21 | Phase 3 | Pending |
+| TEST-05 | Phase 4 | Pending |
+| TEST-06 | Phase 4 | Pending |
+| TEST-07 | Phase 4 | Pending |
+| TEST-08 | Phase 4 | Pending |
+| TEST-09 | Phase 4 | Pending |
+| TEST-10 | Phase 4 | Pending |
+| TEST-11 | Phase 4 | Pending |
+| TEST-12 | Phase 4 | Pending |
+| TEST-13 | Phase 4 | Pending |
+| SYS-22 | Phase 4 | Pending |
+| SYS-23 | Phase 4 | Pending |
+| SYS-24 | Phase 4 | Pending |
+| SYS-25 | Phase 4 | Pending |
+| SYS-26 | Phase 4 | Pending |
+| GPU-01 | Phase 5 | Pending |
+| GPU-02 | Phase 5 | Pending |
+| GPU-03 | Phase 5 | Pending |
+| GPU-04 | Phase 5 | Pending |
+| GPU-05 | Phase 5 | Pending |
+| GPU-06 | Phase 5 | Pending |
+| GPU-07 | Phase 5 | Pending |
+| GPU-08 | Phase 5 | Pending |
+| GPU-09 | Phase 5 | Pending |
+| GPU-10 | Phase 5 | Pending |
+| SELF-01 | Phase 6 | Pending |
+| SELF-02 | Phase 6 | Pending |
+| SELF-03 | Phase 6 | Pending |
+| SELF-04 | Phase 6 | Pending |
+| SELF-05 | Phase 6 | Pending |
 
 **Coverage:**
-- v2.0 requirements: 57 total
-- Mapped to phases: 0
-- Unmapped: 57
+- v2.0 requirements: 70 total (note: REQUIREMENTS.md previously stated 57; actual count is 70)
+- Mapped to phases: 70
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-23*
-*Last updated: 2026-02-23 after v2.0 milestone definition*
+*Last updated: 2026-02-23 — traceability filled by roadmapper; all 70 requirements mapped to phases 1-6*

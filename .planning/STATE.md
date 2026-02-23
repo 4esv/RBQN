@@ -1,76 +1,62 @@
-# RBQN Project State
+# Project State
+
+## Project Reference
+
+See: .planning/PROJECT.md (updated 2026-02-23)
+
+**Core value:** Correct BQN execution with identical behavior to CBQN
+**Current focus:** Phase 1 — Runtime Bypass and Working Pipeline
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-02-23 — Milestone v2.0 started
+Phase: 1 of 6 (Runtime Bypass and Working Pipeline)
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-02-23 — Roadmap v2.0 created; milestone replanned from scratch with Option B strategy
 
-## Decisions Made
-- Assessment recommends bypassing runtime0 overrides (Option B) over debugging VM execution (Option A), given 19 failed fix iterations
-- Scrapped M1 roadmap — replanning from scratch with Option B strategy
-- Full CBQN test suite compatibility required (all 13 files)
-- GPU integration is in-scope for this milestone, not deferred
+Progress: [░░░░░░░░░░] 0%
+
+## Performance Metrics
+
+**Velocity:**
+- Total plans completed: 0
+- Average duration: —
+- Total execution time: 0 hours
+
+**By Phase:**
+
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| - | - | - | - |
+
+**Recent Trend:**
+- Last 5 plans: —
+- Trend: —
+
+*Updated after each plan completion*
 
 ## Accumulated Context
 
-### Bootstrap Pipeline
-| Stage | Status | Notes |
-|-------|--------|-------|
-| Build script (parse CBQN gen) | DONE | Embedded bytecode from CBQN |
-| Provide array (40 slots) | DONE | All 23 basic + 17 extended filled |
-| Runtime0 execution | DONE | 13/13 integration tests pass; fork and each bugs fixed |
-| Runtime1 execution | PARTIAL | Loads and runs but needs validation against fixed runtime0 |
-| Compiler loading | PARTIAL | Loads but requires runtime1 to be fully correct |
-| Formatter loading | PARTIAL | Code complete, falls back gracefully; blocked by runtime1 panic |
+### Decisions
 
-### Primitive Functions (44 total)
-| Category | Count | Status |
-|----------|-------|--------|
-| Arithmetic (+-×÷⋆√⌊⌈\|¬) | 10/10 | DONE |
-| Logic/Comparison (∧∨<>≠=≤≥≡≢) | 10/10 | DONE |
-| Structural (⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/) | 14/14 | DONE |
-| Search/Sort (⍋⍒⊏⊑⊐⊒∊⍷⊔!) | 10/10 | DONE |
+- [Pre-planning]: Option B (bypass runtime0 overrides) chosen after 19 failed debug iterations — native Rust primitives already correct
+- [Pre-planning]: Scrapped M1 roadmap entirely; replanned for v2.0 with GPU scope included
+- [Pre-planning]: Full CBQN test suite (13 files) required; GPU integration in-scope this milestone
+- [Pre-planning]: Runtime bypass already implemented in bootstrap.rs — Phase 1 is verification, not new implementation
 
-### Modifiers (20 total)
-| Modifier | Glyph | Status |
-|----------|-------|--------|
-| Constant | ˙ | DONE |
-| Swap | ˜ | DONE |
-| Cells | ˘ | DONE |
-| Each | ¨ | DONE |
-| Table | ⌜ | DONE |
-| Undo | ⁼ | NOT IMPLEMENTED |
-| Fold | ´ | DONE |
-| Insert | ˝ | DONE |
-| Scan | ` | DONE |
-| Atop | ∘ | DONE |
-| Over | ○ | DONE |
-| Before | ⊸ | DONE |
-| After | ⟜ | DONE |
-| Under | ⌾ | NOT IMPLEMENTED |
-| Valences | ⊘ | DONE |
-| Choose | ◶ | DONE |
-| Rank | ⎉ | NOT IMPLEMENTED |
-| Depth | ⚇ | NOT IMPLEMENTED |
-| Repeat | ⍟ | DONE |
-| Catch | ⎊ | DONE |
+### Pending Todos
 
-### Known Technical Details
-- Fork monadic dispatch: correctly computes `(f x) g (h x)` in derive.rs
-- results_to_arr helper: modifier outputs use typed arrays (numeric/char) not Boxed
-- compile_block: full CBQN-compatible body pair processing with fixup remapping
-- Arc::make_mut scope cloning was root cause of runtime1 crashes — fixed with Mutex<Vec<B>> interior mutability
-- Repr placeholder uses B::SENTINEL instead of m_sys_fn(1)
+None yet.
 
-## Blockers
-- Runtime override pipeline broken: 3/21 CBQN compat tests pass (14%). Strategy shift to Option B (bypass overrides) approved.
+### Blockers/Concerns
 
-### Quick Tasks Completed
+- PrimInd regression risk: `•PrimInd "+"` must return 0 not ¯1 after bypass; assert immediately in Phase 1
+- `setInv`/`setPrims` wrapped in `catch_unwind` in bootstrap.rs — panics are silently swallowed; remove before Phase 1 complete
+- GPU f32 precision: all GPU kernels use f32, BQN semantics are f64 — precision guard required before any GPU arithmetic dispatch in Phase 5
+- GPU staging buffers: current `GpuBuffer::storage()` lacks `MAP_READ`; pool staging buffers before any Phase 5 kernel wiring
 
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
-| 1 | Start GPU-accelerated ML primitives | 2026-02-21 | 1997575 | [1-start-gpu-accelerated-ml-primitives](./quick/1-start-gpu-accelerated-ml-primitives/) |
-| 2 | Add tracing to compiler-used primitives | 2026-02-23 | 386b409 | [2-add-tracing-to-compiler-used-primitives-](./quick/2-add-tracing-to-compiler-used-primitives-/) |
-| 3 | Assess progress toward CBQN-compatible GPU-accelerated BQN | 2026-02-23 | 8b3da9e | [3-assess-progress-toward-cbqn-compatible-g](./quick/3-assess-progress-toward-cbqn-compatible-g/) |
+## Session Continuity
+
+Last session: 2026-02-23
+Stopped at: Roadmap created; ready to plan Phase 1
+Resume file: None
