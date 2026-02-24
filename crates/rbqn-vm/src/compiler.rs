@@ -4,8 +4,134 @@ use rbqn_core::B;
 
 use crate::block::{Block, Body, Comp, CompKind, arg_count};
 use crate::bytecode::Op;
+use crate::namespace::NSDesc;
 use crate::scope::Scope;
 use crate::vm::get_arr;
+
+/// Build an NSDesc from body_arr[2] (variable IDs) and body_arr[3] (export mask).
+/// Returns None if no variables are exported.
+///
+/// CBQN offset: off = (ty==0?0:ty==1?2:3) + (imm?0:3)
+/// This accounts for implicit args occupying the first `off` variable slots.
+fn build_ns_desc(
+    var_ids_b: B,
+    export_mask_b: B,
+    name_list: B,
+    imm: bool,
+    ty: u8,
+) -> Option<Arc<NSDesc>> {
+    if !var_ids_b.is_arr() || !export_mask_b.is_arr() {
+        return None;
+    }
+
+    // NOTE: Even if var_ids_b/export_mask_b are not arrays (e.g. for bare {⇐}),
+    // we may still need an NSDesc. If export_mask_b is an array (even empty),
+    // this is a namespace-returning body and we must create a descriptor.
+    // If export_mask_b is not an array, we can't create a descriptor.
+    let export_arr = match get_arr(export_mask_b) {
+        Some(a) => a,
+        None => return None,
+    };
+
+    // var_ids_b may be absent for bare {⇐}; handle both cases
+    let (ia, var_ids_arr_opt) = if var_ids_b.is_arr() {
+        let arr = get_arr(var_ids_b);
+        let ia = arr.as_ref().map(|a| a.ia()).unwrap_or(0);
+        (ia, arr)
+    } else {
+        (0, None)
+    };
+
+    // Offset for implicit args: (ty==0?0:ty==1?2:3) + (imm?0:3)
+    let arg_off: usize = (if imm { 0 } else { 3 })
+        + match ty { 0 => 0, 1 => 2, _ => 3 };
+
+    let actual_vam = ia + arg_off;
+    // NOTE: exp_gids must have at least 2 entries (CBQN minimum for NSDesc)
+    let mut exp_gids: Vec<i32> = vec![-1; actual_vam.max(2)];
+
+    if let Some(var_ids_arr) = var_ids_arr_opt {
+        for i in 0..ia {
+            let exported = export_arr.get(i).map(|v| v.o2f() != 0.0).unwrap_or(false);
+            if !exported {
+                continue;
+            }
+
+            let cid = var_ids_arr.get(i).map(|v| v.o2f() as usize).unwrap_or(0);
+
+            if name_list.is_arr() {
+                if let Some(nl_arr) = get_arr(name_list) {
+                    if cid < nl_arr.ia() {
+                        if let Ok(name_b) = nl_arr.get(cid) {
+                            if name_b.is_arr() {
+                                let name = crate::derive::b_to_string_pub(name_b);
+                                let gid = crate::namespace::str2gid(&name);
+                                let slot_idx = i + arg_off;
+                                if slot_idx < exp_gids.len() {
+                                    exp_gids[slot_idx] = gid;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // NOTE: Always return Some if export_mask array is present — this is a namespace body.
+    Some(Arc::new(NSDesc { var_am: actual_vam as i32, exp_gids }))
+}
+
+/// Build GID lookup table for ALL variable slots (exported or not).
+/// Returns a Vec where each entry is the GID of the field name for that slot.
+/// Entry is -1 if the slot has no resolvable name.
+///
+/// Used by namespace destructuring (⟨a⟩←ns): the target variable name IS the
+/// field name, and we need to look up GID from the slot index.
+fn build_all_var_gids(
+    var_ids_b: B,
+    name_list: B,
+    imm: bool,
+    ty: u8,
+    final_vam: usize,
+) -> Vec<i32> {
+    let mut gids = vec![-1i32; final_vam];
+
+    let var_ids_arr = match get_arr(var_ids_b) {
+        Some(a) => a,
+        None => return gids,
+    };
+    let ia = var_ids_arr.ia();
+    if ia == 0 {
+        return gids;
+    }
+
+    // Offset for implicit args: same formula as build_ns_desc
+    let arg_off: usize = (if imm { 0 } else { 3 })
+        + match ty { 0 => 0, 1 => 2, _ => 3 };
+
+    let nl_arr = match get_arr(name_list) {
+        Some(a) => a,
+        None => return gids,
+    };
+
+    for i in 0..ia {
+        let cid = var_ids_arr.get(i).map(|v| v.o2f() as usize).unwrap_or(0);
+        let slot_idx = i + arg_off;
+        if slot_idx >= gids.len() { break; }
+
+        if cid < nl_arr.ia() {
+            if let Ok(name_b) = nl_arr.get(cid) {
+                if name_b.is_arr() {
+                    let name = crate::derive::b_to_string_pub(name_b);
+                    gids[slot_idx] = crate::namespace::str2gid(&name);
+                }
+            }
+        }
+    }
+
+    gids
+}
 
 pub fn compile_all(
     bc_arr: &[i32],
@@ -477,9 +603,38 @@ fn compile_block(
                 c = n;
             }
 
-            // Create body with correct var_am from all_bodies
+            // Build namespace descriptor and variable GID table from body_arr[2]/[3]
             let final_vam = vam as i32 + if remap_args { arg_am } else { 0 };
-            let body = Arc::new(Body::new(final_vam as u16, bc_start, h_max as u32, mpsc as u16));
+
+            let (ns_desc, all_var_gids) = if bo_ia >= 3 {
+                let var_ids_b = body_arr.get(2).unwrap_or(B::SENTINEL);
+                let export_mask_b = if bo_ia >= 4 {
+                    body_arr.get(3).unwrap_or(B::SENTINEL)
+                } else {
+                    B::SENTINEL
+                };
+                let ns = if bo_ia >= 4 {
+                    build_ns_desc(var_ids_b, export_mask_b, comp.name_list, imm, ty)
+                } else {
+                    None
+                };
+                let gids = build_all_var_gids(var_ids_b, comp.name_list, imm, ty, final_vam as usize);
+                (ns, gids)
+            } else {
+                (None, vec![-1i32; final_vam as usize])
+            };
+
+            // Create body with correct var_am from all_bodies
+            let mut body = Arc::new(Body::new(final_vam as u16, bc_start, h_max as u32, mpsc as u16));
+
+            // Attach namespace descriptor and variable GID table
+            {
+                let b = Arc::get_mut(&mut body).unwrap();
+                if let Some(desc) = ns_desc {
+                    b.ns_desc = Some(desc);
+                }
+                b.all_var_gids = all_var_gids;
+            }
 
             let body_idx = bodies.len();
             if is1 {

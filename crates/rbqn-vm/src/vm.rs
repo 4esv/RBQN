@@ -823,13 +823,19 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             }
 
             Some(Op::ALIM) => {
-                // FIX: ALIM pops one value and reads one u32, then pushes
-                // a wrapped value back. Stack diff = 0 (consumed=1, added=1).
-                // In CBQN this wraps in a FldAlias object; we pass through
-                // the value for now but must not drop it from the stack.
+                // Build a field-alias value that stores both the variable reference
+                // (depth+pos from the VARM result) and the GID for namespace extraction.
+                // ALIAS_TAG encoding: bits 47:32 = GID, bits 31:16 = depth, bits 15:0 = pos
                 let o = pop!();
-                let _gid = read_u32!();
-                push!(o);
+                let gid = read_u32!() as i32;
+                // o is a VAR-tagged value: bits 47:32 = depth, bits 31:0 = pos
+                // For alias, depth fits in 16 bits (typically 0-15); pos also small.
+                let depth16 = o.v_depth() as u16;
+                let pos16 = (o.v_pos() & 0xFFFF) as u16;
+                let alias_payload = ((gid as u64 & 0xFFFF) << 32)
+                    | ((depth16 as u64) << 16)
+                    | (pos16 as u64);
+                push!(rbqn_core::tagu64(alias_payload, rbqn_core::ALIAS_TAG));
             }
 
             Some(Op::CHKV) => {

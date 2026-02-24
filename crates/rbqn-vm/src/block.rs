@@ -33,6 +33,10 @@ pub struct Body {
     pub var_am: u16,
     pub exists: bool,
     pub var_data: Vec<i32>,
+    // NOTE: GIDs for all variable slots (including implicit args). Used by
+    // namespace destructuring (⟨a⟩←ns) to map slot index → field name GID.
+    // Entry is -1 if no GID is known for that slot.
+    pub all_var_gids: Vec<i32>,
 }
 
 impl Body {
@@ -47,6 +51,7 @@ impl Body {
             var_am,
             exists: true,
             var_data: vec![-1; var_am as usize * 2],
+            all_var_gids: vec![-1; var_am as usize],
         }
     }
 
