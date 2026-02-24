@@ -164,3 +164,13 @@ pub fn not_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 pub fn log_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     pervasive_monad(x, xa, f64::ln, "⋆⁼")
 }
+
+// √⁼ monad: square (x^2)
+pub fn square_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    pervasive_monad(x, xa, |v| v * v, "√⁼")
+}
+
+// +˜⁼ monad: halve (x÷2)
+pub fn halve_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    pervasive_monad(x, xa, |v| v / 2.0, "+˜⁼")
+}

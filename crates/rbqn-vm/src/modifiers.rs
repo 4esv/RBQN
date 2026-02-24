@@ -624,23 +624,76 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
     let gid = (g.0 & 0xFFFFFFFFFFFF) >> 3;
     let gd = crate::derive::get_derived(gid);
 
-    // Pattern: F⌾(arr⊸⊏) x — structural select-under
-    // Applies F to the selected elements and scatters them back.
+    // Pattern: F⌾⌽ x — ⌽ is self-inverse (reverse)
+    if let crate::derive::DerivedKind::NativeFn { prim_idx: 31 } = gd.kind {
+        // F⌾⌽ x: apply F to (⌽ x), then ⌽ result back
+        let rev = c1(g, x);
+        let frev = c1(f, rev);
+        return Some(c1(g, frev));
+    }
+
+    // Pattern: F⌾⍉ x — ⍉ is self-inverse for rank≤2
+    if let crate::derive::DerivedKind::NativeFn { prim_idx: 32 } = gd.kind {
+        // F⌾⍉ x: apply F to (⍉ x), then ⍉ result back
+        let trans = c1(g, x);
+        let ftrans = c1(f, trans);
+        return Some(c1(g, ftrans));
+    }
+
+    // Pattern: F⌾< x — enclose under (enclose, apply F, unbox result)
+    if let crate::derive::DerivedKind::NativeFn { prim_idx: 12 } = gd.kind {
+        // F⌾< x: enclose x, apply F, then > (merge) to unbox
+        let enclosed = c1(g, x);  // < x
+        let f_enclosed = c1(f, enclosed);
+        let merge_fn = crate::derive::m_native_fn(13); // >
+        return Some(c1(merge_fn, f_enclosed));
+    }
+
+    // Pattern: F⌾(k⊸↑) x or F⌾(k⊸↓) x — take/drop under via ⊸ modifier
     if gd.kind == crate::derive::DerivedKind::Md2D {
         let modifier = gd.g;
         if modifier.is_md2() {
             let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
             let md = crate::derive::get_derived(mid);
             if let crate::derive::DerivedKind::NativeMd2 { prim_idx: 55 } = md.kind {
-                // ⊸ (Before) — check if right operand is ⊏ (select, idx=36)
+                // ⊸ (Before) — check right operand
                 let right_op = gd.h;
-                let left_op = gd.f;  // the index array
+                let left_op = gd.f;  // the k value
+
                 if right_op.is_fun() {
                     let rid = (right_op.0 & 0xFFFFFFFFFFFF) >> 3;
                     let rd = crate::derive::get_derived(rid);
-                    if let crate::derive::DerivedKind::NativeFn { prim_idx: 36 } = rd.kind {
-                        // F⌾(arr⊸⊏) x: structural select-under
-                        return Some(structural_select_under(f, left_op, x));
+
+                    match rd.kind {
+                        // F⌾(k⊸↑) x — take under
+                        crate::derive::DerivedKind::NativeFn { prim_idx: 26 } => {
+                            // Take k elements, apply F, then stitch back with remaining suffix
+                            // Result: (k↑ F(k↑x)) ∾ (k↓x)
+                            let take_fn = right_op;  // ↑
+                            let drop_fn = crate::derive::m_native_fn(27); // ↓
+                            let join_fn = crate::derive::m_native_fn(23);  // ∾
+                            let selected = c2(take_fn, left_op, x);       // k↑x
+                            let modified = c1(f, selected);                // F(k↑x)
+                            let suffix = c2(drop_fn, left_op, x);         // k↓x
+                            return Some(c2(join_fn, modified, suffix));    // modified ∾ suffix
+                        }
+                        // F⌾(k⊸↓) x — drop under
+                        crate::derive::DerivedKind::NativeFn { prim_idx: 27 } => {
+                            // Drop k elements, apply F to suffix, prefix back
+                            // Result: (k↑x) ∾ (k↓ F(k↓x))
+                            let take_fn = crate::derive::m_native_fn(26); // ↑
+                            let drop_fn = right_op;  // ↓
+                            let join_fn = crate::derive::m_native_fn(23);  // ∾
+                            let prefix = c2(take_fn, left_op, x);         // k↑x
+                            let selected = c2(drop_fn, left_op, x);       // k↓x
+                            let modified = c1(f, selected);                // F(k↓x)
+                            return Some(c2(join_fn, prefix, modified));    // prefix ∾ modified
+                        }
+                        // F⌾(arr⊸⊏) x — structural select-under
+                        crate::derive::DerivedKind::NativeFn { prim_idx: 36 } => {
+                            return Some(structural_select_under(f, left_op, x));
+                        }
+                        _ => {}
                     }
                 }
             }
