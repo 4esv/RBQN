@@ -35,18 +35,18 @@
 - [x] **SYS-03**: •Repr, •Fmt (formatting)
 - [x] **SYS-04**: •args, •path, •name, •wdpath, •state (environment)
 - [x] **SYS-05**: •Exit (process control)
-- [ ] **SYS-06**: •FChars, •FLines, •FBytes (file read)
-- [ ] **SYS-07**: •file.List, •file.At, •file.Name, •file.Parent (file paths)
+- [x] **SYS-06**: •FChars, •FLines, •FBytes (file read)
+- [x] **SYS-07**: •file.List, •file.At, •file.Name, •file.Parent (file paths)
 
 #### High (real-world use)
-- [ ] **SYS-08**: •Import (file loading with caching)
-- [ ] **SYS-09**: •file.Lines, •file.Chars, •file.Bytes (write variants)
-- [ ] **SYS-10**: •file.Open, •file.CreateDir, •file.Rename, •file.Remove, •file.Exists, •file.Type
-- [ ] **SYS-11**: •Type, •Decompose, •Glyph, •Fill (introspection — partially done)
-- [ ] **SYS-12**: •GroupLen, •GroupOrd (group support — done)
-- [ ] **SYS-13**: •ParseFloat, •Hash, •Cmp (utility)
-- [ ] **SYS-14**: •FromUTF8, •ToUTF8 (encoding)
-- [ ] **SYS-15**: •CurrentError (error handling)
+- [x] **SYS-08**: •Import (file loading with caching)
+- [x] **SYS-09**: •file.Lines, •file.Chars, •file.Bytes (write variants)
+- [x] **SYS-10**: •file.Open, •file.CreateDir, •file.Rename, •file.Remove, •file.Exists, •file.Type
+- [x] **SYS-11**: •Type, •Decompose, •Glyph, •Fill (introspection — partially done)
+- [x] **SYS-12**: •GroupLen, •GroupOrd (group support — done)
+- [x] **SYS-13**: •ParseFloat, •Hash, •Cmp (utility)
+- [x] **SYS-14**: •FromUTF8, •ToUTF8 (encoding)
+- [x] **SYS-15**: •CurrentError (error handling)
 
 #### Medium (extended functionality)
 - [ ] **SYS-16**: •math namespace (Sin, Cos, Tan, Asin, Acos, Atan, Log, Cbrt, Hypot, Erf, Comb, Fact, GCD, LCM)
@@ -148,16 +148,16 @@
 | PRIM-02 | Phase 3 | Pending |
 | PRIM-03 | Phase 3 | Pending |
 | PRIM-04 | Phase 3 | Pending |
-| SYS-06 | Phase 3 | Pending |
-| SYS-07 | Phase 3 | Pending |
-| SYS-08 | Phase 3 | Pending |
-| SYS-09 | Phase 3 | Pending |
-| SYS-10 | Phase 3 | Pending |
-| SYS-11 | Phase 3 | Pending |
-| SYS-12 | Phase 3 | Pending |
-| SYS-13 | Phase 3 | Pending |
-| SYS-14 | Phase 3 | Pending |
-| SYS-15 | Phase 3 | Pending |
+| SYS-06 | Phase 3 | Complete |
+| SYS-07 | Phase 3 | Complete |
+| SYS-08 | Phase 3 | Complete |
+| SYS-09 | Phase 3 | Complete |
+| SYS-10 | Phase 3 | Complete |
+| SYS-11 | Phase 3 | Complete |
+| SYS-12 | Phase 3 | Complete |
+| SYS-13 | Phase 3 | Complete |
+| SYS-14 | Phase 3 | Complete |
+| SYS-15 | Phase 3 | Complete |
 | SYS-16 | Phase 3 | Pending |
 | SYS-17 | Phase 3 | Pending |
 | SYS-18 | Phase 3 | Pending |

@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 3 of 6 (Language Completeness) -- IN PROGRESS
-Plan: 1 of 3 in current phase (03-01 complete)
+Plan: 2 of 3 in current phase (03-02 complete)
 Status: Executing phase 3
-Last activity: 2026-02-24 — Completed plan 03-01 (modifier semantics + primitive edge cases, overall 79.7%)
+Last activity: 2026-02-24 — Completed plan 03-02 (file I/O, Import caching, utility functions: ParseFloat/ToUTF8/FromUTF8/Cmp)
 
-Progress: [████░░░░░░] 33%
+Progress: [██████░░░░] 50%
 
 ## Performance Metrics
 
@@ -55,6 +55,9 @@ Progress: [████░░░░░░] 33%
 - [02-02]: syntax.bqn improved from 152 to 153 as collateral benefit of v_get array fix
 - [02-03]: ARMM merge targets use bit-0 marker in array payload to distinguish from LSTM list targets
 - [02-03]: Rank-1 merge-destructuring wraps elements as rank-0 unit arrays (CBQN m_unit semantics)
+- [03-02]: Dyadic •FChars/•FBytes write variants share sys_idx with monadic reads (52/53) — arity distinguishes
+- [03-02]: •ImportCache uses B::SENTINEL as circular-import sentinel; canonical path as cache key via fs::canonicalize
+- [03-02]: •ParseFloat normalizes ¯→- then handles ∞ and π as special string cases before f64 parse
 
 ### Pending Todos
 
@@ -70,5 +73,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 02-03-PLAN.md (Phase 2 complete — all 4 targets at 100%)
+Stopped at: Completed 03-02-PLAN.md (file I/O + utility functions: SYS-06 through SYS-15 all implemented)
 Resume file: None
