@@ -63,6 +63,8 @@ const MD2_CATCH: usize = 63;    // ⎊
 // •_fillBy_: F •_fillBy_ G applies F and uses G only for fill element computation.
 // Since we don't track fill elements, this just forwards to F.
 pub const MD2_FILL_BY: usize = 64; // •_fillBy_
+// NOTE: •_while_: F _while_ G — apply F while G returns 1
+pub const MD2_WHILE: usize = 65; // •_while_
 
 // ============================================================
 // Top-level dispatch
@@ -131,6 +133,16 @@ pub fn native_md2_c1(prim_idx: usize, f: B, g: B, _self_val: B, x: B) -> B {
         MD2_CATCH => catch_c1(f, g, x),
         // NOTE: •_fillBy_: F •_fillBy_ G applies F; G only provides fill element (ignored here)
         MD2_FILL_BY => c1(f, x),
+        // NOTE: •_while_: F _while_ G — apply F while G x returns 1
+        MD2_WHILE => {
+            let mut acc = x;
+            loop {
+                let cond = c1(g, acc);
+                if !cond.is_f64() || cond.o2f() != 1.0 { break; }
+                acc = c1(f, acc);
+            }
+            acc
+        }
         _ => rbqn_core::error::throw(format!(
             "native 2-modifier idx {} c1 not implemented", prim_idx
         )),
@@ -162,6 +174,16 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
         MD2_CATCH => catch_c2(f, g, w, x),
         // NOTE: •_fillBy_: F •_fillBy_ G applies F; G only provides fill element (ignored here)
         MD2_FILL_BY => c2(f, w, x),
+        // NOTE: •_while_ dyadic: w F _while_ G x — apply F while G w x returns 1
+        MD2_WHILE => {
+            let mut acc = x;
+            loop {
+                let cond = c2(g, w, acc);
+                if !cond.is_f64() || cond.o2f() != 1.0 { break; }
+                acc = c2(f, w, acc);
+            }
+            acc
+        }
         _ => rbqn_core::error::throw(format!(
             "native 2-modifier idx {} c2 not implemented", prim_idx
         )),
@@ -1283,11 +1305,13 @@ fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
         n_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
     };
     if n < 0 {
-        // NOTE: Negative repeat: apply inverse n times
+        // NOTE: Negative repeat: w F⍟n x = apply w F⁼ n times
+        // w F⁼ x means find y: w F y = x, i.e., dyadic inverse with w fixed.
+        // Implemented as c2(inv_reg(F), w, x) — the runtime handles the dyadic inverse.
         let f_inv = crate::derive::inv_reg(f);
         let mut acc = x;
         for _ in 0..n.unsigned_abs() {
-            acc = c1(f_inv, acc);
+            acc = c2(f_inv, w, acc);
         }
         return acc;
     }

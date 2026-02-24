@@ -1062,6 +1062,50 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
         }
+        // NOTE: math sys functions — unique range 1100-1114 to avoid conflicts with sys 100
+        1100 => math_sin_c1(x),
+        1101 => math_cos_c1(x),
+        1102 => math_tan_c1(x),
+        1103 => math_asin_c1(x),
+        1104 => math_acos_c1(x),
+        1105 => math_atan_c1(x),  // monadic: atan(x)
+        1106 => math_log_c1(x),   // monadic: ln(x)
+        1107 => math_cbrt_c1(x),
+        1108 => math_hypot_c1(x), // monadic: |x| (just as fallback)
+        1109 => math_erf_c1(x),
+        1110 => math_comb_c1(x),  // monadic: treat x as self-comb? use 0 •math.Comb x
+        1111 => math_fact_c1(x),
+        1112 => math_gcd_c1(x),   // monadic: not well-defined, return x
+        1113 => math_lcm_c1(x),   // monadic: not well-defined, return x
+        // NOTE: •rand sys functions — range 1120-1123
+        1121 => rand_range_c1(x),
+        1122 => rand_deal_c1(x),
+        1123 => rand_subset_c1(x),
+        // NOTE: •platform.environment — range 1130
+        1130 => platform_env_c1(x),
+        // NOTE: time functions — sys 140-142
+        140 => { // •UnixTime — current epoch seconds
+            use std::time::UNIX_EPOCH;
+            let secs = std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            B::m_f64(secs)
+        }
+        141 => { // •MonoTime — monotonic clock in seconds
+            static START: std::sync::LazyLock<std::time::Instant> =
+                std::sync::LazyLock::new(std::time::Instant::now);
+            let secs = START.elapsed().as_secs_f64();
+            B::m_f64(secs)
+        }
+        142 => { // •Delay — sleep for x seconds, return x
+            let secs = if x.is_f64() { x.o2f() } else { 0.0 };
+            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+            x
+        }
+        145 => { // •SH — execute shell command, return ⟨exit_code, stdout, stderr⟩
+            sh_exec_c1(x)
+        }
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c1)")),
     }
 }
@@ -1115,6 +1159,32 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
         }
+        // NOTE: math dyadic functions
+        1105 => { // atan2: w •math.Atan x = atan2(w, x) = angle of point (x, w)
+            let w_f = w.o2f();
+            let x_f = x.o2f();
+            B::m_f64(w_f.atan2(x_f))
+        }
+        1106 => { // log base: w •math.Log x = log_w(x) = ln(x)/ln(w)
+            B::m_f64(x.o2f().log(w.o2f()))
+        }
+        1108 => { // hypot: w •math.Hypot x
+            B::m_f64(w.o2f().hypot(x.o2f()))
+        }
+        1110 => { // comb: w •math.Comb x = C(x, w) = binomial coefficient
+            math_comb_c2(w, x)
+        }
+        1112 => { // gcd: w •math.GCD x
+            math_gcd_c2(w, x)
+        }
+        1113 => { // lcm: w •math.LCM x
+            math_lcm_c2(w, x)
+        }
+        // NOTE: rand dyadic: shape •rand.Range n
+        1121 => rand_range_c2(w, x),
+        1123 => rand_subset_c2(w, x),
+        // NOTE: •SH dyadic: options •SH args
+        145 => sh_exec_c2(w, x),
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c2)")),
     }
 }
@@ -1317,6 +1387,22 @@ fn sys_name_to_b(name: &str) -> B {
         "currenterror" => m_sys_fn(80), // •CurrentError — current error in catch
         // NOTE: •file namespace object (Lines, List, and expanded file ops)
         "file"      => make_file_namespace(),
+        // NOTE: •math namespace (trig, log, special functions, constants)
+        "math"      => make_math_namespace(),
+        // NOTE: •rand namespace (PRNG: Range, Deal, Subset)
+        "rand"      => make_rand_namespace(),
+        // NOTE: •MakeRand — creates a seeded PRNG (simplified: returns global •rand)
+        "makerand"  => make_rand_namespace(),
+        // NOTE: •platform namespace (os, bqn.impl, etc.)
+        "platform"  => make_platform_namespace(),
+        // NOTE: time functions
+        "unixtime"  => m_sys_fn(140),
+        "monotime"  => m_sys_fn(141),
+        "delay"     => m_sys_fn(142),
+        // NOTE: shell execution
+        "sh"        => m_sys_fn(145),
+        // NOTE: •_while_ 2-modifier
+        "_while_"   => m_native_md2(crate::modifiers::MD2_WHILE),
         _ => B::SENTINEL,
     }
 }
@@ -1997,4 +2083,482 @@ fn rbqn_vm_compile_all(
     fullpath: B,
 ) -> Arc<crate::block::Block> {
     crate::compiler::compile_all(bc, objs, blocks, bodies, indices, token_info, src, fullpath, None, 0)
+}
+
+// =============================================================================
+// •math namespace
+// =============================================================================
+
+/// Cached •math namespace object.
+static MATH_NS: std::sync::LazyLock<Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+fn make_math_namespace() -> B {
+    let mut guard = MATH_NS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ns_b) = *guard {
+        return ns_b;
+    }
+
+    use crate::namespace::{str2gid, NSDesc, NS};
+
+    // Fields: sin, cos, tan, asin, acos, atan, log, cbrt, hypot, erf, comb, fact, gcd, lcm, pi
+    let gids = vec![
+        str2gid("sin"),   // 0
+        str2gid("cos"),   // 1
+        str2gid("tan"),   // 2
+        str2gid("asin"),  // 3
+        str2gid("acos"),  // 4
+        str2gid("atan"),  // 5
+        str2gid("log"),   // 6
+        str2gid("cbrt"),  // 7
+        str2gid("hypot"), // 8
+        str2gid("erf"),   // 9
+        str2gid("comb"),  // 10
+        str2gid("fact"),  // 11
+        str2gid("gcd"),   // 12
+        str2gid("lcm"),   // 13
+        str2gid("pi"),    // 14
+    ];
+    let var_am: i32 = gids.len() as i32;
+    let var_am_u16 = var_am as u16;
+
+    let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
+    let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
+    let sc = Arc::new(crate::scope::Scope::new(
+        body,
+        None,
+        var_am_u16,
+        &[
+            m_sys_fn(1100), // sin
+            m_sys_fn(1101), // cos
+            m_sys_fn(1102), // tan
+            m_sys_fn(1103), // asin
+            m_sys_fn(1104), // acos
+            m_sys_fn(1105), // atan (mono+dyadic atan2)
+            m_sys_fn(1106), // log (mono ln, dyadic log_w)
+            m_sys_fn(1107), // cbrt
+            m_sys_fn(1108), // hypot (dyadic only, mono falls back)
+            m_sys_fn(1109), // erf
+            m_sys_fn(1110), // comb
+            m_sys_fn(1111), // fact
+            m_sys_fn(1112), // gcd
+            m_sys_fn(1113), // lcm
+            B::m_f64(std::f64::consts::PI), // pi — immediate constant
+        ],
+    ));
+
+    let ns = NS { desc, sc };
+    let ns_b = crate::namespace::store_ns(ns);
+    *guard = Some(ns_b);
+    ns_b
+}
+
+// NOTE: Math function helpers — all operate on scalar f64
+fn math_scalar(x: B) -> f64 { x.o2f() }
+
+fn math_sin_c1(x: B) -> B  { B::m_f64(math_scalar(x).sin()) }
+fn math_cos_c1(x: B) -> B  { B::m_f64(math_scalar(x).cos()) }
+fn math_tan_c1(x: B) -> B  { B::m_f64(math_scalar(x).tan()) }
+fn math_asin_c1(x: B) -> B { B::m_f64(math_scalar(x).asin()) }
+fn math_acos_c1(x: B) -> B { B::m_f64(math_scalar(x).acos()) }
+fn math_atan_c1(x: B) -> B { B::m_f64(math_scalar(x).atan()) }
+fn math_log_c1(x: B) -> B  { B::m_f64(math_scalar(x).ln()) }
+fn math_cbrt_c1(x: B) -> B { B::m_f64(math_scalar(x).cbrt()) }
+
+fn math_hypot_c1(x: B) -> B {
+    // Monadic hypot: |x|
+    B::m_f64(math_scalar(x).abs())
+}
+
+/// Erf approximation (Abramowitz & Stegun, max error ~1.5e-7)
+fn erf_approx(x: f64) -> f64 {
+    let a1 =  0.254829592_f64;
+    let a2 = -0.284496736_f64;
+    let a3 =  1.421413741_f64;
+    let a4 = -1.453152027_f64;
+    let a5 =  1.061405429_f64;
+    let p  =  0.3275911_f64;
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs();
+    let t = 1.0 / (1.0 + p * x);
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
+    sign * y
+}
+
+fn math_erf_c1(x: B) -> B { B::m_f64(erf_approx(math_scalar(x))) }
+
+fn math_fact_c1(x: B) -> B {
+    let n = math_scalar(x);
+    if n < 0.0 {
+        return B::m_f64(f64::NAN);
+    }
+    if n.fract() == 0.0 && n <= 20.0 {
+        // Exact integer factorial
+        let mut result = 1u64;
+        for i in 1..=(n as u64) {
+            result = result.saturating_mul(i);
+        }
+        B::m_f64(result as f64)
+    } else {
+        // Use Stirling / lgamma approximation: n! = Γ(n+1) = exp(lgamma(n+1))
+        B::m_f64(lgamma_approx(n + 1.0).exp())
+    }
+}
+
+/// Simple lgamma approximation using Lanczos method (g=7, n=9 coefficients)
+fn lgamma_approx(x: f64) -> f64 {
+    // NOTE: Use Lanczos approximation. Coefficients for g=7.
+    const G: f64 = 7.0;
+    const COEFFS: [f64; 9] = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+    if x < 0.5 {
+        std::f64::consts::PI.ln() - ((std::f64::consts::PI * x).sin().ln()) - lgamma_approx(1.0 - x)
+    } else {
+        let x = x - 1.0;
+        let mut a = COEFFS[0];
+        for (i, &c) in COEFFS[1..].iter().enumerate() {
+            a += c / (x + (i + 1) as f64);
+        }
+        let t = x + G + 0.5;
+        0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
+    }
+}
+
+fn math_comb_c1(x: B) -> B {
+    // Monadic: C(x, 0) = 1
+    B::m_f64(1.0)
+}
+
+fn math_comb_c2(w: B, x: B) -> B {
+    // w •math.Comb x = C(x, w) = x! / (w! * (x-w)!)
+    let n = x.o2f().round() as i64;
+    let k = w.o2f().round() as i64;
+    if k < 0 || k > n {
+        return B::m_f64(0.0);
+    }
+    let k = k.min(n - k); // symmetry: C(n,k) = C(n,n-k)
+    let mut result = 1.0_f64;
+    for i in 0..k {
+        result = result * (n - i) as f64 / (i + 1) as f64;
+    }
+    B::m_f64(result.round())
+}
+
+fn math_gcd_c1(x: B) -> B {
+    // Monadic: gcd(x, 0) = |x|
+    B::m_f64(x.o2f().abs())
+}
+
+fn math_gcd_c2(w: B, x: B) -> B {
+    let mut a = w.o2f().round() as i64;
+    let mut b = x.o2f().round() as i64;
+    a = a.abs();
+    b = b.abs();
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    B::m_f64(a as f64)
+}
+
+fn math_lcm_c1(x: B) -> B {
+    // Monadic: lcm(x, 0) = 0
+    B::m_f64(0.0)
+}
+
+fn math_lcm_c2(w: B, x: B) -> B {
+    let a = w.o2f().round() as i64;
+    let b = x.o2f().round() as i64;
+    if a == 0 || b == 0 {
+        return B::m_f64(0.0);
+    }
+    // gcd
+    let mut ga = a.abs();
+    let mut gb = b.abs();
+    while gb != 0 {
+        let t = gb;
+        gb = ga % gb;
+        ga = t;
+    }
+    let gcd = ga;
+    B::m_f64((a.abs() / gcd * b.abs()) as f64)
+}
+
+// =============================================================================
+// •rand namespace
+// =============================================================================
+
+/// Wyrand PRNG state.
+static RAND_STATE: std::sync::LazyLock<Mutex<u64>> = std::sync::LazyLock::new(|| {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    Mutex::new(seed ^ 0xa0761d6478bd642f)
+});
+
+fn wyrand(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0xa0761d6478bd642f);
+    let a = *state;
+    let b = a ^ 0xe7037ed1a0b428db;
+    let t = (a as u128).wrapping_mul(b as u128);
+    ((t >> 64) ^ t) as u64
+}
+
+fn rand_next() -> u64 {
+    let mut guard = RAND_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    wyrand(&mut guard)
+}
+
+/// Cached •rand namespace object.
+static RAND_NS: std::sync::LazyLock<Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+fn make_rand_namespace() -> B {
+    let mut guard = RAND_NS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ns_b) = *guard {
+        return ns_b;
+    }
+
+    use crate::namespace::{str2gid, NSDesc, NS};
+
+    let gids = vec![
+        str2gid("range"),   // 0
+        str2gid("deal"),    // 1
+        str2gid("subset"),  // 2
+    ];
+    let var_am: i32 = gids.len() as i32;
+    let var_am_u16 = var_am as u16;
+
+    let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
+    let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
+    let sc = Arc::new(crate::scope::Scope::new(
+        body,
+        None,
+        var_am_u16,
+        &[
+            m_sys_fn(1121), // Range
+            m_sys_fn(1122), // Deal
+            m_sys_fn(1123), // Subset
+        ],
+    ));
+
+    let ns = NS { desc, sc };
+    let ns_b = crate::namespace::store_ns(ns);
+    *guard = Some(ns_b);
+    ns_b
+}
+
+fn rand_range_c1(x: B) -> B {
+    // •rand.Range n — random integer in [0, n)
+    let n = x.o2f().round() as u64;
+    if n == 0 { return B::m_f64(0.0); }
+    let r = rand_next() % n;
+    B::m_f64(r as f64)
+}
+
+fn rand_range_c2(w: B, x: B) -> B {
+    // shape •rand.Range n — array of random integers in [0, n)
+    let n = x.o2f().round() as u64;
+    if !w.is_arr() {
+        // w is a scalar: produce array of length w
+        let len = w.o2f().round() as usize;
+        let vals: Vec<f64> = (0..len).map(|_| (rand_next() % n.max(1)) as f64).collect();
+        let arr = rbqn_core::array::BqnArr::new_vec_f64(vals);
+        return crate::vm::tag_arr(arr);
+    }
+    // w is a shape array: produce shaped array
+    let shape_arr = match crate::vm::get_arr(w) {
+        Some(a) => a,
+        None => rbqn_core::error::throw("•rand.Range: 𝕨 must be a shape"),
+    };
+    let shape: Vec<usize> = (0..shape_arr.ia())
+        .map(|i| shape_arr.get(i).unwrap_or(B::SENTINEL).o2f().round() as usize)
+        .collect();
+    let total: usize = shape.iter().product();
+    let vals: Vec<f64> = (0..total).map(|_| (rand_next() % n.max(1)) as f64).collect();
+    let mut arr = rbqn_core::array::BqnArr::new_vec_f64(vals);
+    arr.shape = shape;
+    crate::vm::tag_arr(arr)
+}
+
+fn rand_deal_c1(x: B) -> B {
+    // •rand.Deal n — random permutation of ↕n (Fisher-Yates shuffle)
+    let n = x.o2f().round() as usize;
+    let mut perm: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    for i in (1..n).rev() {
+        let j = (rand_next() % (i + 1) as u64) as usize;
+        perm.swap(i, j);
+    }
+    let arr = rbqn_core::array::BqnArr::new_vec_f64(perm);
+    crate::vm::tag_arr(arr)
+}
+
+fn rand_subset_c1(x: B) -> B {
+    // Monadic: treat as •rand.Deal (return permutation)
+    rand_deal_c1(x)
+}
+
+fn rand_subset_c2(w: B, x: B) -> B {
+    // k •rand.Subset n — k random distinct indices from ↕n
+    let k = w.o2f().round() as usize;
+    let n = x.o2f().round() as usize;
+    if k > n { rbqn_core::error::throw("•rand.Subset: k > n"); }
+    // Fisher-Yates partial shuffle
+    let mut pool: Vec<usize> = (0..n).collect();
+    let mut result = Vec::with_capacity(k);
+    for i in 0..k {
+        let j = i + (rand_next() % (n - i) as u64) as usize;
+        pool.swap(i, j);
+        result.push(pool[i] as f64);
+    }
+    let arr = rbqn_core::array::BqnArr::new_vec_f64(result);
+    crate::vm::tag_arr(arr)
+}
+
+// =============================================================================
+// •platform namespace
+// =============================================================================
+
+/// Cached •platform namespace object.
+static PLATFORM_NS: std::sync::LazyLock<Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+fn make_platform_namespace() -> B {
+    let mut guard = PLATFORM_NS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ns_b) = *guard {
+        return ns_b;
+    }
+
+    use crate::namespace::{str2gid, NSDesc, NS};
+
+    // Fields: os, environment, arch, bqn.impl (mapped as "impl")
+    let gids = vec![
+        str2gid("os"),
+        str2gid("environment"),
+        str2gid("arch"),
+        str2gid("impl"),
+    ];
+    let var_am: i32 = gids.len() as i32;
+    let var_am_u16 = var_am as u16;
+
+    // Build os string as immediate value
+    let os_str = std::env::consts::OS; // "linux", "macos", "windows", etc.
+    let os_chars: Vec<u32> = os_str.chars().map(|c| c as u32).collect();
+    let os_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(os_chars));
+
+    // arch string
+    let arch_str = std::env::consts::ARCH;
+    let arch_chars: Vec<u32> = arch_str.chars().map(|c| c as u32).collect();
+    let arch_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(arch_chars));
+
+    // impl string
+    let impl_str = "RBQN";
+    let impl_chars: Vec<u32> = impl_str.chars().map(|c| c as u32).collect();
+    let impl_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(impl_chars));
+
+    let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
+    let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
+    let sc = Arc::new(crate::scope::Scope::new(
+        body,
+        None,
+        var_am_u16,
+        &[
+            os_b,              // os — immediate string
+            m_sys_fn(1130),    // environment — callable function
+            arch_b,            // arch — immediate string
+            impl_b,            // impl — immediate string
+        ],
+    ));
+
+    let ns = NS { desc, sc };
+    let ns_b = crate::namespace::store_ns(ns);
+    *guard = Some(ns_b);
+    ns_b
+}
+
+fn platform_env_c1(x: B) -> B {
+    // •platform.environment "VAR" — look up environment variable
+    let name = b_to_string(x);
+    match std::env::var(&name) {
+        Ok(val) => {
+            let chars: Vec<u32> = val.chars().map(|c| c as u32).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+        }
+        Err(_) => {
+            // Return empty string if not found
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(vec![]))
+        }
+    }
+}
+
+// =============================================================================
+// •SH — shell execution
+// =============================================================================
+
+fn sh_exec_c1(x: B) -> B {
+    let cmd = b_to_string(x);
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .output()
+        .unwrap_or_else(|e| rbqn_core::error::throw(format!("•SH: failed to run command: {e}")));
+
+    let exit_code = output.status.code().unwrap_or(-1) as f64;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    let stdout_chars: Vec<u32> = stdout.chars().map(|c| c as u32).collect();
+    let stderr_chars: Vec<u32> = stderr.chars().map(|c| c as u32).collect();
+    let stdout_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(stdout_chars));
+    let stderr_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(stderr_chars));
+
+    let result = rbqn_core::array::BqnArr::from_b_vec(vec![
+        B::m_f64(exit_code),
+        stdout_b,
+        stderr_b,
+    ]);
+    crate::vm::tag_arr(result)
+}
+
+fn sh_exec_c2(w: B, x: B) -> B {
+    // w •SH x — w is options (ignored for now), x is command or array of command parts
+    if x.is_arr() {
+        if let Some(arr) = crate::vm::get_arr(x) {
+            if arr.ia() > 0 {
+                let cmd_b = arr.get(0).unwrap_or(B::SENTINEL);
+                let cmd = b_to_string(cmd_b);
+                let mut proc = std::process::Command::new(&cmd);
+                for i in 1..arr.ia() {
+                    let arg_b = arr.get(i).unwrap_or(B::SENTINEL);
+                    proc.arg(b_to_string(arg_b));
+                }
+                let output = proc.output()
+                    .unwrap_or_else(|e| rbqn_core::error::throw(format!("•SH: failed to run: {e}")));
+                let exit_code = output.status.code().unwrap_or(-1) as f64;
+                let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                let stdout_chars: Vec<u32> = stdout.chars().map(|c| c as u32).collect();
+                let stderr_chars: Vec<u32> = stderr.chars().map(|c| c as u32).collect();
+                let stdout_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(stdout_chars));
+                let stderr_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(stderr_chars));
+                let result = rbqn_core::array::BqnArr::from_b_vec(vec![
+                    B::m_f64(exit_code), stdout_b, stderr_b,
+                ]);
+                return crate::vm::tag_arr(result);
+            }
+        }
+    }
+    // Fall back to monadic form with x as string command
+    sh_exec_c1(x)
 }
