@@ -6,6 +6,21 @@ fn grade(arr: &BqnArr, ascending: bool) -> Result<Vec<i32>> {
     // NOTE: BQN grade operates on the first axis (rows for 2D arrays).
     // For rank-1 arrays, each element is a cell. For rank-N, each cell is a
     // row-major sub-array. The result length equals arr.shape[0] (nrows).
+
+    // Validate: elements must be sortable (numbers, chars, or arrays thereof).
+    // Functions and modifiers are not sortable.
+    if arr.el_type() == ElType::B {
+        // Boxed array: check each element
+        for i in 0..arr.ia() {
+            let v = arr.get(i)?;
+            if !v.is_f64() && !v.is_c32() && !v.is_arr() {
+                return Err(BqnError::Type(
+                    "⍋/⍒𝕩: elements must be numbers, characters, or arrays".into()
+                ));
+            }
+        }
+    }
+
     let nrows = if arr.rank() == 0 { 1 } else { arr.shape[0] };
     let cell_size: usize = if arr.rank() <= 1 { 1 } else { arr.shape[1..].iter().product() };
     let mut indices: Vec<i32> = (0..nrows as i32).collect();
@@ -101,9 +116,25 @@ pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⍋ dyad: bins (ascending)
+// NOTE: 𝕨 and 𝕩 must be compatible sorted arrays (rank-1 or same rank). Higher-rank with mismatched trailing shapes errors.
 pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍋𝕩: 𝕨 must be an array".into()))?;
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍋𝕩: 𝕩 must be an array".into()))?;
+
+    // Validate rank compatibility
+    let wr = warr.rank();
+    let xr = xarr.rank();
+    if wr > 1 && xr > 1 && wr != xr {
+        return Err(BqnError::Rank(format!(
+            "𝕨⍋𝕩: 𝕨 and 𝕩 must have compatible ranks ({} vs {})", wr, xr
+        )));
+    }
+    // Cell shapes must match: w.shape[1..] must equal x.shape[1..]
+    if wr >= 2 && xr >= 2 && warr.shape[1..] != xarr.shape[1..] {
+        return Err(BqnError::Shape(format!(
+            "𝕨⍋𝕩: trailing shapes must match ({:?} vs {:?})", &warr.shape[1..], &xarr.shape[1..]
+        )));
+    }
 
     if warr.el_type().is_num() && xarr.el_type().is_num() {
         let wvals = warr.f64_iter()?;

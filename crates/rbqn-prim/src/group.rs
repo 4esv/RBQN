@@ -4,9 +4,29 @@ use crate::dispatch::PrimResult;
 // ⊔ monad: group indices
 // Groups ↕≠𝕩 by values in 𝕩.
 // Result length = 1+⌈´𝕩, each group is a list of indices.
-pub fn group_indices_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: 𝕩 must be a rank-1 integer array. Non-integers, rank≠1, or rank-0 should error.
+pub fn group_indices_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if x.is_atom() {
+        return Err(BqnError::Type("⊔𝕩: 𝕩 must be an integer array".into()));
+    }
     let arr = xa.ok_or_else(|| BqnError::Type("⊔𝕩: 𝕩 must be an array".into()))?;
-    let indices = arr.i32_iter()?;
+    if arr.rank() != 1 {
+        return Err(BqnError::Rank(format!(
+            "⊔𝕩: 𝕩 must be rank-1, got rank {}",
+            arr.rank()
+        )));
+    }
+    let indices = arr.i32_iter().map_err(|_| BqnError::Type("⊔𝕩: 𝕩 must be an integer array".into()))?;
+    // NOTE: BQN spec: ⊔ requires natural numbers (¯1 is allowed to exclude)
+    // Values < ¯1 are domain errors
+    for &g in &indices {
+        if g < -1 {
+            return Err(BqnError::Domain(format!(
+                "⊔𝕩: 𝕩 must be ¯1 or non-negative integers, got {}",
+                g
+            )));
+        }
+    }
 
     let max_idx = indices.iter().copied().max().unwrap_or(-1);
     let n = (max_idx + 1).max(0) as usize;
@@ -30,8 +50,18 @@ pub fn group_indices_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // BQN spec: ≠𝕨 can equal ≠𝕩 or 1+≠𝕩.
 // If ≠𝕨 = 1+≠𝕩, the last element of 𝕨 directly specifies the minimum result length.
 // (i.e., the result has at least max(0, last_element) groups)
-pub fn group_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: 𝕨 must be rank-1. If it contains scalars that are functions/arrays, error.
+pub fn group_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if w.is_atom() {
+        return Err(BqnError::Type("𝕨⊔𝕩: 𝕨 must be an integer array".into()));
+    }
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊔𝕩: 𝕨 must be an array".into()))?;
+    if warr.rank() != 1 {
+        return Err(BqnError::Rank(format!(
+            "𝕨⊔𝕩: 𝕨 must be rank-1, got rank {}",
+            warr.rank()
+        )));
+    }
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊔𝕩: 𝕩 must be an array".into()))?;
 
     let all_indices = warr.i32_iter()?;

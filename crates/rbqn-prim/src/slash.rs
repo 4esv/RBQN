@@ -3,8 +3,18 @@ use rbqn_core::array::typed_arr_from_b_vec;
 use crate::dispatch::PrimResult;
 
 // / monad: indices
-pub fn indices_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: 𝕩 must be a rank-1 integer array of non-negative values. Rank-0 (atoms or enclosed) errors.
+pub fn indices_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if x.is_atom() {
+        return Err(BqnError::Type("/𝕩: 𝕩 must be an array".into()));
+    }
     let arr = xa.ok_or_else(|| BqnError::Type("/𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() != 1 {
+        return Err(BqnError::Rank(format!(
+            "/𝕩: 𝕩 must be rank-1, got rank {}",
+            arr.rank()
+        )));
+    }
     let counts = arr.i32_iter()?;
     let total: i32 = counts.iter().sum();
     if total < 0 {
@@ -95,14 +105,32 @@ pub fn indices_inverse_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>)
 }
 
 // / dyad: replicate
-pub fn replicate_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: 𝕨 must be rank-1 or a scalar. 𝕩 must be rank-1. Higher-rank args are errors.
+pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // 𝕩 must be rank-1 (not an atom or rank>1)
+    if x.is_atom() {
+        return Err(BqnError::Type("𝕨/𝕩: 𝕩 must be an array".into()));
+    }
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() != 1 {
+        return Err(BqnError::Rank(format!(
+            "𝕨/𝕩: 𝕩 must be rank-1, got rank {}",
+            arr.rank()
+        )));
+    }
 
     let counts = if w.is_f64() {
         let n = w.to_i32()?;
         vec![n; arr.ia()]
     } else {
         let warr = wa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕨 must be a number or array".into()))?;
+        // 𝕨 must be rank-1
+        if warr.rank() != 1 {
+            return Err(BqnError::Rank(format!(
+                "𝕨/𝕩: 𝕨 must be rank-1, got rank {}",
+                warr.rank()
+            )));
+        }
         let c = warr.i32_iter()?;
         if c.len() != arr.ia() {
             return Err(BqnError::Shape(format!(

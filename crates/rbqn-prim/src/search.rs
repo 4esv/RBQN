@@ -5,9 +5,16 @@ use crate::dispatch::PrimResult;
 // ⊐ monad: classify
 // Returns sequential class indices: first unique → 0, second unique → 1, etc.
 // Duplicates get the same class as their first occurrence.
+// NOTE: 𝕩 must be rank-1. Rank-0 errors.
 #[allow(non_snake_case)]
-pub fn self_indexOf_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn self_indexOf_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if x.is_atom() {
+        return Err(BqnError::Type("⊐𝕩: 𝕩 must be a rank-1 array".into()));
+    }
     let arr = xa.ok_or_else(|| BqnError::Type("⊐𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("⊐𝕩: 𝕩 must be rank-1".into()));
+    }
     let ia = arr.ia();
     let mut result = Vec::with_capacity(ia);
     // NOTE: class_map[i] = class number assigned to position i
@@ -37,9 +44,31 @@ pub fn self_indexOf_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⊐ dyad: index of
+// NOTE: 𝕨 must be rank-1 OR rank-N where cells (rank-N-1 sub-arrays) match 𝕩 element shape.
+// For rank-1 𝕨: each element of 𝕩 (or 𝕩 itself if atom) is searched for.
 #[allow(non_snake_case)]
 pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊐𝕩: 𝕨 must be an array".into()))?;
+
+    // Validate: w must be rank-1 (for simple indexOf) or rank-N with matching cell shapes
+    if warr.rank() > 1 {
+        // Higher-rank w: cell shape must match x's shape
+        let w_cell_shape = &warr.shape[1..];
+        let x_shape: &[usize] = if x.is_atom() {
+            &[]
+        } else if let Some(xarr) = xa {
+            &xarr.shape
+        } else {
+            &[]
+        };
+        if w_cell_shape != x_shape {
+            return Err(BqnError::Rank(format!(
+                "𝕨⊐𝕩: 𝕨 cell shape {:?} doesn't match 𝕩 shape {:?}",
+                w_cell_shape, x_shape
+            )));
+        }
+    }
+
     let wia = warr.ia();
 
     // Trace: detect glyph lookups during compilation
@@ -100,8 +129,15 @@ pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
 }
 
 // ⊒ monad: self-count (occurrence count)
-pub fn self_count_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: 𝕩 must be rank-1. Rank-0 errors.
+pub fn self_count_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if x.is_atom() {
+        return Err(BqnError::Type("⊒𝕩: 𝕩 must be a rank-1 array".into()));
+    }
     let arr = xa.ok_or_else(|| BqnError::Type("⊒𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("⊒𝕩: 𝕩 must be rank-1".into()));
+    }
     let ia = arr.ia();
     let mut result = Vec::with_capacity(ia);
     for i in 0..ia {
@@ -118,8 +154,29 @@ pub fn self_count_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⊒ dyad: progressive index of (count)
-pub fn count_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: Like ⊐, 𝕨 and 𝕩 must have compatible shapes.
+// 𝕨 must be rank-1 for simple element search, or rank-N with cell shape matching 𝕩 elements.
+pub fn count_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊒𝕩: 𝕨 must be an array".into()))?;
+
+    // Validate rank compatibility
+    if warr.rank() > 1 {
+        let w_cell_shape = &warr.shape[1..];
+        let x_shape: &[usize] = if x.is_atom() {
+            &[]
+        } else if let Some(xarr) = xa {
+            &xarr.shape
+        } else {
+            &[]
+        };
+        if w_cell_shape != x_shape {
+            return Err(BqnError::Rank(format!(
+                "𝕨⊒𝕩: 𝕨 cell shape {:?} doesn't match 𝕩 shape {:?}",
+                w_cell_shape, x_shape
+            )));
+        }
+    }
+
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊒𝕩: 𝕩 must be an array".into()))?;
     let wia = warr.ia();
     let xia = xarr.ia();
@@ -143,8 +200,15 @@ pub fn count_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 }
 
 // ∊ monad: mark firsts
-pub fn mark_firsts_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: 𝕩 must be a rank-1 array. Rank-0 (atom or enclosed) errors.
+pub fn mark_firsts_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if x.is_atom() {
+        return Err(BqnError::Type("∊𝕩: 𝕩 must be a rank-1 array".into()));
+    }
     let arr = xa.ok_or_else(|| BqnError::Type("∊𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("∊𝕩: 𝕩 must be rank-1".into()));
+    }
     let ia = arr.ia();
     let mut result = Vec::with_capacity(ia);
     for i in 0..ia {
@@ -209,9 +273,21 @@ pub fn deduplicate_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ⍷ dyad: find
 // w⍷x marks positions where w occurs as contiguous subsequence in x.
 // For vectors: substring search. Returns boolean array same length as x.
-pub fn find_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: w and x must have the same rank (or w.rank == x.rank), and trailing shapes match.
+pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if w.is_atom() {
+        return Err(BqnError::Type("𝕨⍷𝕩: 𝕨 must be an array".into()));
+    }
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍷𝕩: 𝕨 must be an array".into()))?;
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍷𝕩: 𝕩 must be an array".into()))?;
+
+    // NOTE: w and x must have the same rank for find to make sense
+    if warr.rank() != xarr.rank() {
+        return Err(BqnError::Rank(format!(
+            "𝕨⍷𝕩: 𝕨 and 𝕩 must have the same rank ({} vs {})",
+            warr.rank(), xarr.rank()
+        )));
+    }
 
     let wia = warr.ia();
     let xia = xarr.ia();
