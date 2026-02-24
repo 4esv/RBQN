@@ -387,20 +387,53 @@ fn each_c2(f: B, w: B, x: B) -> B {
 // ============================================================
 
 fn table_c2(f: B, w: B, x: B) -> B {
-    let warr = arr_of(w);
-    let xarr = arr_of(x);
-    let wn = warr.ia();
-    let xn = xarr.ia();
-    let mut results = Vec::with_capacity(wn * xn);
-    for i in 0..wn {
-        let wi = get_elem(&warr, i);
-        for j in 0..xn {
-            results.push(c2(f, wi, get_elem(&xarr, j)));
+    // NOTE: BQN allows scalar (atom) args to ⌜. Scalars have shape [] and contribute
+    // no dimensions to the result: result shape = w.shape ∾ x.shape.
+    // For scalar w and array x: result has x.shape. For both scalars: result is rank-0.
+    match (w.is_atom(), x.is_atom()) {
+        (true, true) => {
+            // scalar ⌜ scalar → rank-0 result (shape [])
+            let val = c2(f, w, x);
+            results_to_arr(vec![val], vec![])
+        }
+        (true, false) => {
+            // scalar ⌜ array → iterate x, result shape = x.shape
+            let xarr = arr_of(x);
+            let xn = xarr.ia();
+            let mut results = Vec::with_capacity(xn);
+            for j in 0..xn {
+                results.push(c2(f, w, get_elem(&xarr, j)));
+            }
+            results_to_arr(results, xarr.shape.clone())
+        }
+        (false, true) => {
+            // array ⌜ scalar → iterate w, result shape = w.shape
+            let warr = arr_of(w);
+            let wn = warr.ia();
+            let mut results = Vec::with_capacity(wn);
+            for i in 0..wn {
+                results.push(c2(f, get_elem(&warr, i), x));
+            }
+            results_to_arr(results, warr.shape.clone())
+        }
+        (false, false) => {
+            // array ⌜ array → original behavior
+            let warr = arr_of(w);
+            let xarr = arr_of(x);
+            let wn = warr.ia();
+            let xn = xarr.ia();
+            let mut results = Vec::with_capacity(wn * xn);
+            for i in 0..wn {
+                let wi = get_elem(&warr, i);
+                for j in 0..xn {
+                    results.push(c2(f, wi, get_elem(&xarr, j)));
+                }
+            }
+            let mut shape = warr.shape.clone();
+            shape.extend_from_slice(&xarr.shape);
+            results_to_arr(results, shape)
         }
     }
-    let mut shape = warr.shape.clone();
-    shape.extend_from_slice(&xarr.shape);
-    results_to_arr(results, shape)
 }
 
 // ============================================================
