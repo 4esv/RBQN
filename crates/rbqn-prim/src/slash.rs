@@ -197,5 +197,14 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
         }
     }
     let len = result.len();
-    Ok(PrimResult::Array(typed_arr_from_b_vec(result, vec![len], arr.fill)))
+    // NOTE: Preserve fill from source array. Use arr.fill if set, otherwise compute via arr_fill.
+    // This ensures fill propagates correctly through replicate even when source has fill=None.
+    let fill = if arr.fill.is_some() {
+        arr.fill
+    } else if arr.el_type() == ElType::B {
+        Some(crate::structural::arr_fill(arr))
+    } else {
+        arr.fill
+    };
+    Ok(PrimResult::Array(typed_arr_from_b_vec(result, vec![len], fill)))
 }

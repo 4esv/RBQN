@@ -235,7 +235,13 @@ pub fn group_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result
             tag_arr(array::typed_arr_from_b_vec(g, vec![len], xarr.fill))
         })
         .collect();
-    Ok(PrimResult::Array(BqnArr::new_vec_b(result)))
+    // NOTE: Fill of group result = prototype of an empty group with same element fill as x.
+    // This allows 1↑(w⊔x) to fill with the correct empty-group prototype.
+    let group_fill_arr = array::typed_arr_from_b_vec(vec![], vec![0], xarr.fill);
+    let group_fill = rbqn_core::tag_arr(group_fill_arr);
+    let mut out = BqnArr::new_vec_b(result);
+    out.fill = Some(group_fill);
+    Ok(PrimResult::Array(out))
 }
 
 // •GroupLen system function

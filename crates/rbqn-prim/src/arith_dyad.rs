@@ -23,7 +23,12 @@ fn pervasive_boxed_scalar_arr(
         let r = pervasive_dyad(w, None, xi, xi_arr.as_ref(), scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
-    let out = array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), xa_arr.fill);
+    let result_fill = if !results.is_empty() {
+        Some(crate::structural::prototype_of(results[0]))
+    } else {
+        xa_arr.fill
+    };
+    let out = array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), result_fill);
     Ok(PrimResult::Array(out))
 }
 
@@ -41,7 +46,12 @@ fn pervasive_boxed_arr_scalar(
         let r = pervasive_dyad(wi, wi_arr.as_ref(), x, None, scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
-    let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), wa_arr.fill);
+    let result_fill = if !results.is_empty() {
+        Some(crate::structural::prototype_of(results[0]))
+    } else {
+        wa_arr.fill
+    };
+    let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
     Ok(PrimResult::Array(out))
 }
 
@@ -67,7 +77,14 @@ fn pervasive_boxed_arr_arr(
         let r = pervasive_dyad(wi, wi_arr.as_ref(), xi, xi_arr.as_ref(), scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
-    let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), wa_arr.fill);
+    // NOTE: Compute fill from result elements (not wa_arr.fill) since the result
+    // may have different structure than either input (e.g., scalar+array → array).
+    let result_fill = if !results.is_empty() {
+        Some(crate::structural::prototype_of(results[0]))
+    } else {
+        wa_arr.fill
+    };
+    let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
     Ok(PrimResult::Array(out))
 }
 
@@ -213,14 +230,77 @@ pub fn add_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
         return pervasive_char_add(w, wa, x, xa, wk == 'c');
     }
 
-    // Boxed/nested arrays: recurse element-wise through pervasive_dyad
+    // Boxed/nested arrays: recurse element-wise, preserving char arithmetic
     if wk == 'o' || xk == 'o' {
-        return pervasive_dyad(w, wa, x, xa, |a, b| a + b, "+");
+        return pervasive_mixed_boxed(w, wa, x, xa, add_c2);
     }
 
     // char + char is a type error in BQN
     Err(BqnError::Type("𝕨+𝕩: Unexpected argument types".into()))
 }
+
+/// Generic pervasive handler for mixed/Boxed arrays with char-aware operations.
+/// `op_fn` should be the top-level function (e.g., add_c2) that handles all type combinations.
+fn pervasive_mixed_boxed(
+    w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>,
+    op_fn: fn(B, Option<&BqnArr>, B, Option<&BqnArr>) -> Result<PrimResult>,
+) -> Result<PrimResult> {
+    fn to_b(r: PrimResult) -> B { match r { PrimResult::Scalar(b) => b, PrimResult::Array(a) => tag_arr(a) } }
+
+    match (wa, xa) {
+        (Some(wa_a), Some(xa_a)) => {
+            if wa_a.shape != xa_a.shape {
+                return Err(BqnError::Shape(format!(
+                    "shape mismatch ({:?} vs {:?})", wa_a.shape, xa_a.shape
+                )));
+            }
+            let n = wa_a.ia();
+            let mut results = Vec::with_capacity(n);
+            for i in 0..n {
+                let wi = wa_a.get(i)?;
+                let xi = xa_a.get(i)?;
+                let wi_a = get_arr(wi);
+                let xi_a = get_arr(xi);
+                results.push(to_b(op_fn(wi, wi_a.as_ref().map(|a| a), xi, xi_a.as_ref().map(|a| a))?));
+            }
+            let result_fill = results.first().copied().map(crate::structural::prototype_of);
+            Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)))
+        }
+        (None, Some(xa_a)) => {
+            let n = xa_a.ia();
+            let mut results = Vec::with_capacity(n);
+            let w_a = get_arr(w);
+            for i in 0..n {
+                let xi = xa_a.get(i)?;
+                let xi_a = get_arr(xi);
+                results.push(to_b(op_fn(w, w_a.as_ref().map(|a| a), xi, xi_a.as_ref().map(|a| a))?));
+            }
+            let result_fill = results.first().copied().map(crate::structural::prototype_of);
+            Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, xa_a.shape.clone(), result_fill)))
+        }
+        (Some(wa_a), None) => {
+            let n = wa_a.ia();
+            let mut results = Vec::with_capacity(n);
+            let x_a = get_arr(x);
+            for i in 0..n {
+                let wi = wa_a.get(i)?;
+                let wi_a = get_arr(wi);
+                results.push(to_b(op_fn(wi, wi_a.as_ref().map(|a| a), x, x_a.as_ref().map(|a| a))?));
+            }
+            let result_fill = results.first().copied().map(crate::structural::prototype_of);
+            Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)))
+        }
+        (None, None) => {
+            let wa2 = get_arr(w);
+            let xa2 = get_arr(x);
+            if wa2.is_some() || xa2.is_some() {
+                return pervasive_mixed_boxed(w, wa2.as_ref().map(|a| a), x, xa2.as_ref().map(|a| a), op_fn);
+            }
+            Err(BqnError::Type("Unexpected argument types".into()))
+        }
+    }
+}
+
 
 /// Pervasive char+num (or num+char) → char for all scalar/array combos.
 /// `w_is_char`: true means w is the char side, false means x is the char side.
@@ -480,9 +560,9 @@ pub fn sub_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
         return pervasive_char_sub_char(w, wa, x, xa);
     }
 
-    // Boxed/nested arrays: recurse element-wise through pervasive_dyad
+    // Boxed/nested arrays: recurse element-wise, preserving char arithmetic
     if wk == 'o' || xk == 'o' {
-        return pervasive_dyad(w, wa, x, xa, |a, b| a - b, "-");
+        return pervasive_mixed_boxed(w, wa, x, xa, sub_c2);
     }
 
     // num - char is a type error in BQN
