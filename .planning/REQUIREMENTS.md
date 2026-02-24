@@ -12,7 +12,7 @@
 - [x] **PIPE-04**: Runtime1 executes successfully with bypass in place
 - [x] **PIPE-05**: Compiler loads and compiles arbitrary BQN source strings
 - [x] **PIPE-06**: Formatter loads and provides •Fmt and •Repr
-- [ ] **PIPE-07**: REPL mode with variable persistence across evaluations
+- [x] **PIPE-07**: REPL mode with variable persistence across evaluations
 - [x] **PIPE-08**: `rbqn -e '1+1'` outputs `2`
 
 ### MOD: Missing Modifiers
@@ -129,7 +129,7 @@
 | PIPE-04 | Phase 1 | Complete |
 | PIPE-05 | Phase 1 | Complete |
 | PIPE-06 | Phase 1 | Complete |
-| PIPE-07 | Phase 1 | Pending |
+| PIPE-07 | Phase 1 | Complete |
 | PIPE-08 | Phase 1 | Complete |
 | SYS-01 | Phase 1 | Complete |
 | SYS-02 | Phase 1 | Complete |

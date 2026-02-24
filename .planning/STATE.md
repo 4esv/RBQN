@@ -9,29 +9,29 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 
 ## Current Position
 
-Phase: 1 of 6 (Runtime Bypass and Working Pipeline)
-Plan: 5 of 5 in current phase
-Status: In progress
-Last activity: 2026-02-23 — Completed plan 01-04 (compiler pipeline gap closure)
+Phase: 1 of 6 (Runtime Bypass and Working Pipeline) -- COMPLETE
+Plan: 5 of 5 in current phase (all complete)
+Status: Phase 1 complete
+Last activity: 2026-02-24 — Completed plan 01-05 (REPL persistence and Phase 1 verification)
 
-Progress: [███░░░░░░░] 15%
+Progress: [██░░░░░░░░] 17%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 2
-- Average duration: 10 min
-- Total execution time: 0.33 hours
+- Total plans completed: 3
+- Average duration: 13 min
+- Total execution time: 0.63 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 2 | 20min | 10min |
+| 01 | 3 | 38min | 13min |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (2min), 01-04 (18min)
-- Trend: Ramping
+- Last 5 plans: 01-02 (2min), 01-04 (18min), 01-05 (18min)
+- Trend: Steady
 
 *Updated after each plan completion*
 
@@ -48,6 +48,8 @@ Progress: [███░░░░░░░] 15%
 - [01-02]: •Out/•BQN tests blocked on pre-existing compiler string literal bug
 - [01-04]: Root cause of string bug was in build.rs C literal parser, not in VM execution
 - [01-04]: sort_up/sort_down need full row extraction for rank>1, not single-element get
+- [01-05]: REPL persistence uses compiler varNames/varDepths (depth=-1) rather than CBQN-style in-place scope mutation
+- [01-05]: Search primitives (⊐ ⊒ ∊ ⍷) required deep_equal fix for nested array comparison
 
 ### Pending Todos
 
@@ -62,6 +64,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-23
-Stopped at: Completed 01-04-PLAN.md (compiler pipeline gap closure)
+Last session: 2026-02-24
+Stopped at: Completed 01-05-PLAN.md (REPL persistence and Phase 1 verification)
 Resume file: None
