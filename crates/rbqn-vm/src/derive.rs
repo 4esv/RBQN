@@ -986,10 +986,36 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             }
             crate::vm::b_vec_to_arr(results)
         }
-        // NOTE: •file.Lines
+        // NOTE: •file.Lines / •FLines
         50 => file_lines_c1(x),
         // NOTE: •file.List
         51 => file_list_c1(x),
+        // NOTE: •FChars — read file as character array
+        52 => file_chars_c1(x),
+        // NOTE: •FBytes — read file as byte array
+        53 => file_bytes_c1(x),
+        // NOTE: •file.At — resolve relative path against base
+        54 => file_at_c1(x),
+        // NOTE: •file.Name — extract filename (basename) from path
+        55 => file_name_c1(x),
+        // NOTE: •file.Parent — extract parent directory from path
+        56 => file_parent_c1(x),
+        // NOTE: •file.Exists — check if file exists (returns 0 or 1)
+        57 => file_exists_c1(x),
+        // NOTE: •file.Type — return file type: 'f', 'd', 'l'
+        58 => file_type_c1(x),
+        // NOTE: •file.CreateDir — create directory (like mkdir -p)
+        59 => file_createdir_c1(x),
+        // NOTE: •file.Remove — remove file
+        61 => file_remove_c1(x),
+        // NOTE: •file.Open — stub (NYI)
+        62 => rbqn_core::error::throw("•file.Open: not yet implemented"),
+        // NOTE: •file.Chars — same as •FChars via namespace
+        63 => file_chars_c1(x),
+        // NOTE: •file.Bytes — same as •FBytes via namespace
+        64 => file_bytes_c1(x),
+        // NOTE: •file.Lines (namespace alias, same as sys 50)
+        65 => file_lines_c1(x),
         201 => { // Internal: /⁼ (inverse of indices)
             let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());
             match r {
@@ -1050,8 +1076,16 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         23 => { // •_groupOrd dyadic: w is lengths, x is indices
             dispatch_sys_group_ord_c2(w, w_arr.as_ref(), x, x_arr.as_ref())
         }
-        // NOTE: •file.Lines dyadic
+        // NOTE: •file.Lines dyadic — write array of strings to file
         50 => file_lines_c2(w, x),
+        // NOTE: •FChars dyadic / •file.Chars dyadic — write string to file
+        52 | 63 => file_chars_c2(w, x),
+        // NOTE: •FBytes dyadic / •file.Bytes dyadic — write byte array to file
+        53 | 64 => file_bytes_c2(w, x),
+        // NOTE: •file.At dyadic — resolve name relative to path
+        54 => file_at_c2(w, x),
+        // NOTE: •file.Rename dyadic — rename file: old •file.Rename new
+        60 => file_rename_c2(w, x),
         100 => { // •BQN placeholder — just return SENTINEL for now
             B::SENTINEL
         }
@@ -1250,7 +1284,19 @@ fn sys_name_to_b(name: &str) -> B {
         "name"      => dispatch_sys_env(39),
         "wdpath"    => dispatch_sys_env(40),
         "state"     => dispatch_sys_env(41),
-        // NOTE: •file namespace object (Lines, List)
+        // File I/O top-level functions
+        "flines"    => m_sys_fn(50),   // •FLines — read file as array of strings
+        "fchars"    => m_sys_fn(52),   // •FChars — read file as char array
+        "fbytes"    => m_sys_fn(53),   // •FBytes — read file as byte array
+        // Import
+        "import"    => m_sys_fn(70),   // •Import — load and cache BQN file
+        // Utility functions
+        "parsefloat"   => m_sys_fn(75), // •ParseFloat — string to number
+        "hash"         => m_sys_fn(76), // •Hash — deterministic hash
+        "fromutf8"     => m_sys_fn(78), // •FromUTF8 — bytes to chars
+        "toutf8"       => m_sys_fn(79), // •ToUTF8 — chars to bytes
+        "currenterror" => m_sys_fn(80), // •CurrentError — current error in catch
+        // NOTE: •file namespace object (Lines, List, and expanded file ops)
         "file"      => make_file_namespace(),
         _ => B::SENTINEL,
     }
@@ -1290,7 +1336,7 @@ pub fn dispatch_sys_env(idx: u32) -> B {
 static FILE_NS: std::sync::LazyLock<Mutex<Option<B>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
-/// Build the •file namespace with Lines and List fields.
+/// Build the •file namespace with all file operation fields.
 fn make_file_namespace() -> B {
     let mut guard = FILE_NS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ns_b) = *guard {
@@ -1299,23 +1345,55 @@ fn make_file_namespace() -> B {
 
     use crate::namespace::{str2gid, NSDesc, NS};
 
-    let lines_gid = str2gid("lines");
-    let list_gid = str2gid("list");
+    // NOTE: Field order must match the scope values array order exactly.
+    // Fields: Lines(50), List(51), Chars(63), Bytes(64), At(54), Name(55),
+    //         Parent(56), Exists(57), Type(58), CreateDir(59), Rename(60), Remove(61), Open(62)
+    let lines_gid     = str2gid("lines");
+    let list_gid      = str2gid("list");
+    let chars_gid     = str2gid("chars");
+    let bytes_gid     = str2gid("bytes");
+    let at_gid        = str2gid("at");
+    let name_gid      = str2gid("name");
+    let parent_gid    = str2gid("parent");
+    let exists_gid    = str2gid("exists");
+    let type_gid      = str2gid("type");
+    let createdir_gid = str2gid("createdir");
+    let rename_gid    = str2gid("rename");
+    let remove_gid    = str2gid("remove");
+    let open_gid      = str2gid("open");
 
-    let desc = Arc::new(NSDesc {
-        var_am: 2,
-        exp_gids: vec![lines_gid, list_gid],
-    });
+    let var_am_i32: i32 = 13;
+    let var_am_u16: u16 = 13;
+    let exp_gids = vec![
+        lines_gid, list_gid, chars_gid, bytes_gid, at_gid, name_gid,
+        parent_gid, exists_gid, type_gid, createdir_gid, rename_gid, remove_gid, open_gid,
+    ];
+
+    let desc = Arc::new(NSDesc { var_am: var_am_i32, exp_gids });
 
     // Create a minimal Body for the Scope constructor
-    let body = Arc::new(crate::block::Body::new(2, 0, 0, 0));
+    let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
 
-    // Build scope with the two system function values
+    // Build scope with all system function values (order must match exp_gids)
     let sc = Arc::new(crate::scope::Scope::new(
         body,
         None,
-        2,
-        &[m_sys_fn(50), m_sys_fn(51)],
+        var_am_u16,
+        &[
+            m_sys_fn(50),  // Lines
+            m_sys_fn(51),  // List
+            m_sys_fn(63),  // Chars
+            m_sys_fn(64),  // Bytes
+            m_sys_fn(54),  // At
+            m_sys_fn(55),  // Name
+            m_sys_fn(56),  // Parent
+            m_sys_fn(57),  // Exists
+            m_sys_fn(58),  // Type
+            m_sys_fn(59),  // CreateDir
+            m_sys_fn(60),  // Rename
+            m_sys_fn(61),  // Remove
+            m_sys_fn(62),  // Open
+        ],
     ));
 
     let ns = NS { desc, sc };
@@ -1359,6 +1437,185 @@ fn file_list_c1(x: B) -> B {
         crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
     }).collect();
     crate::vm::b_vec_to_arr(bqn_names)
+}
+
+/// •FChars / •file.Chars: read file as character array.
+fn file_chars_c1(x: B) -> B {
+    let path = resolve_path(b_to_string(x));
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•FChars: cannot read {path}: {e}"))
+    });
+    let chars: Vec<u32> = content.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
+/// •FChars dyadic / •file.Chars dyadic: write string w to file x.
+fn file_chars_c2(w: B, x: B) -> B {
+    let path = resolve_path(b_to_string(x));
+    let content = b_to_string(w);
+    std::fs::write(&path, content).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•FChars: cannot write {path}: {e}"))
+    });
+    w
+}
+
+/// •FBytes / •file.Bytes: read file as byte array (numeric 0-255).
+fn file_bytes_c1(x: B) -> B {
+    let path = resolve_path(b_to_string(x));
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•FBytes: cannot read {path}: {e}"))
+    });
+    let nums: Vec<f64> = bytes.iter().map(|&b| b as f64).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(nums))
+}
+
+/// •FBytes dyadic / •file.Bytes dyadic: write byte array w to file x.
+fn file_bytes_c2(w: B, x: B) -> B {
+    let path = resolve_path(b_to_string(x));
+    let bytes = b_to_byte_vec(w);
+    std::fs::write(&path, &bytes).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•FBytes: cannot write {path}: {e}"))
+    });
+    w
+}
+
+/// •file.At monadic: returns x unchanged (identity for absolute paths).
+fn file_at_c1(x: B) -> B {
+    // Monadic: just resolve relative to •path
+    let path_str = b_to_string(x);
+    let resolved = resolve_path(path_str);
+    let chars: Vec<u32> = resolved.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
+/// •file.At dyadic: resolve name x relative to base path w.
+fn file_at_c2(w: B, x: B) -> B {
+    let base = b_to_string(w);
+    let name = b_to_string(x);
+    let result = std::path::Path::new(&base).join(&name);
+    let result_str = result.to_string_lossy().into_owned();
+    let chars: Vec<u32> = result_str.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
+/// •file.Name: extract filename (basename) from path.
+fn file_name_c1(x: B) -> B {
+    let path_str = b_to_string(x);
+    let name = std::path::Path::new(&path_str)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let chars: Vec<u32> = name.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
+/// •file.Parent: extract parent directory from path (includes trailing slash).
+fn file_parent_c1(x: B) -> B {
+    let path_str = b_to_string(x);
+    let p = std::path::Path::new(&path_str);
+    let parent = p.parent()
+        .map(|d| {
+            let mut s = d.to_string_lossy().into_owned();
+            if !s.is_empty() && !s.ends_with('/') {
+                s.push('/');
+            }
+            s
+        })
+        .unwrap_or_default();
+    let chars: Vec<u32> = parent.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
+/// •file.Exists: check if file or directory exists. Returns 0 or 1.
+fn file_exists_c1(x: B) -> B {
+    let path_str = resolve_path(b_to_string(x));
+    let exists = std::path::Path::new(&path_str).exists();
+    B::m_f64(if exists { 1.0 } else { 0.0 })
+}
+
+/// •file.Type: return file type as character — 'f' (file), 'd' (dir), 'l' (symlink).
+fn file_type_c1(x: B) -> B {
+    let path_str = resolve_path(b_to_string(x));
+    let p = std::path::Path::new(&path_str);
+    let meta = std::fs::symlink_metadata(&path_str).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•file.Type: cannot stat {path_str}: {e}"))
+    });
+    let ch = if meta.file_type().is_symlink() {
+        'l'
+    } else if p.is_dir() {
+        'd'
+    } else {
+        'f'
+    };
+    B::m_c32(ch as u32)
+}
+
+/// •file.CreateDir: create directory including parents (like mkdir -p).
+fn file_createdir_c1(x: B) -> B {
+    let path_str = resolve_path(b_to_string(x));
+    std::fs::create_dir_all(&path_str).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•file.CreateDir: cannot create {path_str}: {e}"))
+    });
+    x
+}
+
+/// •file.Rename dyadic: rename file w to x.
+fn file_rename_c2(w: B, x: B) -> B {
+    let old = resolve_path(b_to_string(w));
+    let new = resolve_path(b_to_string(x));
+    std::fs::rename(&old, &new).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•file.Rename: cannot rename {old} to {new}: {e}"))
+    });
+    x
+}
+
+/// •file.Remove: remove file.
+fn file_remove_c1(x: B) -> B {
+    let path_str = resolve_path(b_to_string(x));
+    std::fs::remove_file(&path_str).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•file.Remove: cannot remove {path_str}: {e}"))
+    });
+    x
+}
+
+/// Resolve a path: if relative, join with •path directory. Otherwise return as-is.
+fn resolve_path(path: String) -> String {
+    let p = std::path::Path::new(&path);
+    if p.is_absolute() {
+        return path;
+    }
+    // Try to get •path (the script's directory)
+    let sys_path = SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(path_b) = sys_path {
+        let path_str = b_to_string(path_b);
+        if !path_str.is_empty() {
+            let base = std::path::Path::new(&path_str);
+            // •path is the directory (not the file), so join directly
+            let joined = base.join(&path);
+            return joined.to_string_lossy().into_owned();
+        }
+    }
+    path
+}
+
+/// Convert a B array of numeric values to a Vec<u8> (byte values 0-255).
+fn b_to_byte_vec(x: B) -> Vec<u8> {
+    if let Some(arr) = crate::vm::get_arr(x) {
+        (0..arr.ia())
+            .filter_map(|i| arr.get(i).ok())
+            .map(|b| {
+                if b.is_f64() {
+                    (b.o2f() as u8)
+                } else if b.is_c32() {
+                    (b.0 as u8)
+                } else {
+                    0u8
+                }
+            })
+            .collect()
+    } else {
+        vec![]
+    }
 }
 
 /// Public wrapper for b_to_string, used by compiler.rs for nameList resolution.
