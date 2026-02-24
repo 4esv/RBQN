@@ -1377,45 +1377,109 @@ pub fn transpose_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
 
     let rank = arr.rank() as usize;
+
+    if rank == 2 {
+        // Rank-2: swap rows and cols (full reverse = same as move-first-to-last for rank 2)
+        let old_shape = &arr.shape;
+        let ia = arr.ia();
+        let new_shape: Vec<usize> = old_shape.iter().rev().copied().collect();
+        let mut old_strides = vec![1usize; rank];
+        for i in (0..rank - 1).rev() {
+            old_strides[i] = old_strides[i + 1] * old_shape[i + 1];
+        }
+        let mut result = vec![B::m_i32(0); ia];
+        for flat in 0..ia {
+            let mut rem = flat;
+            let mut old_flat = 0;
+            for new_axis in 0..rank {
+                let mut s = 1;
+                for a in (new_axis + 1)..rank {
+                    s *= new_shape[a];
+                }
+                let idx = rem / s;
+                rem %= s;
+                let old_axis = rank - 1 - new_axis;
+                old_flat += idx * old_strides[old_axis];
+            }
+            result[flat] = arr.get(old_flat)?;
+        }
+        return Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)));
+    }
+
+    // Rank > 2: ⍉ moves first axis to last.
+    // permutation p[i] = where old axis i goes in result.
+    // p = (r-1)‿0‿1‿...‿(r-2): axis 0 → pos r-1, axis k → pos k-1 for k>0
+    let perm: Vec<i32> = std::iter::once(rank as i32 - 1).chain(0..rank as i32 - 1).collect();
+    transpose_with_perm(arr, &perm)
+}
+
+// ⍉⁼ monad: inverse transpose
+// For rank ≤ 2: self-inverse (same as ⍉).
+// For rank r > 2: permutation 1‿2‿...‿(r-1)‿0 moves first axis to last.
+// This gives shape ¯1⌽≢x (rotate-left the shape).
+pub fn transpose_inv_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if x.is_atom() {
+        return transpose_c1(x, xa);
+    }
+    let arr = xa.ok_or_else(|| BqnError::Type("⍉⁼𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() <= 2 {
+        return transpose_c1(x, xa);
+    }
+    // rank > 2: ⍉ moves first axis to last (permutation (r-1)‿0‿1‿...‿(r-2) in "where axis i goes").
+    // ⍉⁼ is the inverse: moves last axis to first (permutation 1‿2‿...‿(r-1)‿0).
+    // p[i] = where old axis i goes in result.
+    let rank = arr.rank() as i32;
+    let perm: Vec<i32> = (1..rank).chain(std::iter::once(0)).collect();
+    transpose_with_perm(arr, &perm)
+}
+
+// Apply a permutation p to reorder axes of arr.
+// p[i] says where old axis i maps to in the result.
+// Shared by reorder_c2 and transpose_inv_c1.
+fn transpose_with_perm(arr: &BqnArr, perm: &[i32]) -> Result<PrimResult> {
+    let rank = arr.rank() as usize;
     let old_shape = &arr.shape;
-    let ia = arr.ia();
 
-    // New shape is reversed
-    let new_shape: Vec<usize> = old_shape.iter().rev().copied().collect();
+    let max_p = perm.iter().copied().max().unwrap_or(0);
+    let new_rank = (max_p + 1) as usize;
 
-    // Compute strides for original array
+    // Build new shape: for each new axis, take min of all old axes mapped to it
+    let mut new_shape = vec![usize::MAX; new_rank];
+    for (old_axis, &p) in perm.iter().enumerate() {
+        let na = p as usize;
+        new_shape[na] = new_shape[na].min(arr.shape[old_axis]);
+    }
+    for s in &mut new_shape {
+        if *s == usize::MAX { *s = 0; }
+    }
+
+    let ia: usize = new_shape.iter().product();
+
+    // Compute strides for old array
     let mut old_strides = vec![1usize; rank];
-    for i in (0..rank - 1).rev() {
+    for i in (0..rank.saturating_sub(1)).rev() {
         old_strides[i] = old_strides[i + 1] * old_shape[i + 1];
     }
 
-    // For transposition: new axis i corresponds to old axis (rank-1-i)
-    // new_strides[i] = old_strides[rank-1-i]
-    let mut result = vec![B::m_i32(0); ia];
+    // Compute strides for new array
+    let mut new_strides = vec![1usize; new_rank];
+    for i in (0..new_rank.saturating_sub(1)).rev() {
+        new_strides[i] = new_strides[i + 1] * new_shape[i + 1];
+    }
+
+    let mut result = Vec::with_capacity(ia);
     for flat in 0..ia {
-        // Convert flat index to multi-dimensional index in new array
+        let mut new_idx = vec![0usize; new_rank];
         let mut rem = flat;
-        let mut old_flat = 0;
-        for new_axis in 0..rank {
-            let idx = rem / {
-                let mut s = 1;
-                for a in (new_axis + 1)..rank {
-                    s *= new_shape[a];
-                }
-                s
-            };
-            rem %= {
-                let mut s = 1;
-                for a in (new_axis + 1)..rank {
-                    s *= new_shape[a];
-                }
-                s
-            };
-            // new_axis corresponds to old_axis = rank - 1 - new_axis
-            let old_axis = rank - 1 - new_axis;
-            old_flat += idx * old_strides[old_axis];
+        for ni in 0..new_rank {
+            new_idx[ni] = rem / new_strides[ni];
+            rem %= new_strides[ni];
         }
-        result[flat] = arr.get(old_flat)?;
+        let mut old_flat = 0;
+        for (old_axis, &p) in perm.iter().enumerate() {
+            old_flat += new_idx[p as usize] * old_strides[old_axis];
+        }
+        result.push(arr.get(old_flat)?);
     }
 
     Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
@@ -1459,13 +1523,43 @@ pub fn reorder_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         warr.i32_iter()?
     };
 
-    if perm.len() != rank {
+    // Validate length: perm must have length <= rank.
+    // If len(perm) < rank, extend by appending uncovered target positions (CBQN extension rule).
+    let perm = if perm.len() < rank {
+        // Validate partial permutation
+        for &p in &perm {
+            if p < 0 {
+                return Err(BqnError::Domain(format!(
+                    "𝕨⍉𝕩: axis index {} must be non-negative", p
+                )));
+            }
+        }
+        // Find covered target positions
+        let mut covered = vec![false; rank];
+        for &p in &perm {
+            if p >= 0 && (p as usize) < rank {
+                covered[p as usize] = true;
+            }
+        }
+        // Append uncovered positions for remaining source axes
+        let mut extended = perm.clone();
+        let uncovered: Vec<i32> = (0..rank as i32).filter(|&i| !covered[i as usize]).collect();
+        let n = perm.len();
+        for (i, &uc) in uncovered.iter().enumerate() {
+            if n + i < rank {
+                extended.push(uc);
+            }
+        }
+        extended
+    } else if perm.len() > rank {
         return Err(BqnError::Rank(format!(
-            "𝕨⍉𝕩: 𝕨 length ({}) must equal rank of 𝕩 ({})",
+            "𝕨⍉𝕩: 𝕨 length ({}) must be ≤ rank of 𝕩 ({})",
             perm.len(),
             rank
         )));
-    }
+    } else {
+        perm
+    };
 
     // Validate: all values must be non-negative
     for &p in &perm {

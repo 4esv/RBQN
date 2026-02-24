@@ -33,15 +33,18 @@ pub fn indices_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     Ok(PrimResult::Array(BqnArr::new_vec_i32(result)))
 }
 
-// /⁼ monad: inverse of indices — converts sorted index array back to counts
-// /⁼ ⟨0,0,1,2,2,2⟩ → ⟨2,1,3⟩ (because / ⟨2,1,3⟩ = ⟨0,0,1,2,2,2⟩)
+// /⁼ monad: group counts — for each value v in 𝕩, count how many times it appears.
+// Result[v] = number of occurrences of v in 𝕩.
+// /⁼ ⟨0,0,1,2,2,2⟩ → ⟨2,1,3⟩  (sorted case: matches / ⟨2,1,3⟩ = ⟨0,0,1,2,2,2⟩)
+// /⁼ ⟨2,3,1,1⟩ → ⟨0,2,1,1⟩  (unsorted: count by value index)
 pub fn indices_inverse_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("/⁼𝕩: 𝕩 must be an array".into()))?;
     if arr.ia() == 0 {
         return Ok(PrimResult::Array(BqnArr::new_vec_i32(vec![])));
     }
     let indices = arr.i32_iter()?;
-    let max_idx = *indices.last().unwrap();
+    // Find actual max (not just last element — array may be unsorted)
+    let max_idx = indices.iter().copied().max().unwrap_or(0);
     if max_idx < 0 {
         return Err(BqnError::Domain("/⁼𝕩: 𝕩 must consist of natural numbers".into()));
     }
