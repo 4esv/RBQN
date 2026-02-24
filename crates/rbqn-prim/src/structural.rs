@@ -1429,33 +1429,44 @@ pub fn reorder_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         )));
     }
 
-    // Validate: all values in [0, rank) and distinct
-    let mut seen = vec![false; rank];
+    // Validate: all values must be non-negative
     for &p in &perm {
-        if p < 0 || p as usize >= rank {
+        if p < 0 {
             return Err(BqnError::Domain(format!(
-                "𝕨⍉𝕩: axis index {} out of range [0, {})",
-                p, rank
+                "𝕨⍉𝕩: axis index {} must be non-negative", p
             )));
         }
-        let pu = p as usize;
-        if seen[pu] {
-            return Err(BqnError::Domain(format!(
-                "𝕨⍉𝕩: duplicate axis index {} in permutation",
-                p
-            )));
-        }
-        seen[pu] = true;
     }
 
     let max_p = perm.iter().copied().max().unwrap_or(0);
     let new_rank = (max_p + 1) as usize;
 
-    // Build new shape: for each new axis, set shape from mapped old axis
-    let mut new_shape = vec![0usize; new_rank];
+    // NOTE: All new axes [0, new_rank) must be referenced by at least one old axis.
+    // If there's a gap (some new axis has no old axis mapped to it), error.
+    let mut new_axis_covered = vec![false; new_rank];
+    for &p in &perm {
+        new_axis_covered[p as usize] = true;
+    }
+    for (na, &covered) in new_axis_covered.iter().enumerate() {
+        if !covered {
+            return Err(BqnError::Domain(format!(
+                "𝕨⍉𝕩: new axis {} is not covered by any old axis (gap in permutation)",
+                na
+            )));
+        }
+    }
+
+    // Build new shape: for each new axis, take min of all old axes mapped to it (diagonal case)
+    let mut new_shape = vec![usize::MAX; new_rank];
     for (old_axis, &p) in perm.iter().enumerate() {
         let na = p as usize;
-        new_shape[na] = arr.shape[old_axis];
+        new_shape[na] = new_shape[na].min(arr.shape[old_axis]);
+    }
+    // Replace any remaining MAX with 0
+    for s in &mut new_shape {
+        if *s == usize::MAX {
+            *s = 0;
+        }
     }
 
     let ia: usize = new_shape.iter().product();
