@@ -62,12 +62,14 @@ Plans:
   3. `f⎉1` applies f to rank-1 cells; `f⚇2` applies f at depth 2 (Rank and Depth correct)
   4. Fill propagation: `5↑1‿2‿3` pads with correct fill; `«` and `»` shift with correct fill element
   5. `•FChars "f.bqn"` reads a file; `•math.Sin π÷2` returns `1`; `•Out`, `•SH`, `•Import` all work
-**Plans:** 2/3 plans executed
+**Plans:** 5 plans (3 executed + 2 gap closure)
 
 Plans:
-- [ ] 03-01-PLAN.md — Fix modifier semantics (Undo, Under, Rank, Depth) and primitive completeness (fill, identity, pervasive)
-- [ ] 03-02-PLAN.md — File I/O system functions, Import with caching, introspection, utility functions
-- [ ] 03-03-PLAN.md — Math/rand/platform namespaces, time functions, shell execution, •_while_ modifier
+- [x] 03-01-PLAN.md — Fix modifier semantics (Undo, Under, Rank, Depth) and primitive completeness (fill, identity, pervasive)
+- [x] 03-02-PLAN.md — File I/O system functions, Import with caching, introspection, utility functions
+- [x] 03-03-PLAN.md — Math/rand/platform namespaces, time functions, shell execution, •_while_ modifier
+- [ ] 03-04-PLAN.md — [gap closure] Fix Undo gaps (sys 203 c2, dyadic +⁼) and Under functional-k patterns (MOD-01, MOD-02)
+- [ ] 03-05-PLAN.md — [gap closure] Fix prim structural edge cases to push pass rate above 80% (PRIM-04)
 
 ### Phase 4: Full Test Suite Green
 **Goal**: All 13 official BQN test files pass with 0 failures
@@ -121,7 +123,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Runtime Bypass and Working Pipeline | 0/3 | Complete    | 2026-02-24 |
 | 2. Test Baseline | 0/3 | Complete    | 2026-02-24 |
-| 3. Language Completeness | 2/3 | In Progress|  |
+| 3. Language Completeness | 3/5 | In Progress (gap closure) |  |
 | 4. Full Test Suite Green | 0/? | Not started | - |
 | 5. GPU Integration | 0/? | Not started | - |
 | 6. Self-Hosting | 0/? | Not started | - |
