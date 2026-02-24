@@ -2,41 +2,52 @@ use rbqn_core::*;
 use rbqn_core::array::typed_arr_from_b_vec;
 use crate::dispatch::PrimResult;
 
-// ⊐ monad: classify
-// Returns sequential class indices: first unique → 0, second unique → 1, etc.
-// Duplicates get the same class as their first occurrence.
-// NOTE: 𝕩 must be rank-1. Rank-0 errors.
+/// Compare major cell i with major cell j in an array (high-rank cell comparison).
+fn cells_equal(arr: &BqnArr, i: usize, j: usize, cell_size: usize) -> bool {
+    let base_i = i * cell_size;
+    let base_j = j * cell_size;
+    for k in 0..cell_size {
+        if let (Ok(a), Ok(b)) = (arr.get(base_i + k), arr.get(base_j + k)) {
+            if !rbqn_core::compare::deep_equal(a, b) { return false; }
+        } else { return false; }
+    }
+    true
+}
+
+// ⊐ monad: classify (supports high-rank — compares major cells)
 #[allow(non_snake_case)]
 pub fn self_indexOf_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_atom() {
-        return Err(BqnError::Type("⊐𝕩: 𝕩 must be a rank-1 array".into()));
+        return Err(BqnError::Type("⊐𝕩: 𝕩 must be an array".into()));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⊐𝕩: 𝕩 must be an array".into()))?;
     if arr.rank() == 0 {
-        return Err(BqnError::Rank("⊐𝕩: 𝕩 must be rank-1".into()));
+        return Err(BqnError::Rank("⊐𝕩: 𝕩 must have rank ≥ 1".into()));
     }
-    let ia = arr.ia();
-    let mut result = Vec::with_capacity(ia);
-    // NOTE: class_map[i] = class number assigned to position i
-    let mut class_map: Vec<i32> = Vec::with_capacity(ia);
+    let lead = arr.shape[0];
+    let cell_size: usize = if arr.rank() > 1 { arr.shape[1..].iter().product() } else { 1 };
+    let mut result = Vec::with_capacity(lead);
+    let mut class_map: Vec<i32> = Vec::with_capacity(lead);
     let mut next_class: i32 = 0;
-    for i in 0..ia {
-        let v = arr.get(i)?;
+    for i in 0..lead {
         let mut found_class: Option<i32> = None;
-        for j in 0..i {
-            if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
-                found_class = Some(class_map[j]);
-                break;
+        if cell_size == 1 {
+            let v = arr.get(i)?;
+            for j in 0..i {
+                if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
+                    found_class = Some(class_map[j]);
+                    break;
+                }
+            }
+        } else {
+            for j in 0..i {
+                if cells_equal(arr, i, j, cell_size) {
+                    found_class = Some(class_map[j]);
+                    break;
+                }
             }
         }
-        let cls = match found_class {
-            Some(c) => c,
-            None => {
-                let c = next_class;
-                next_class += 1;
-                c
-            }
-        };
+        let cls = found_class.unwrap_or_else(|| { let c = next_class; next_class += 1; c });
         class_map.push(cls);
         result.push(cls);
     }
@@ -133,24 +144,28 @@ pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
     Ok(PrimResult::Array(out))
 }
 
-// ⊒ monad: self-count (occurrence count)
-// NOTE: 𝕩 must be rank-1. Rank-0 errors.
+// ⊒ monad: self-count (supports high-rank — compares major cells)
 pub fn self_count_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_atom() {
-        return Err(BqnError::Type("⊒𝕩: 𝕩 must be a rank-1 array".into()));
+        return Err(BqnError::Type("⊒𝕩: 𝕩 must be an array".into()));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⊒𝕩: 𝕩 must be an array".into()))?;
     if arr.rank() == 0 {
-        return Err(BqnError::Rank("⊒𝕩: 𝕩 must be rank-1".into()));
+        return Err(BqnError::Rank("⊒𝕩: 𝕩 must have rank ≥ 1".into()));
     }
-    let ia = arr.ia();
-    let mut result = Vec::with_capacity(ia);
-    for i in 0..ia {
-        let v = arr.get(i)?;
+    let lead = arr.shape[0];
+    let cell_size: usize = if arr.rank() > 1 { arr.shape[1..].iter().product() } else { 1 };
+    let mut result = Vec::with_capacity(lead);
+    for i in 0..lead {
         let mut count = 0i32;
-        for j in 0..i {
-            if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
-                count += 1;
+        if cell_size == 1 {
+            let v = arr.get(i)?;
+            for j in 0..i {
+                if rbqn_core::compare::deep_equal(v, arr.get(j)?) { count += 1; }
+            }
+        } else {
+            for j in 0..i {
+                if cells_equal(arr, i, j, cell_size) { count += 1; }
             }
         }
         result.push(count);
@@ -204,25 +219,28 @@ pub fn count_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
     Ok(PrimResult::Array(out))
 }
 
-// ∊ monad: mark firsts
-// NOTE: 𝕩 must be a rank-1 array. Rank-0 (atom or enclosed) errors.
+// ∊ monad: mark firsts (supports high-rank — compares major cells)
 pub fn mark_firsts_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_atom() {
-        return Err(BqnError::Type("∊𝕩: 𝕩 must be a rank-1 array".into()));
+        return Err(BqnError::Type("∊𝕩: 𝕩 must be an array".into()));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("∊𝕩: 𝕩 must be an array".into()))?;
     if arr.rank() == 0 {
-        return Err(BqnError::Rank("∊𝕩: 𝕩 must be rank-1".into()));
+        return Err(BqnError::Rank("∊𝕩: 𝕩 must have rank ≥ 1".into()));
     }
-    let ia = arr.ia();
-    let mut result = Vec::with_capacity(ia);
-    for i in 0..ia {
-        let v = arr.get(i)?;
+    let lead = arr.shape[0];
+    let cell_size: usize = if arr.rank() > 1 { arr.shape[1..].iter().product() } else { 1 };
+    let mut result = Vec::with_capacity(lead);
+    for i in 0..lead {
         let mut is_first = true;
-        for j in 0..i {
-            if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
-                is_first = false;
-                break;
+        if cell_size == 1 {
+            let v = arr.get(i)?;
+            for j in 0..i {
+                if rbqn_core::compare::deep_equal(v, arr.get(j)?) { is_first = false; break; }
+            }
+        } else {
+            for j in 0..i {
+                if cells_equal(arr, i, j, cell_size) { is_first = false; break; }
             }
         }
         result.push(is_first as i32);
