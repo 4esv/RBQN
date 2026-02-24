@@ -246,12 +246,15 @@ fn native_inverse_reg(prim_idx: usize) -> Option<B> {
     // NOTE: These are monadic inverses (F⁼ x = inverse of F applied to x)
     // For dyadic F: w F⁼ x means "find y such that w F y = x"
     match prim_idx {
-        0 => Some(m_native_fn(0)),   // +⁼ = + (identity for monadic)
+        0 => Some(m_native_fn(0)),   // +⁼ = + (identity — handles char arithmetic via runtime)
         1 => Some(m_native_fn(1)),   // -⁼ = - (negate is its own inverse)
-        2 => Some(m_native_fn(3)),   // ×⁼ = ÷ (monadic: sign → reciprocal... approximate)
+        // NOTE: ×⁼ (prim 2): monadic × = signum, not reliably invertible.
+        // Remove: return None, let BQN runtime report an error.
         3 => Some(m_native_fn(3)),   // ÷⁼ = ÷ (reciprocal is its own inverse)
-        4 => Some(m_native_fn(4)),   // ⋆⁼ = log (use ⋆ with inverse semantics)
-        5 => Some(m_native_fn(4)),   // √⁼ = ⋆ (square is inverse of sqrt)
+        // NOTE: ⋆⁼ (prim 4): ⋆ x = e^x, so ⋆⁼ x = ln(x). Use sys_fn 202 (log).
+        4 => Some(m_sys_fn(202)),    // ⋆⁼ = ln (natural log)
+        // NOTE: √⁼ (prim 5): √ x = x^0.5, so √⁼ x = x^2. Use sys_fn 203 (square).
+        5 => Some(m_sys_fn(203)),    // √⁼ = x^2 (square)
         9 => Some(m_native_fn(9)),   // ¬⁼ = ¬ (not is its own inverse)
         12 => Some(m_native_fn(13)), // <⁼ = > (unbox)
         13 => Some(m_native_fn(12)), // >⁼ = < (box)
@@ -259,20 +262,28 @@ fn native_inverse_reg(prim_idx: usize) -> Option<B> {
         21 => Some(m_native_fn(21)), // ⊢⁼ = ⊢
         31 => Some(m_native_fn(31)), // ⌽⁼ = ⌽ (reverse is its own inverse)
         32 => Some(m_native_fn(32)), // ⍉⁼ = ⍉ (transpose is its own inverse for rank≤2)
-        33 => Some(m_sys_fn(201)),    // /⁼ = inverse of indices (counts from sorted indices)
+        33 => Some(m_sys_fn(201)),   // /⁼ = inverse of indices (counts from sorted indices)
         37 => Some(m_native_fn(24)), // ⊑⁼ = ≍ (solo: first inverse wraps in 1-element array)
         _ => None,
     }
 }
 
 /// Known swap inverses for native primitives (w F˜⁼ x or similar).
+/// Monadic F˜⁼ x: inverse of (F˜ x = x F x).
+/// Dyadic w F˜⁼ x: inverse of (w F˜ x = x F w), i.e. find y: x F y = w F˜ x
 fn native_inverse_swap(prim_idx: usize) -> Option<B> {
     match prim_idx {
-        0 => Some(m_native_fn(1)),   // w+˜⁼x = x-w → subtract
-        1 => Some(m_native_fn(1)),   // w-˜⁼x = x-w → subtract (same)
-        2 => Some(m_native_fn(3)),   // w×˜⁼x = x÷w → divide
-        3 => Some(m_native_fn(2)),   // w÷˜⁼x = x×w → multiply
-        4 => Some(m_native_fn(5)),   // w⋆˜⁼x = w√x → root
+        // NOTE: +˜ x = x+x = 2x, so +˜⁼ x = x÷2. Dyadic: w+˜⁼x = x-w (subtract).
+        // The sys_fn 204 handles the monadic case (x÷2). The BQN runtime handles dyadic.
+        0 => Some(m_sys_fn(204)),    // +˜⁼ monadic = x÷2; dyadic handled by runtime
+        // NOTE: -˜ dyadically: w-˜⁼x = x+w (add). Return +.
+        1 => Some(m_native_fn(0)),   // -˜⁼ = + (w-˜⁼x means x+w)
+        // NOTE: ×˜⁼ dyadically: w×˜⁼x = x÷w. Monadic ×˜⁼x = √x.
+        2 => Some(m_native_fn(5)),   // ×˜⁼ = √ (monad: √x; dyad: x÷w via runtime)
+        // NOTE: ÷˜⁼ dyadically: w÷˜⁼x = x×w (multiply).
+        3 => Some(m_native_fn(2)),   // ÷˜⁼ = × (w÷˜⁼x = x×w)
+        // NOTE: ⋆˜⁼ dyadically: w⋆˜⁼x = w√x (w-th root of x). Return √.
+        4 => Some(m_native_fn(5)),   // ⋆˜⁼ = √ (w⋆˜⁼x = w√x)
         _ => None,
     }
 }
@@ -981,6 +992,28 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         51 => file_list_c1(x),
         201 => { // Internal: /⁼ (inverse of indices)
             let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
+        // NOTE: Internal inverse functions registered in native_inverse_reg
+        202 => { // ⋆⁼ = ln(x) — natural logarithm
+            let r = rbqn_prim::arith_monad::log_c1(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
+        203 => { // √⁼ = x^2 — square
+            let r = rbqn_prim::arith_monad::square_c1(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
+        204 => { // +˜⁼ = x÷2 — halve
+            let r = rbqn_prim::arith_monad::halve_c1(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
                 Err(e) => rbqn_core::error::throw(e.to_string()),
