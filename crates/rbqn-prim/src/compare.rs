@@ -5,6 +5,78 @@ fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
     short.len() <= long.len() && short.iter().zip(long.iter()).all(|(a, b)| a == b)
 }
 
+/// Recursive helper for pervasive comparison on a single B value pair.
+fn cmp_pervasive_b(w: B, x: B, scalar_fn: fn(B, B) -> i32, name: &str) -> Result<B> {
+    let wa = get_arr(w);
+    let xa = get_arr(x);
+    match (wa, xa) {
+        (None, None) => Ok(B::m_i32(scalar_fn(w, x))),
+        (None, Some(xa_arr)) => {
+            let n = xa_arr.ia();
+            let mut results = Vec::with_capacity(n);
+            for i in 0..n {
+                let xv = xa_arr.get(i)?;
+                results.push(cmp_pervasive_b(w, xv, scalar_fn, name)?);
+            }
+            let result_fill = results.first().copied().map(crate::structural::prototype_of);
+            let mut out = rbqn_core::array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), result_fill);
+            Ok(tag_arr(out))
+        }
+        (Some(wa_arr), None) => {
+            let n = wa_arr.ia();
+            let mut results = Vec::with_capacity(n);
+            for i in 0..n {
+                let wv = wa_arr.get(i)?;
+                results.push(cmp_pervasive_b(wv, x, scalar_fn, name)?);
+            }
+            let result_fill = results.first().copied().map(crate::structural::prototype_of);
+            let mut out = rbqn_core::array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
+            Ok(tag_arr(out))
+        }
+        (Some(wa_arr), Some(xa_arr)) => {
+            if wa_arr.shape != xa_arr.shape {
+                return Err(BqnError::Shape(format!(
+                    "𝕨{name}𝕩: shape mismatch ({:?} vs {:?})", wa_arr.shape, xa_arr.shape
+                )));
+            }
+            let n = wa_arr.ia();
+            let mut results = Vec::with_capacity(n);
+            for i in 0..n {
+                let wv = wa_arr.get(i)?;
+                let xv = xa_arr.get(i)?;
+                results.push(cmp_pervasive_b(wv, xv, scalar_fn, name)?);
+            }
+            let result_fill = results.first().copied().map(crate::structural::prototype_of);
+            let out = rbqn_core::array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
+            Ok(tag_arr(out))
+        }
+    }
+}
+
+/// Handle comparison of Boxed (nested) arrays element-wise.
+fn cmp_pervasive_boxed(
+    wa_arr: &BqnArr,
+    xa_arr: &BqnArr,
+    scalar_fn: fn(B, B) -> i32,
+    name: &str,
+) -> Result<PrimResult> {
+    if wa_arr.shape != xa_arr.shape {
+        return Err(BqnError::Shape(format!(
+            "𝕨{name}𝕩: shape mismatch ({:?} vs {:?})", wa_arr.shape, xa_arr.shape
+        )));
+    }
+    let n = wa_arr.ia();
+    let mut results: Vec<B> = Vec::with_capacity(n);
+    for i in 0..n {
+        let wv = wa_arr.get(i)?;
+        let xv = xa_arr.get(i)?;
+        results.push(cmp_pervasive_b(wv, xv, scalar_fn, name)?);
+    }
+    let result_fill = results.first().copied().map(crate::structural::prototype_of);
+    let out = rbqn_core::array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
+    Ok(PrimResult::Array(out))
+}
+
 fn cmp_pervasive(
     w: B,
     wa: Option<&BqnArr>,
@@ -38,6 +110,10 @@ fn cmp_pervasive(
             Ok(PrimResult::Array(out))
         }
         (Some(wa_arr), Some(xa_arr)) => {
+            // NOTE: Boxed arrays require recursive pervasion, similar to arithmetic.
+            if wa_arr.el_type() == ElType::B || xa_arr.el_type() == ElType::B {
+                return cmp_pervasive_boxed(wa_arr, xa_arr, scalar_fn, name);
+            }
             if wa_arr.shape == xa_arr.shape {
                 // Fast path: identical shapes
                 let ia = wa_arr.ia();

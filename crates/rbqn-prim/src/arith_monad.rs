@@ -24,6 +24,7 @@ fn pervasive_monad_b(x: B, scalar_fn: fn(f64) -> f64, name: &str) -> Result<B> {
             .collect();
         let mut out = BqnArr::new_vec_b(results?);
         out.shape = arr.shape.clone();
+        out.fill = arr.fill;
         return Ok(tag_arr(out));
     }
     Err(BqnError::Type(format!("{name}𝕩: 𝕩 contained non-number")))
@@ -54,6 +55,8 @@ fn pervasive_monad(
             .collect();
         let mut out = BqnArr::new_vec_b(results?);
         out.shape = arr.shape.clone();
+        // NOTE: Preserve fill from source array (pervasion doesn't change fill structure)
+        out.fill = arr.fill;
         return Ok(PrimResult::Array(out));
     }
     Err(BqnError::Type(format!("{name}𝕩: 𝕩 contained non-number")))
@@ -76,6 +79,7 @@ pub fn add_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             .collect();
         let mut out = BqnArr::new_vec_b(results?);
         out.shape = arr.shape.clone();
+        out.fill = arr.fill;
         return Ok(PrimResult::Array(out));
     }
     Err(BqnError::Type("+𝕩: 𝕩 must consist of numbers".into()))

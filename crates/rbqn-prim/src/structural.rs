@@ -36,15 +36,79 @@ fn typed_arr(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
     rbqn_core::array::typed_arr_from_b_vec(elems, shape, fill)
 }
 
+// NOTE: Compute the prototype (fill element) of a BQN value.
+// The prototype replaces all numbers with 0 and all characters with ' '.
+// For arrays: same shape, each element replaced by its prototype.
+// This is used when filling padding cells in structural operations.
+pub fn prototype_of(b: B) -> B {
+    if b.is_f64() {
+        return B::m_f64(0.0);
+    }
+    if b.is_c32() {
+        return B::m_c32(b' ' as u32);
+    }
+    if let Some(arr) = get_arr(b) {
+        return prototype_of_arr(&arr);
+    }
+    // Functions, modifiers: return 0 as fallback
+    B::m_f64(0.0)
+}
+
+fn prototype_of_arr(arr: &BqnArr) -> B {
+    match &arr.data {
+        ArrData::Boxed(elems) => {
+            // Recursively compute prototype of each element
+            let proto_elems: Vec<B> = elems.iter().map(|&e| prototype_of(e)).collect();
+            let mut out = BqnArr {
+                shape: arr.shape.clone(),
+                data: ArrData::Boxed(proto_elems),
+                fill: None,
+            };
+            out.fill = if arr.ia() > 0 {
+                if let Ok(first) = arr.get(0) {
+                    Some(prototype_of(first))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            tag_arr(out)
+        }
+        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) => {
+            // Char array: prototype is spaces with same shape
+            let ia = arr.ia();
+            let mut out = BqnArr::new_vec_c32(vec![b' ' as u32; ia]);
+            out.shape = arr.shape.clone();
+            tag_arr(out)
+        }
+        _ => {
+            // Numeric array: prototype is zeros with same shape
+            let ia = arr.ia();
+            let mut out = BqnArr::new_vec_i32(vec![0i32; ia]);
+            out.shape = arr.shape.clone();
+            tag_arr(out)
+        }
+    }
+}
+
 // NOTE: Compute a fill value for an array. For Boxed arrays (arrays of arrays),
-// the fill is an empty array ⟨⟩. For numeric/char arrays, use 0 or ' '.
-fn arr_fill(arr: &BqnArr) -> B {
+// the fill is derived from the prototype of the first element.
+// For numeric/char arrays, use 0 or ' '.
+pub fn arr_fill(arr: &BqnArr) -> B {
     if let Some(f) = arr.fill {
         return f;
     }
     match &arr.data {
-        rbqn_core::array::ArrData::Boxed(_) => tag_arr(BqnArr::empty_harr()),
-        rbqn_core::array::ArrData::C8(_) | rbqn_core::array::ArrData::C16(_) | rbqn_core::array::ArrData::C32(_) => {
+        ArrData::Boxed(elems) => {
+            // Compute prototype from first element
+            if let Some(&first) = elems.first() {
+                prototype_of(first)
+            } else {
+                tag_arr(BqnArr::empty_harr())
+            }
+        }
+        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) => {
             B::m_c32(b' ' as u32)
         }
         _ => B::m_i32(0),
@@ -143,7 +207,45 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let ia = arr.ia();
 
     if ia == 0 {
-        // Empty merge: keep outer shape, inner shape is unknown so just return as-is
+        // NOTE: Empty merge: try to determine result type/fill from the fill element.
+        // The fill element represents what each element of this array would look like after merge.
+        // BQN merge behavior:
+        //   - Elements are rank-0 boxes → result is outer-shape, fill = unboxed content
+        //   - Elements are rank-n arrays → result shape = outer_shape ++ inner_shape
+        if let Some(fill_b) = arr.fill {
+            if let Some(fill_arr) = get_arr(fill_b) {
+                if fill_arr.shape.is_empty() {
+                    // Rank-0 fill: elements would be rank-0 boxed. Merge unboxes one level.
+                    // Result shape = outer shape, element fill = content prototype.
+                    let content_fill = if fill_arr.el_type() == ElType::B {
+                        fill_arr.get(0).ok().map(|inner_b| {
+                            if let Some(inner) = get_arr(inner_b) {
+                                prototype_of_arr(&inner)
+                            } else {
+                                inner_b // scalar content
+                            }
+                        })
+                    } else {
+                        // Rank-0 non-boxed: prototype is itself
+                        fill_arr.get(0).ok().map(|b| prototype_of(b))
+                    };
+                    let result = BqnArr {
+                        shape: arr.shape.clone(),
+                        data: ArrData::Boxed(vec![]),
+                        fill: content_fill,
+                    };
+                    return Ok(PrimResult::Array(result));
+                } else {
+                    // Higher-rank fill: result shape = outer ++ inner
+                    let inner_shape = fill_arr.shape.clone();
+                    let mut new_shape = arr.shape.clone();
+                    new_shape.extend_from_slice(&inner_shape);
+                    let result = typed_arr(vec![], new_shape, fill_arr.fill);
+                    return Ok(PrimResult::Array(result));
+                }
+            }
+        }
+        // Fallback: keep outer shape, inner shape unknown
         return Ok(PrimResult::Array(arr.clone()));
     }
 
@@ -160,10 +262,64 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
 
     // First element is an array — get its shape
-    let first_inner = get_arr(first)
+    let first_inner_direct = get_arr(first)
         .ok_or_else(|| BqnError::Type(">𝕩: element is tagged as array but not found in store".into()))?;
-    let inner_shape = first_inner.shape.clone();
-    let inner_size: usize = inner_shape.iter().product::<usize>().max(1);
+
+    // NOTE: If first element is rank-0 boxed, merge unboxes one level.
+    // E.g., >⟨<"ab",<"cd"⟩ = ⟨"ab","cd"⟩ (list of strings, same outer shape).
+    let (unbox_level, inner_shape, first_inner_fill) = if first_inner_direct.shape.is_empty() && first_inner_direct.el_type() == ElType::B {
+        // Rank-0 boxed: unbox to get inner content shape
+        if let Ok(inner_b) = first_inner_direct.get(0) {
+            if let Some(inner) = get_arr(inner_b) {
+                (true, inner.shape.clone(), inner.fill)
+            } else {
+                // Rank-0 box containing an atom: result is a list of atoms
+                (false, vec![], None)
+            }
+        } else {
+            (false, vec![], None)
+        }
+    } else {
+        (false, first_inner_direct.shape.clone(), first_inner_direct.fill)
+    };
+
+    if unbox_level {
+        // Unbox elements: result shape = outer_shape (NOT ++ inner_shape unless inner has shape)
+        let mut result_data = Vec::with_capacity(ia);
+        for i in 0..ia {
+            let elem = arr.get(i)?;
+            let elem_arr = get_arr(elem)
+                .ok_or_else(|| BqnError::Type(">𝕩: element is not an array".into()))?;
+            if elem_arr.shape.is_empty() {
+                result_data.push(elem_arr.get(0)?);
+            } else {
+                return Err(BqnError::Shape(">𝕩: element shapes don't match".into()));
+            }
+        }
+        if inner_shape.is_empty() {
+            // Inner content is scalar-like: result is outer_shape array of atoms
+            let mut new_shape = arr.shape.clone();
+            return Ok(PrimResult::Array(typed_arr(result_data, new_shape, None)));
+        } else {
+            // Inner content has shape: combine outer ++ inner
+            let inner_size: usize = inner_shape.iter().product::<usize>();
+            let mut flat_data = Vec::with_capacity(ia * inner_size);
+            for b in result_data {
+                if let Some(inner_arr) = get_arr(b) {
+                    for j in 0..inner_arr.ia() {
+                        flat_data.push(inner_arr.get(j)?);
+                    }
+                } else {
+                    flat_data.push(b);
+                }
+            }
+            let mut new_shape = arr.shape.clone();
+            new_shape.extend_from_slice(&inner_shape);
+            return Ok(PrimResult::Array(typed_arr(flat_data, new_shape, first_inner_fill)));
+        }
+    }
+
+    let inner_size: usize = inner_shape.iter().product::<usize>();
 
     // Collect all elements, checking shape consistency
     let mut result_data = Vec::with_capacity(ia * inner_size);
@@ -188,7 +344,7 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let mut new_shape = arr.shape.clone();
     new_shape.extend_from_slice(&inner_shape);
 
-    Ok(PrimResult::Array(typed_arr(result_data, new_shape, first_inner.fill)))
+    Ok(PrimResult::Array(typed_arr(result_data, new_shape, first_inner_fill)))
 }
 
 // ⊣ monad/dyad: identity / left
@@ -262,11 +418,23 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty when result is non-empty".into()));
     }
 
+    // NOTE: Propagate fill: for empty results, compute fill from source elements.
+    // For non-empty results, preserve source fill or let arr_fill compute it lazily.
+    let result_fill = if arr.fill.is_some() {
+        arr.fill
+    } else if arr.el_type() == ElType::B {
+        // Boxed array: fill = prototype of first element (computed lazily in arr_fill)
+        // Store explicitly so empty results have correct fill
+        Some(arr_fill(arr))
+    } else {
+        arr.fill
+    };
+
     let mut result = Vec::with_capacity(new_ia);
     for i in 0..new_ia {
         result.push(arr.get(i % old_ia)?);
     }
-    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
+    Ok(PrimResult::Array(typed_arr(result, new_shape, result_fill)))
 }
 
 /// Handle reshape with computed dimension (shape contains ∘, ⌊, ⌽, or ↑).
@@ -358,7 +526,11 @@ fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
     let new_ia: usize = new_shape.iter().product();
 
     if x.is_atom() {
-        let vals = vec![x.o2f(); new_ia];
+        // NOTE: mode 3 (↑, ceil+pad) pads extra positions with fill (0 for numbers).
+        // Other modes cycle the single element.
+        let vals: Vec<f64> = (0..new_ia).map(|i| {
+            if computed_mode == 3 && i >= 1 { 0.0 } else { x.o2f() }
+        }).collect();
         let mut out = BqnArr::new_vec_f64(vals);
         out.shape = new_shape;
         return Ok(PrimResult::Array(array::squeeze_num(out)));
@@ -700,7 +872,16 @@ pub fn prefixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         }));
     }
 
-    Ok(PrimResult::Array(BqnArr::new_vec_b(prefixes)))
+    // NOTE: Fill of prefixes result = prototype of first prefix (empty prefix).
+    // This ensures »↑x uses the correct fill when shifting.
+    let result_fill = if !prefixes.is_empty() {
+        Some(prototype_of(prefixes[0]))
+    } else {
+        None
+    };
+    let mut out = BqnArr::new_vec_b(prefixes);
+    out.fill = result_fill;
+    Ok(PrimResult::Array(out))
 }
 
 // ↑ dyad: take
@@ -901,10 +1082,19 @@ pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
 
     let out_shape: Vec<usize> = dims.iter().map(|&d| d as usize).collect();
+    // NOTE: Fill for multi-dim range is the prototype of its first element (a zero index vector).
+    // The zero index vector has shape [rank] with all zeros — same as prototype_of(first_elem).
+    let fill = if !result.is_empty() {
+        Some(prototype_of(result[0]))
+    } else {
+        // Empty range: fill is a zero-vector of length rank
+        let zero_idx = box_arr(BqnArr::new_vec_i32(vec![0i32; rank]));
+        Some(prototype_of(zero_idx))
+    };
     Ok(PrimResult::Array(BqnArr {
         shape: out_shape,
         data: ArrData::Boxed(result),
-        fill: None,
+        fill,
     }))
 }
 
