@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use rbqn_core::B;
 
 use crate::block::Body;
+use crate::namespace::get_ns;
 
 #[derive(Debug)]
 pub struct ScopeExt {
@@ -115,6 +116,7 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
+
         if upd {
             let prev = sc.var_get(p);
             if chk && v_check_bad_write(prev) {
@@ -122,6 +124,29 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
             }
         }
         sc.var_set(p, x);
+    } else if s.is_alias() {
+        // Namespace field alias (ALIM result): extract field by GID from namespace x,
+        // then assign to the variable encoded in the alias.
+        let gid = s.alias_gid();
+        let d = s.alias_depth() as usize;
+        let p = s.alias_pos() as usize;
+        let field_val = if x.is_nsp() {
+            let ns = get_ns(x);
+            ns.get_by_gid(gid)
+                .unwrap_or_else(|| rbqn_core::error::throw(
+                    format!("Namespace does not have field '{}' (destructuring)", crate::namespace::gid2str(gid))
+                ))
+        } else {
+            rbqn_core::error::throw("Alias assignment: source is not a namespace")
+        };
+        let sc = &pscs[d];
+        if upd {
+            let prev = sc.var_get(p);
+            if chk && v_check_bad_write(prev) {
+                v_tag_error(prev, true);
+            }
+        }
+        sc.var_set(p, field_val);
     } else if s.is_ext() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -143,23 +168,86 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         // Merge-destructuring ([...] syntax): split x along its first axis (major cells)
         v_merge(pscs, s, x, upd, chk);
     } else if s.is_arr() {
-        // List destructuring (a‿b syntax): assign each element of x to corresponding target in s
+        // List destructuring: ⟨a,b⟩←val or ⟨a,b⟩←ns
         let s_arr = rbqn_core::get_arr(s)
             .unwrap_or_else(|| rbqn_core::error::throw("v_set: invalid array target"));
-        let x_arr = rbqn_core::get_arr(x)
-            .unwrap_or_else(|| rbqn_core::error::throw("v_set: expected array value for destructuring"));
         let s_len = s_arr.ia();
-        let x_len = x_arr.ia();
-        if s_len != x_len {
-            rbqn_core::error::throw(format!(
-                "Assignment: Mismatched shape for spread assignment ({} targets vs {} values)",
-                s_len, x_len
-            ));
-        }
-        for i in 0..s_len {
-            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-            let xi = x_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-            v_set(pscs, si, xi, upd, chk);
+
+        if x.is_nsp() {
+            // Namespace destructuring: ⟨a,b⟩←ns
+            // Each element in s is a VAR ref (field name = variable name) or ALIAS (explicit rename).
+            let ns = get_ns(x);
+            for i in 0..s_len {
+                let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+                if si.is_var() {
+                    // Plain VAR ref: use the variable's own name as the field name
+                    let d = si.v_depth() as usize;
+                    let p = si.v_pos() as usize;
+                    let sc = if d < pscs.len() { &pscs[d] } else {
+                        rbqn_core::error::throw("v_set: depth out of bounds for namespace destructuring");
+                    };
+                    let gid = if p < sc.body.all_var_gids.len() {
+                        sc.body.all_var_gids[p]
+                    } else {
+                        -1
+                    };
+                    if gid < 0 {
+                        rbqn_core::error::throw(
+                            "Namespace destructuring: cannot infer field name for variable slot"
+                        );
+                    }
+                    let field_val = ns.get_by_gid(gid)
+                        .unwrap_or_else(|| rbqn_core::error::throw(
+                            format!("Namespace does not have field '{}' (destructuring)",
+                                crate::namespace::gid2str(gid))
+                        ));
+                    if upd {
+                        let prev = sc.var_get(p);
+                        if chk && v_check_bad_write(prev) {
+                            v_tag_error(prev, true);
+                        }
+                    }
+                    sc.var_set(p, field_val);
+                } else if si.is_alias() {
+                    // ALIAS ref: explicit field rename ⟨local_var⇐field_name⟩←ns
+                    let gid = si.alias_gid();
+                    let d = si.alias_depth() as usize;
+                    let p = si.alias_pos() as usize;
+                    let field_val = ns.get_by_gid(gid)
+                        .unwrap_or_else(|| rbqn_core::error::throw(
+                            format!("Namespace does not have field '{}' (destructuring alias)",
+                                crate::namespace::gid2str(gid))
+                        ));
+                    let sc = if d < pscs.len() { &pscs[d] } else {
+                        rbqn_core::error::throw("v_set alias: depth out of bounds");
+                    };
+                    if upd {
+                        let prev = sc.var_get(p);
+                        if chk && v_check_bad_write(prev) {
+                            v_tag_error(prev, true);
+                        }
+                    }
+                    sc.var_set(p, field_val);
+                } else {
+                    // Nested target (list inside list, etc.) — recursively handle
+                    v_set(pscs, si, x, upd, chk);
+                }
+            }
+        } else {
+            let x_arr = rbqn_core::get_arr(x)
+                .unwrap_or_else(|| rbqn_core::error::throw("v_set: expected array value for destructuring"));
+            let x_len = x_arr.ia();
+            if s_len != x_len {
+                rbqn_core::error::throw(format!(
+                    "Assignment: Mismatched shape for spread assignment ({} targets vs {} values)",
+                    s_len, x_len
+                ));
+            }
+            for i in 0..s_len {
+                let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+                let xi = x_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+                v_set(pscs, si, xi, upd, chk);
+            }
         }
     } else {
         rbqn_core::error::throw("v_set: complex assignment not yet implemented");

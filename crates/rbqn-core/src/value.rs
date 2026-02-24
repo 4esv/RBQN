@@ -10,6 +10,9 @@ pub const MD2_TAG: u16 = 0b1111111111110011; // FFF3
 pub const NSP_TAG: u16 = 0b1111111111110101; // FFF5
 pub const VAR_TAG: u16 = 0b0111111111110011; // 7FF3
 pub const EXT_TAG: u16 = 0b0111111111110100; // 7FF4
+// NOTE: ALIAS_TAG used for namespace field alias in ⟨a⟩←ns destructuring.
+// Payload layout: bits 47:32 = GID (i32 as u16), bits 31:16 = depth, bits 15:0 = pos
+pub const ALIAS_TAG: u16 = 0b0111111111110101; // 7FF5
 
 pub const CHR_MAX: u32 = 1114111;
 
@@ -195,12 +198,29 @@ impl B {
         (self.0 >> 48) as u16 == EXT_TAG
     }
 
+    pub fn is_alias(self) -> bool {
+        (self.0 >> 48) as u16 == ALIAS_TAG
+    }
+
     pub fn v_depth(self) -> u32 {
         ((self.0 & 0xFFFFFFFFFFFF) >> 32) as u32
     }
 
     pub fn v_pos(self) -> u32 {
         self.0 as u32
+    }
+
+    // ALIAS encoding: bits 47:32 = GID, bits 31:16 = depth, bits 15:0 = pos
+    pub fn alias_gid(self) -> i32 {
+        ((self.0 & 0xFFFFFFFFFFFF) >> 32) as i32
+    }
+
+    pub fn alias_depth(self) -> u16 {
+        ((self.0 >> 16) & 0xFFFF) as u16
+    }
+
+    pub fn alias_pos(self) -> u16 {
+        (self.0 & 0xFFFF) as u16
     }
 
     pub fn is_md(self) -> bool {

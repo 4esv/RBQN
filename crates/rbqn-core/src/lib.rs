@@ -9,7 +9,7 @@ pub mod format;
 pub mod error;
 
 pub use value::B;
-pub use value::{tagu64, TAG_TAG, FUN_TAG, ARR_TAG, MD1_TAG, MD2_TAG, NSP_TAG, VAR_TAG, EXT_TAG};
+pub use value::{tagu64, TAG_TAG, FUN_TAG, ARR_TAG, MD1_TAG, MD2_TAG, NSP_TAG, VAR_TAG, EXT_TAG, ALIAS_TAG};
 pub use array::{ArrData, BqnArr};
 pub use arrstore::{tag_arr, tag_arr_merge, is_arr_merge, get_arr};
 pub use eltype::ElType;
