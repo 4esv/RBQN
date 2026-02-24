@@ -2,22 +2,36 @@ use rbqn_core::*;
 use rbqn_core::array::typed_arr_from_b_vec;
 use crate::dispatch::PrimResult;
 
-// ⊐ monad: self-index-of (classify)
+// ⊐ monad: classify
+// Returns sequential class indices: first unique → 0, second unique → 1, etc.
+// Duplicates get the same class as their first occurrence.
 #[allow(non_snake_case)]
 pub fn self_indexOf_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⊐𝕩: 𝕩 must be an array".into()))?;
     let ia = arr.ia();
     let mut result = Vec::with_capacity(ia);
+    // NOTE: class_map[i] = class number assigned to position i
+    let mut class_map: Vec<i32> = Vec::with_capacity(ia);
+    let mut next_class: i32 = 0;
     for i in 0..ia {
         let v = arr.get(i)?;
-        let mut found = i;
+        let mut found_class: Option<i32> = None;
         for j in 0..i {
             if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
-                found = j;
+                found_class = Some(class_map[j]);
                 break;
             }
         }
-        result.push(found as i32);
+        let cls = match found_class {
+            Some(c) => c,
+            None => {
+                let c = next_class;
+                next_class += 1;
+                c
+            }
+        };
+        class_map.push(cls);
+        result.push(cls);
     }
     Ok(PrimResult::Array(BqnArr::new_vec_i32(result)))
 }

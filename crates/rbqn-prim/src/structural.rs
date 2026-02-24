@@ -12,6 +12,21 @@ fn typed_arr(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
     rbqn_core::array::typed_arr_from_b_vec(elems, shape, fill)
 }
 
+// NOTE: Compute a fill value for an array. For Boxed arrays (arrays of arrays),
+// the fill is an empty array ⟨⟩. For numeric/char arrays, use 0 or ' '.
+fn arr_fill(arr: &BqnArr) -> B {
+    if let Some(f) = arr.fill {
+        return f;
+    }
+    match &arr.data {
+        rbqn_core::array::ArrData::Boxed(_) => tag_arr(BqnArr::empty_harr()),
+        rbqn_core::array::ArrData::C8(_) | rbqn_core::array::ArrData::C16(_) | rbqn_core::array::ArrData::C32(_) => {
+            B::m_c32(b' ' as u32)
+        }
+        _ => B::m_i32(0),
+    }
+}
+
 // = monad: rank
 pub fn rank_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_atom() {
@@ -646,6 +661,8 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
 
     let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
 
+    let fill_val = arr_fill(&arr);
+
     if arr.rank() <= 1 {
         // Vector take
         let ia = arr.ia() as i32;
@@ -663,7 +680,7 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
             if idx < len + start && idx < arr.ia() {
                 result.push(arr.get(idx)?);
             } else {
-                result.push(arr.fill.unwrap_or(B::m_i32(0)));
+                result.push(fill_val);
             }
         }
         let take_len = n.unsigned_abs() as usize;
@@ -674,7 +691,6 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
     let cell_shape = &arr.shape[1..];
     let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
     let abs_n = n.unsigned_abs() as usize;
-    let fill_val = arr.fill.unwrap_or(B::m_i32(0));
 
     let mut result = Vec::with_capacity(abs_n * cell_size);
     if n >= 0 {
