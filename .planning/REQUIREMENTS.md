@@ -65,8 +65,8 @@
 
 ### TEST: Official Test Suite (13 files)
 - [x] **TEST-01**: Pass simple.bqn
-- [ ] **TEST-02**: Pass literal.bqn
-- [ ] **TEST-03**: Pass syntax.bqn
+- [x] **TEST-02**: Pass literal.bqn
+- [x] **TEST-03**: Pass syntax.bqn
 - [x] **TEST-04**: Pass bytecode.bqn
 - [ ] **TEST-05**: Pass prim.bqn
 - [ ] **TEST-06**: Pass token.bqn
@@ -137,8 +137,8 @@
 | SYS-04 | Phase 1 | Complete |
 | SYS-05 | Phase 1 | Complete |
 | TEST-01 | Phase 2 | Complete |
-| TEST-02 | Phase 2 | Pending |
-| TEST-03 | Phase 2 | Pending |
+| TEST-02 | Phase 2 | Complete |
+| TEST-03 | Phase 2 | Complete |
 | TEST-04 | Phase 2 | Complete |
 | MOD-01 | Phase 3 | Pending |
 | MOD-02 | Phase 3 | Pending |

@@ -9,30 +9,30 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 
 ## Current Position
 
-Phase: 2 of 6 (Test Baseline)
-Plan: 2 of 3 in current phase (02-02 complete, 02-03 remaining)
-Status: In progress
-Last activity: 2026-02-24 — Completed plan 02-02 (fix simple and bytecode)
+Phase: 2 of 6 (Test Baseline) -- COMPLETE
+Plan: 3 of 3 in current phase (all plans complete)
+Status: Phase 2 complete
+Last activity: 2026-02-24 — Completed plan 02-03 (fix syntax and literal, all Phase 2 targets 100%)
 
-Progress: [███░░░░░░░] 28%
+Progress: [████░░░░░░] 33%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
+- Total plans completed: 6
 - Average duration: 10 min
-- Total execution time: 0.83 hours
+- Total execution time: 0.97 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 3 | 38min | 13min |
-| 02 | 2 | 12min | 6min |
+| 02 | 3 | 20min | 7min |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (2min), 01-04 (18min), 01-05 (18min), 02-01 (8min), 02-02 (4min)
-- Trend: Accelerating
+- Last 5 plans: 01-04 (18min), 01-05 (18min), 02-01 (8min), 02-02 (4min), 02-03 (8min)
+- Trend: Steady (averaging ~11min)
 
 *Updated after each plan completion*
 
@@ -53,6 +53,8 @@ Progress: [███░░░░░░░] 28%
 - [01-05]: Search primitives (⊐ ⊒ ∊ ⍷) required deep_equal fix for nested array comparison
 - [02-02]: v_get and v_get_move need array handling for SETM with list targets (destructuring modify-assign)
 - [02-02]: syntax.bqn improved from 152 to 153 as collateral benefit of v_get array fix
+- [02-03]: ARMM merge targets use bit-0 marker in array payload to distinguish from LSTM list targets
+- [02-03]: Rank-1 merge-destructuring wraps elements as rank-0 unit arrays (CBQN m_unit semantics)
 
 ### Pending Todos
 
@@ -68,5 +70,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 02-02-PLAN.md (fix simple and bytecode to 100%)
+Stopped at: Completed 02-03-PLAN.md (Phase 2 complete — all 4 targets at 100%)
 Resume file: None
