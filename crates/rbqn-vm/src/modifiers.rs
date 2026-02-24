@@ -577,34 +577,200 @@ fn insert_c2(f: B, w: B, x: B) -> B {
 // ============================================================
 
 fn scan_c1(f: B, x: B) -> B {
+    if x.is_atom() {
+        return rbqn_core::error::throw("F`𝕩: 𝕩 must be an array");
+    }
     let arr = arr_of(x);
-    let n = arr.ia();
-    if n == 0 {
+    let rank = arr.rank();
+    if rank == 0 {
+        return crate::vm::tag_arr(arr.clone());
+    }
+    let lead = arr.shape[0];
+    if lead == 0 {
         return crate::vm::tag_arr(BqnArr {
             shape: arr.shape.clone(),
             data: ArrData::Boxed(vec![]),
             fill: arr.fill,
         });
     }
-    let mut results = Vec::with_capacity(n);
-    results.push(get_elem(&arr, 0));
-    for i in 1..n {
-        let prev = results[i - 1];
-        results.push(c2(f, prev, get_elem(&arr, i)));
+    if rank == 1 {
+        // Rank-1: scan over individual elements
+        let n = arr.ia();
+        let mut results = Vec::with_capacity(n);
+        results.push(get_elem(&arr, 0));
+        for i in 1..n {
+            let prev = results[i - 1];
+            results.push(c2(f, prev, get_elem(&arr, i)));
+        }
+        return results_to_arr(results, arr.shape.clone());
     }
-    results_to_arr(results, arr.shape.clone())
+    // Rank > 1: scan operates on major cells (slices along axis 0)
+    // Apply F between consecutive cells; result has same shape as input
+    let cell_size: usize = arr.shape[1..].iter().product();
+    let cell_shape = arr.shape[1..].to_vec();
+    let mut cell_results: Vec<B> = Vec::with_capacity(lead);
+    // First cell is copied as-is
+    let first_cell = crate::vm::tag_arr(extract_cell(&arr, 0, cell_size, &cell_shape));
+    cell_results.push(first_cell);
+    for i in 1..lead {
+        let prev_cell = cell_results[i - 1];
+        let curr_cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
+        cell_results.push(c2(f, prev_cell, curr_cell));
+    }
+    // Merge cell results back into shape of x
+    merge_cells_result(cell_results, vec![lead])
 }
 
 fn scan_c2(f: B, w: B, x: B) -> B {
-    let arr = arr_of(x);
-    let n = arr.ia();
-    let mut results = Vec::with_capacity(n);
-    let mut acc = w;
-    for i in 0..n {
-        acc = c2(f, acc, get_elem(&arr, i));
-        results.push(acc);
+    if x.is_atom() {
+        return rbqn_core::error::throw("𝕨F`𝕩: 𝕩 must be an array");
     }
-    results_to_arr(results, arr.shape.clone())
+    let arr = arr_of(x);
+    let rank = arr.rank();
+    if rank == 0 {
+        return crate::vm::tag_arr(arr.clone());
+    }
+    let lead = arr.shape[0];
+    if rank == 1 {
+        // Rank-1: scan with initial value w over elements
+        let n = arr.ia();
+        let mut results = Vec::with_capacity(n);
+        let mut acc = w;
+        for i in 0..n {
+            acc = c2(f, acc, get_elem(&arr, i));
+            results.push(acc);
+        }
+        return results_to_arr(results, arr.shape.clone());
+    }
+    // Rank > 1: scan operates on major cells with initial cell w
+    // w must have shape matching the cell shape of x
+    let cell_size: usize = arr.shape[1..].iter().product();
+    let cell_shape = arr.shape[1..].to_vec();
+    // Validate that w has the right shape
+    if w.is_arr() {
+        let warr = arr_of(w);
+        if warr.shape != cell_shape {
+            return rbqn_core::error::throw(format!(
+                "𝕨F`𝕩: Shape of 𝕨 must match the cell of 𝕩 ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+                warr.shape, arr.shape
+            ));
+        }
+    }
+    let mut cell_results: Vec<B> = Vec::with_capacity(lead);
+    let mut acc = w;
+    for i in 0..lead {
+        let curr_cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
+        acc = c2(f, acc, curr_cell);
+        cell_results.push(acc);
+    }
+    merge_cells_result(cell_results, vec![lead])
+}
+
+// ============================================================
+// Scan inverse helpers (used by ScanInv dispatch in derive.rs)
+// ============================================================
+
+/// Monadic scan inverse: (F`⁼ x) — undo the scan.
+/// result[0] = x[0], result[i] = x[i] F⁼ x[i-1]  (or x[i] F⁼ cell[i-1] for rank>1)
+pub fn scan_inv_c1(f: B, x: B) -> B {
+    if x.is_atom() {
+        return rbqn_core::error::throw("F`⁼𝕩: 𝕩 must be an array");
+    }
+    let arr = arr_of(x);
+    let rank = arr.rank();
+    if rank == 0 {
+        return crate::vm::tag_arr(arr.clone());
+    }
+    let lead = arr.shape[0];
+    if lead == 0 {
+        return crate::vm::tag_arr(BqnArr {
+            shape: arr.shape.clone(),
+            data: ArrData::Boxed(vec![]),
+            fill: arr.fill,
+        });
+    }
+    // Get the inverse of F for applying between consecutive elements
+    let f_inv = crate::derive::inv_reg(f);
+    if rank == 1 {
+        let n = arr.ia();
+        let mut results = Vec::with_capacity(n);
+        results.push(get_elem(&arr, 0));
+        for i in 1..n {
+            // result[i] = x[i] F⁼ x[i-1]  (dyadic inverse: find y s.t. x[i-1] F y = x[i])
+            let prev = get_elem(&arr, i - 1);
+            let curr = get_elem(&arr, i);
+            results.push(c2(f_inv, prev, curr));
+        }
+        return results_to_arr(results, arr.shape.clone());
+    }
+    // Rank > 1: scan inverse on major cells
+    let cell_size: usize = arr.shape[1..].iter().product();
+    let cell_shape = arr.shape[1..].to_vec();
+    let mut cell_results: Vec<B> = Vec::with_capacity(lead);
+    // First cell is copied as-is
+    let first_cell = crate::vm::tag_arr(extract_cell(&arr, 0, cell_size, &cell_shape));
+    cell_results.push(first_cell);
+    for i in 1..lead {
+        let prev_cell = crate::vm::tag_arr(extract_cell(&arr, i - 1, cell_size, &cell_shape));
+        let curr_cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
+        // result[i] = curr_cell F⁼ prev_cell
+        cell_results.push(c2(f_inv, prev_cell, curr_cell));
+    }
+    merge_cells_result(cell_results, vec![lead])
+}
+
+/// Dyadic scan inverse: (w F`⁼ x) — undo a scan with initial value w.
+/// result[0] = x[0] F⁼ w,  result[i] = x[i] F⁼ x[i-1]
+pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
+    if x.is_atom() {
+        return rbqn_core::error::throw("𝕨F`⁼𝕩: 𝕩 must be an array");
+    }
+    let arr = arr_of(x);
+    let rank = arr.rank();
+    if rank == 0 {
+        return crate::vm::tag_arr(arr.clone());
+    }
+    let lead = arr.shape[0];
+    let f_inv = crate::derive::inv_reg(f);
+    if rank == 1 {
+        let n = arr.ia();
+        let mut results = Vec::with_capacity(n);
+        if n > 0 {
+            // result[0] = x[0] F⁼ w
+            results.push(c2(f_inv, w, get_elem(&arr, 0)));
+            for i in 1..n {
+                let prev = get_elem(&arr, i - 1);
+                let curr = get_elem(&arr, i);
+                results.push(c2(f_inv, prev, curr));
+            }
+        }
+        return results_to_arr(results, arr.shape.clone());
+    }
+    // Rank > 1: scan inverse on major cells with initial cell w
+    let cell_size: usize = arr.shape[1..].iter().product();
+    let cell_shape = arr.shape[1..].to_vec();
+    // Validate w shape matches cell shape
+    if w.is_arr() {
+        let warr = arr_of(w);
+        if warr.shape != cell_shape {
+            return rbqn_core::error::throw(format!(
+                "𝕨F`⁼𝕩: Shape of 𝕨 must match the cell of 𝕩 ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+                warr.shape, arr.shape
+            ));
+        }
+    }
+    let mut cell_results: Vec<B> = Vec::with_capacity(lead);
+    if lead > 0 {
+        // result[0] = x[0] F⁼ w
+        let first_cell = crate::vm::tag_arr(extract_cell(&arr, 0, cell_size, &cell_shape));
+        cell_results.push(c2(f_inv, w, first_cell));
+        for i in 1..lead {
+            let prev_cell = crate::vm::tag_arr(extract_cell(&arr, i - 1, cell_size, &cell_shape));
+            let curr_cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
+            cell_results.push(c2(f_inv, prev_cell, curr_cell));
+        }
+    }
+    merge_cells_result(cell_results, vec![lead])
 }
 
 // ============================================================

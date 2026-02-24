@@ -100,6 +100,7 @@ pub enum DerivedKind {
     InvBlock,     // Function block inverse body: bl has inv_x_body / inv_w_body
     InvMd1Block,  // 1-modifier block inverse: bl=modifier block, f=operand fn
     InvMd2Block,  // 2-modifier block inverse: bl=modifier block, f=left operand, h=right operand
+    ScanInv,      // Scan inverse (F`⁼): f=F (the scan operand), c1/c2 compute scan undone
 }
 
 #[derive(Debug)]
@@ -188,9 +189,33 @@ pub fn inv_reg(func: B) -> B {
                 let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                 let md = get_derived(mid);
 
-                // ˜ (prim 45): inv_reg(F˜) = inv_swap(F) — inverse of self-swap is swap-inverse
+                // ˜ (prim 45): inv_reg(F˜) = inv_swap(F) — only when we have a known swap inverse.
+                // For unknown functions, fall through to the BQN runtime which handles the general case.
                 if md.kind == (DerivedKind::NativeMd1 { prim_idx: 45 }) {
-                    return inv_swap(d.f);
+                    // Only intercept if F is a native primitive with a known swap inverse
+                    let has_known_swap = if d.f.is_fun() {
+                        let fid = (d.f.0 & 0xFFFFFFFFFFFF) >> 3;
+                        let fd = get_derived(fid);
+                        if let DerivedKind::NativeFn { prim_idx } = fd.kind {
+                            native_inverse_swap(prim_idx).is_some()
+                        } else {
+                            // Block functions: use inv_swap which checks inv_w_body/inv_x_body
+                            fd.kind == DerivedKind::FunBlock
+                        }
+                    } else {
+                        false
+                    };
+                    if has_known_swap {
+                        return inv_swap(d.f);
+                    }
+                    // Fall through to BQN runtime for unknown F˜⁼
+                }
+
+                // ` (prim 52): inv_reg(F`) = ScanInv(F) — native scan inverse
+                // This intercepts scan-inverse before the BQN runtime, avoiding issues
+                // with the runtime's scan inverse not handling rank>1 arrays correctly.
+                if md.kind == (DerivedKind::NativeMd1 { prim_idx: 52 }) {
+                    return m_scan_inv(d.f);
                 }
 
                 if md.kind == DerivedKind::Md1Block {
@@ -351,12 +376,15 @@ fn native_inverse_reg(prim_idx: usize) -> Option<B> {
         9 => Some(m_native_fn(9)),   // ¬⁼ = ¬ (not is its own inverse)
         12 => Some(m_native_fn(13)), // <⁼ = > (unbox)
         13 => Some(m_native_fn(12)), // >⁼ = < (box)
-        20 => Some(m_native_fn(20)), // ⊣⁼ = ⊣
+        // NOTE: ⊣ monadic is identity (⊣ x = x), so ⊣⁼ x = x. But dyadic w⊣⁼x has no inverse
+        // (⊣ always returns 𝕨, ignoring 𝕩, so there's no unique 𝕩). Let the BQN runtime error.
+        // 20 => Some(m_native_fn(20)), // REMOVED: BQN runtime errors on w⊣⁼x (no inverse)
         21 => Some(m_native_fn(21)), // ⊢⁼ = ⊢
         // NOTE: ⌽⁼ monadic = ⌽, but dyadic n⌽⁼ x = (-n)⌽ x (not n⌽ x).
         // Returning ⌽ breaks dyadic. Let BQN runtime handle ⌽⁼ correctly.
         // 31 => Some(m_native_fn(31)), // REMOVED: BQN runtime handles n⌽⁼ x = (-n)⌽ x
-        32 => Some(m_native_fn(32)), // ⍉⁼ = ⍉ (transpose is its own inverse for rank≤2)
+        // NOTE: ⍉⁼ uses sys_fn 205: self-inverse for rank≤2, moves first axis to last for rank>2.
+        32 => Some(m_sys_fn(205)), // ⍉⁼ = inverse transpose
         33 => Some(m_sys_fn(201)),   // /⁼ = inverse of indices (counts from sorted indices)
         37 => Some(m_native_fn(24)), // ⊑⁼ = ≍ (solo: first inverse wraps in 1-element array)
         _ => None,
@@ -379,6 +407,10 @@ fn native_inverse_swap(prim_idx: usize) -> Option<B> {
         3 => Some(m_native_fn(2)),   // ÷˜⁼ = × (w÷˜⁼x = x×w)
         // NOTE: ⋆˜⁼ dyadically: w⋆˜⁼x = w√x (w-th root of x). Return √.
         4 => Some(m_native_fn(5)),   // ⋆˜⁼ = √ (w⋆˜⁼x = w√x)
+        // NOTE: √˜⁼: monadic √˜ x = x√x = x^(1/x), which has no simple closed-form inverse.
+        // Dyadic w(√˜)⁼x: solve w^(1/y) = x → y = ln(w)/ln(x) = log_x(w). Complex.
+        // Remove: let BQN runtime handle this (it will error if not supported).
+        // 5 => Some(m_native_fn(5)),  // REMOVED: √˜⁼ has no native implementation
         _ => None,
     }
 }
@@ -529,6 +561,18 @@ pub fn m_native_md2(idx: usize) -> B {
         bl: None, sc: None,
     });
     tagu64(id << 3, MD2_TAG)
+}
+
+/// Create a scan-inverse wrapper. When called (c1 or c2), undoes the scan using F.
+/// c1(ScanInv, x): monadic scan inverse — result[0]=x[0], result[i] = x[i] F⁼ x[i-1]
+/// c2(ScanInv, w, x): dyadic scan inverse — result[0]=x[0] F⁼ w, result[i] = x[i] F⁼ x[i-1]
+pub fn m_scan_inv(f: B) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::ScanInv,
+        f, g: B::SENTINEL, h: B::SENTINEL,
+        bl: None, sc: None,
+    });
+    tagu64(id << 3, FUN_TAG)
 }
 
 /// Create a lazy inverse-reg wrapper. When called (c1 or c2), resolves the inverse
@@ -724,6 +768,11 @@ pub fn c1(f: B, x: B) -> B {
                     eprintln!("[SYS c1] sys={} -> {}", sys_idx, crate::vm::fmt_b_detail(result));
                 }
                 result
+            }
+            DerivedKind::ScanInv => {
+                // Monadic scan inverse (F`⁼ x): undo a scan.
+                // result[0] = x[0], result[i] = x[i] F⁼ x[i-1]
+                crate::modifiers::scan_inv_c1(d.f, x)
             }
             DerivedKind::LazyInvReg => {
                 // Lazy inverse-reg: d.f is the original function, find its inverse and apply
@@ -937,6 +986,11 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     eprintln!("[SYS c2] sys={} -> {}", sys_idx, crate::vm::fmt_b_detail(result));
                 }
                 result
+            }
+            DerivedKind::ScanInv => {
+                // Dyadic scan inverse (w F`⁼ x): undo a scan with initial value w.
+                // result[0] = x[0] F⁼ w, result[i] = x[i] F⁼ x[i-1]
+                crate::modifiers::scan_inv_c2(d.f, w, x)
             }
             DerivedKind::LazyInvReg => {
                 // For dyadic F⁼, the native monadic inverse table is not correct.
@@ -1329,6 +1383,13 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
         }
+        205 => { // ⍉⁼ = inverse transpose (rank≤2: same as ⍉; rank>2: move first axis to last)
+            let r = rbqn_prim::structural::transpose_inv_c1(x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
         // NOTE: math sys functions — unique range 1100-1114 to avoid conflicts with sys 100
         1100 => math_sin_c1(x),
         1101 => math_cos_c1(x),
@@ -1426,6 +1487,59 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
         }
+        202 => { // Dyadic ⋆⁼: w⋆⁼x = log_w(x) = ln(x)/ln(w) — apply to each element pair
+            // For numeric scalar args:
+            fn log_base(base: f64, x: f64) -> f64 {
+                if base == std::f64::consts::E { x.ln() }
+                else { x.log(base) }
+            }
+            if w.is_f64() && x.is_f64() {
+                let w_f = w.o2f();
+                let x_f = x.o2f();
+                B::m_f64(log_base(w_f, x_f))
+            } else if let (Some(wa), Some(xa)) = (w_arr.as_ref(), x_arr.as_ref()) {
+                if wa.ia() == xa.ia() {
+                    let mut result = Vec::with_capacity(wa.ia());
+                    for i in 0..wa.ia() {
+                        let wv = wa.get(i).unwrap_or(B::m_f64(1.0)).o2f();
+                        let xv = xa.get(i).unwrap_or(B::m_f64(1.0)).o2f();
+                        result.push(B::m_f64(log_base(wv, xv)));
+                    }
+                    let mut out = rbqn_core::array::BqnArr::new_vec_f64(result.iter().map(|b| b.o2f()).collect());
+                    out.shape = xa.shape.clone();
+                    crate::vm::tag_arr(rbqn_core::array::squeeze_num(out))
+                } else if wa.ia() == 1 {
+                    // Scalar w, array x
+                    let wv = wa.get(0).unwrap_or(B::m_f64(1.0)).o2f();
+                    let mut result = Vec::with_capacity(xa.ia());
+                    for i in 0..xa.ia() {
+                        let xv = xa.get(i).unwrap_or(B::m_f64(1.0)).o2f();
+                        result.push(log_base(wv, xv));
+                    }
+                    let mut out = rbqn_core::array::BqnArr::new_vec_f64(result);
+                    out.shape = xa.shape.clone();
+                    crate::vm::tag_arr(rbqn_core::array::squeeze_num(out))
+                } else {
+                    rbqn_core::error::throw("w⋆⁼x: mismatched array lengths")
+                }
+            } else if w.is_f64() {
+                if let Some(xa) = x_arr.as_ref() {
+                    let wv = w.o2f();
+                    let mut result = Vec::with_capacity(xa.ia());
+                    for i in 0..xa.ia() {
+                        let xv = xa.get(i).unwrap_or(B::m_f64(1.0)).o2f();
+                        result.push(log_base(wv, xv));
+                    }
+                    let mut out = rbqn_core::array::BqnArr::new_vec_f64(result);
+                    out.shape = xa.shape.clone();
+                    crate::vm::tag_arr(rbqn_core::array::squeeze_num(out))
+                } else {
+                    rbqn_core::error::throw("w⋆⁼x: x must be a number")
+                }
+            } else {
+                rbqn_core::error::throw("w⋆⁼x: w and x must be numbers")
+            }
+        }
         // NOTE: math dyadic functions
         1105 => { // atan2: w •math.Atan x = atan2(w, x) = angle of point (x, w)
             let w_f = w.o2f();
@@ -1452,6 +1566,14 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         1123 => rand_subset_c2(w, x),
         // NOTE: •SH dyadic: options •SH args
         145 => sh_exec_c2(w, x),
+        // NOTE: w(+˜)⁼x = x - w  (dyadic: +˜ swaps: w +˜ y = y+w, inverse = y = x - w)
+        204 => {
+            let r = rbqn_prim::arith_dyad::sub_c2(x, x_arr.as_ref(), w, w_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
         // NOTE: w√⁼x = x^w (dyadic sqrt-inverse = power with args swapped)
         // √⁼ monadic is x^2 (sys 203 c1); dyadic is x raised to the power w.
         203 => {
@@ -1460,6 +1582,99 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                 Ok(pr) => prim_result_to_b(pr),
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
+        }
+        205 => { // w⍉⁼x = inverse-permutation(w)⍉x
+            // For a bijective permutation p, inv_perm[j] = i where p[i] = j.
+            // For partial permutations (p has length < rank(x)), fall back to reorder_c2(w, x).
+            let rank = if let Some(ref xa) = x_arr { xa.rank() as usize } else { 0 };
+            let perm_len = if let Some(ref wa) = w_arr {
+                wa.ia()
+            } else if w.is_f64() {
+                1
+            } else {
+                0
+            };
+            // Only compute inverse if p is a full bijection (length == rank, all values distinct and cover 0..rank)
+            let is_full_bijection = perm_len == rank && rank > 0 && w_arr.is_some();
+            if is_full_bijection {
+                if let Some(ref wa) = w_arr {
+                    if let Ok(perm) = wa.i32_iter() {
+                        let mut inv_perm = vec![-1i32; rank];
+                        let mut valid = true;
+                        for (i, &p) in perm.iter().enumerate() {
+                            if p < 0 || p as usize >= rank {
+                                valid = false;
+                                break;
+                            }
+                            if inv_perm[p as usize] != -1 {
+                                valid = false; // duplicate
+                                break;
+                            }
+                            inv_perm[p as usize] = i as i32;
+                        }
+                        if valid && inv_perm.iter().all(|&v| v >= 0) {
+                            // Build the inverse permutation array and call reorder_c2
+                            let inv_arr = rbqn_core::array::BqnArr::new_vec_i32(inv_perm);
+                            let inv_b = crate::vm::tag_arr(inv_arr);
+                            let inv_b_arr = crate::vm::get_arr(inv_b);
+                            let r = rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref());
+                            return match r {
+                                Ok(pr) => prim_result_to_b(pr),
+                                Err(e) => rbqn_core::error::throw(e.to_string()),
+                            };
+                        }
+                    }
+                }
+            }
+            // Partial permutation (len(w) < rank(x)): extend to full permutation, then invert.
+            // CBQN extension rule: uncovered target positions get remaining source axes in order.
+            // Example: p=2‿1 rank=4: full_perm = 2‿1‿0‿3
+            let n_partial = if let Some(ref wa) = w_arr { wa.ia() } else { 1 };
+            let partial: Vec<i32> = if let Some(ref wa) = w_arr {
+                wa.i32_iter().unwrap_or_default()
+            } else if w.is_f64() {
+                vec![w.to_i32().unwrap_or(0) as i32]
+            } else {
+                vec![]
+            };
+            // Compute which target positions are covered by the partial permutation
+            let mut covered = vec![false; rank];
+            for &p in &partial {
+                if p >= 0 && (p as usize) < rank {
+                    covered[p as usize] = true;
+                }
+            }
+            // Uncovered target positions in order
+            let uncovered: Vec<i32> = (0..rank as i32).filter(|&i| !covered[i as usize]).collect();
+            // Full permutation: partial for first n_partial axes, then uncovered for remaining
+            let mut full_perm = partial.clone();
+            for (i, &uc) in uncovered.iter().enumerate() {
+                if n_partial + i < rank {
+                    full_perm.push(uc);
+                }
+            }
+            if full_perm.len() == rank {
+                // Compute inverse of the full permutation
+                let mut inv_perm = vec![-1i32; rank];
+                let mut valid = true;
+                for (i, &p) in full_perm.iter().enumerate() {
+                    if p < 0 || p as usize >= rank || inv_perm[p as usize] != -1 {
+                        valid = false; break;
+                    }
+                    inv_perm[p as usize] = i as i32;
+                }
+                if valid && inv_perm.iter().all(|&v| v >= 0) {
+                    let inv_arr = rbqn_core::array::BqnArr::new_vec_i32(inv_perm);
+                    let inv_b = crate::vm::tag_arr(inv_arr);
+                    let inv_b_arr = crate::vm::get_arr(inv_b);
+                    let r = rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref());
+                    return match r {
+                        Ok(pr) => prim_result_to_b(pr),
+                        Err(e) => rbqn_core::error::throw(e.to_string()),
+                    };
+                }
+            }
+            rbqn_core::error::throw("⍉⁼: cannot compute inverse for given permutation")
         }
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c2)")),
     }
