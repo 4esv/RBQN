@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 4 of 6 (Full Test Suite Green)
-Plan: 1 of 5 in current phase (04-01 complete)
-Status: Phase 4 active — namespace.bqn fully green (50/50), header.bqn improved to ~149/156
-Last activity: 2026-02-24 — Completed plan 04-01 (namespace export: namespace.bqn 50/50, header.bqn -4 failures)
+Plan: 2 of 5 in current phase (04-02 complete)
+Status: Phase 4 active — prim.bqn reduced from 106 to 95 failures
+Last activity: 2026-02-24 — Completed plan 04-02 (table/slash/group/reshape/each scalar fixes: 11 prim.bqn failures resolved)
 
-Progress: [████████░░] 72%
+Progress: [████████░░] 74%
 
 ## Performance Metrics
 
@@ -72,6 +72,10 @@ Progress: [████████░░] 72%
 - [04-01]: ALIAS_TAG (0x7FF5) NaN-boxes gid+depth+pos for explicit rename ⟨b⇐a⟩←ns
 - [04-01]: build_ns_desc creates NSDesc when export_mask array present (even empty) to handle {⇐}
 - [04-01]: Namespace destructuring only in v_set ARRAY branch to prevent plain ns←val from triggering extraction
+- [04-02]: table_c2 uses match on (w.is_atom(), x.is_atom()) — scalar_as_unit caused bootstrap panic via rank-0 pick
+- [04-02]: reshape modes 0=exact,1=floor+cycle,2=ceil+cycle,3=ceil+pad; ⌊ and ↑ registered as statics at bootstrap
+- [04-02]: group multi-dim uses per-dimension matching Cartesian outer-product (NOT parallel flat-position indexing)
+- [04-02]: f¨/f˘ on scalars return rank-0 arrays (BQN semantics), not plain scalars
 
 ### Pending Todos
 
@@ -87,5 +91,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 04-01-PLAN.md (namespace export — namespace.bqn 50/50, header.bqn -4 failures)
+Stopped at: Completed 04-02-PLAN.md (prim.bqn clusters — table/slash/group/reshape/each scalar fixes, 95 failures remaining)
 Resume file: None

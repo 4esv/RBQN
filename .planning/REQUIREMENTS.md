@@ -68,7 +68,7 @@
 - [x] **TEST-02**: Pass literal.bqn
 - [x] **TEST-03**: Pass syntax.bqn
 - [x] **TEST-04**: Pass bytecode.bqn
-- [ ] **TEST-05**: Pass prim.bqn
+- [x] **TEST-05**: Pass prim.bqn
 - [ ] **TEST-06**: Pass token.bqn
 - [x] **TEST-07**: Pass header.bqn
 - [ ] **TEST-08**: Pass unhead.bqn
@@ -164,7 +164,7 @@
 | SYS-19 | Phase 3 | Complete |
 | SYS-20 | Phase 3 | Complete |
 | SYS-21 | Phase 3 | Complete |
-| TEST-05 | Phase 4 | Pending |
+| TEST-05 | Phase 4 | Complete |
 | TEST-06 | Phase 4 | Pending |
 | TEST-07 | Phase 4 | Complete |
 | TEST-08 | Phase 4 | Pending |
