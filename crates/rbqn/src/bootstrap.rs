@@ -393,6 +393,11 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     // in runtime1 context (confirmed: causes fork→add on function arrays crash).
     let _ = &embedded::RUNTIME0; // suppress unused warning
 
+    // Register primitive B values so reshape_computed can identify reshape modes.
+    // fruntime[6] = ⌊ (floor, mode 1), fruntime[26] = ↑ (take, mode 3 = ceil+pad).
+    rbqn_prim::structural::set_floor_prim(fruntime[6]);
+    rbqn_prim::structural::set_take_prim(fruntime[26]);
+
     // --- Stage 2: Execute runtime1 (graceful fallback if it panics) ---
     // runtime1's objects reference runtime_0 results via RuntimePrev(n)
     let r1_objs = build_objs(&embedded::RUNTIME1, &provide, Some(&runtime_0), None);

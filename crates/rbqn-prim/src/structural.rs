@@ -1,6 +1,30 @@
 use rbqn_core::*;
 use crate::dispatch::PrimResult;
 
+// NOTE: Primitive B values stored after bootstrap so reshape_computed can identify reshape modes.
+// In reshape, a non-numeric element selects the computed dimension mode:
+//   ∘ (MD2) = exact, ⌊ = floor, ⌽ = ceil+cycle, ↑ = ceil+pad.
+static FLOOR_PRIM_B: std::sync::OnceLock<B> = std::sync::OnceLock::new();
+static TAKE_PRIM_B: std::sync::OnceLock<B> = std::sync::OnceLock::new();
+
+/// Set the B value for the ⌊ (floor) primitive.
+pub fn set_floor_prim(b: B) {
+    let _ = FLOOR_PRIM_B.set(b);
+}
+
+/// Set the B value for the ↑ (take) primitive.
+pub fn set_take_prim(b: B) {
+    let _ = TAKE_PRIM_B.set(b);
+}
+
+fn is_floor_prim(b: B) -> bool {
+    FLOOR_PRIM_B.get().map(|&f| f.0 == b.0).unwrap_or(false)
+}
+
+fn is_take_prim(b: B) -> bool {
+    TAKE_PRIM_B.get().map(|&f| f.0 == b.0).unwrap_or(false)
+}
+
 // Helper: tag_arr convenience (delegates to rbqn_core::tag_arr)
 fn box_arr(arr: BqnArr) -> B {
     tag_arr(arr)
@@ -245,17 +269,17 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
 
-/// Handle reshape with computed dimension (shape contains ∘, ⌊, or ⌈).
+/// Handle reshape with computed dimension (shape contains ∘, ⌊, ⌽, or ↑).
 /// BQN spec: at most one element in shape can be a non-number.
-/// ∘ = exact division, ⌊ = floor, ⌈ = ceil.
-/// We identify the mode by the B value's type tag:
-///   - MD2 (tag 0xfff3) → ∘ (atop) → exact division
-///   - FUN → ⌊ or ⌈ → floor or ceil (default floor)
-/// For robustness, any non-numeric value defaults to exact (∘) behavior.
+/// Mode determines how the auto-dimension is computed and how extra elements are filled:
+///   ∘ (MD2) → mode 0: exact division (error if not divisible), cyclic fill
+///   ⌊ → mode 1: floor division, cyclic fill
+///   ⌽ → mode 2: ceiling division, cyclic fill (wraps = standard reshape cycling)
+///   ↑ → mode 3: ceiling division, pad with fill values (take = padding)
 fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let ia = warr.ia();
     let mut computed_idx: Option<usize> = None;
-    let mut computed_mode = 0u8; // 0=exact(∘), 1=floor(⌊), 2=ceil(⌈)
+    let mut computed_mode = 0u8; // 0=exact(∘), 1=floor(⌊), 2=ceil+cycle(⌽), 3=ceil+pad(↑)
     let mut known_dims: Vec<usize> = Vec::with_capacity(ia);
 
     for i in 0..ia {
@@ -270,12 +294,16 @@ fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
             computed_idx = Some(i);
             known_dims.push(0); // placeholder
 
-            // NOTE: Determine mode. FUN tag with prim_idx 6=⌊, 7=⌈.
-            // MD2 tag = ∘ (exact). Default to exact for any other non-numeric.
+            // NOTE: Determine mode from the function identity:
+            // ⌊ → floor+cycle; ⌽ → ceil+cycle; ↑ → ceil+pad; MD2/other → exact.
             if v.is_fun() {
-                // FUN value in shape: could be ⌊ or ⌈
-                // TODO: proper primitive identification for ⌊ vs ⌈
-                computed_mode = 1; // assume floor for now
+                if is_floor_prim(v) {
+                    computed_mode = 1; // ⌊ = floor, cyclic
+                } else if is_take_prim(v) {
+                    computed_mode = 3; // ↑ = ceiling, pad with fill
+                } else {
+                    computed_mode = 2; // ⌽ (or unknown FUN) = ceiling, cyclic
+                }
             }
             // MD2 → exact (∘), which is the default (0)
         }
@@ -313,10 +341,13 @@ fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
             }
             total / known_product
         }
-        1 => { // floor (⌊)
+        1 => { // floor (⌊): floor division, cyclic
             total / known_product
         }
-        2 => { // ceil (⌈)
+        2 => { // ceil+cycle (⌽): ceiling division, cyclic repeat
+            (total + known_product - 1) / known_product
+        }
+        3 => { // ceil+pad (↑): ceiling division, pad with fill
             (total + known_product - 1) / known_product
         }
         _ => unreachable!(),
@@ -346,9 +377,16 @@ fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
         return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty when result is non-empty".into()));
     }
 
+    // NOTE: mode 3 (↑, ceil+pad) pads with fill values beyond source length.
+    // All other modes use cyclic repeat (standard reshape cycling behavior).
+    let fill_val = arr_fill(arr);
     let mut result = Vec::with_capacity(new_ia);
     for i in 0..new_ia {
-        result.push(arr.get(i % old_ia)?);
+        if computed_mode == 3 && i >= old_ia {
+            result.push(fill_val);
+        } else {
+            result.push(arr.get(i % old_ia)?);
+        }
     }
     Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
