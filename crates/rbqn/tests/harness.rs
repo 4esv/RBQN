@@ -3,11 +3,11 @@
 //!
 //! Run manually: CBQN_PATH=/path/to/CBQN cargo test -p rbqn --test harness -- --ignored --nocapture
 //!
-//! Baseline (2026-02-24, after 02-02):
-//!   simple    20/20   (100%)
-//!   literal   52/52   (100%)
-//!   syntax   153/156  ( 98%)  3 failures (bracket destructuring edge cases)
-//!   bytecode  37/37   (100%)  FIXED: array destructuring in v_get/v_get_move
+//! Baseline (2026-02-24, after 02-03):
+//!   simple    20/20   (100%)  Phase 2 target - PASS
+//!   literal   52/52   (100%)  Phase 2 target - PASS
+//!   syntax   156/156  (100%)  Phase 2 target - PASS (ARMM merge-destructuring fixed)
+//!   bytecode  37/37   (100%)  Phase 2 target - PASS
 //!   prim     409/564  ( 73%)  155 failures (fill, rank>1, inverse, group, search)
 //!   fill      29/62   ( 47%)  33 failures (fill propagation)
 //!   header   ~145/156 ( 93%)  11 failures + stack overflow on recursive case
@@ -18,7 +18,7 @@
 //!   undo      30/68   ( 44%)  38 failures (inverse system)
 //!   unhead    27/44   ( 61%)  17 failures (undo headers)
 //!
-//!   Total: ~1016/1316 (77%) passing
+//!   Total: ~1019/1316 (77%) passing — Phase 2 targets: 265/265 (100%)
 
 use std::process::Command;
 
@@ -81,21 +81,8 @@ fn harness_token() {
 fn harness_syntax() {
     let output = rbqn_harness(&["syntax"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    eprintln!("STDOUT:\n{}", stdout);
-    if !stderr.is_empty() {
-        eprintln!("STDERR:\n{}", stderr);
-    }
-    // Syntax should have at most 4 failures (destructuring edge cases)
-    assert!(
-        stdout.contains("Running 156 tests"),
-        "should run 156 syntax tests"
-    );
-    assert!(
-        !stderr.contains("panicked"),
-        "harness should not panic: {}",
-        stderr
-    );
+    eprintln!("{}", stdout);
+    assert!(stdout.contains("All passed!"), "syntax tests should all pass");
 }
 
 #[test]
@@ -116,6 +103,20 @@ fn harness_simple_and_bytecode() {
     eprintln!("{}", stdout);
     assert!(!stderr.contains("panicked"), "harness panicked: {stderr}");
     assert!(!stdout.contains("failed!"), "some tests failed:\n{stdout}");
+}
+
+#[test]
+#[ignore]
+fn phase2_target_files_pass() {
+    let output = rbqn_harness(&["simple", "literal", "syntax", "bytecode"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!("{}", stdout);
+    assert!(!stderr.contains("panicked"), "harness panicked: {stderr}");
+    assert!(
+        stdout.contains("All passed!"),
+        "Phase 2 target files should all pass: {stdout}"
+    );
 }
 
 #[test]
