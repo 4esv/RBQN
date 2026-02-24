@@ -331,10 +331,19 @@ fn extract_cell(arr: &BqnArr, cell_idx: usize, cell_size: usize, cell_shape: &[u
 // ============================================================
 
 fn each_c1(f: B, x: B) -> B {
+    // NOTE: BQN f¨ on a scalar returns a rank-0 array (not a plain scalar).
+    // This matches `f⌜scalar` behavior.
     if x.is_atom() {
-        return c1(f, x);
+        let result = c1(f, x);
+        return results_to_arr(vec![result], vec![]);
     }
     let arr = arr_of(x);
+    // Rank-0 array: apply f to its single element, return rank-0 result
+    if arr.shape.is_empty() {
+        let elem = get_elem(&arr, 0);
+        let result = c1(f, elem);
+        return results_to_arr(vec![result], vec![]);
+    }
     let n = arr.ia();
     let mut results = Vec::with_capacity(n);
     for i in 0..n {
@@ -348,11 +357,18 @@ fn each_c1(f: B, x: B) -> B {
 fn each_c2(f: B, w: B, x: B) -> B {
     let w_is_atom = w.is_atom();
     let x_is_atom = x.is_atom();
+    // NOTE: When both args are atoms (scalars), BQN w f¨ x returns a rank-0 array.
     if w_is_atom && x_is_atom {
-        return c2(f, w, x);
+        let result = c2(f, w, x);
+        return results_to_arr(vec![result], vec![]);
     }
     if w_is_atom {
         let xarr = arr_of(x);
+        // Rank-0 x: apply once, return rank-0
+        if xarr.shape.is_empty() {
+            let result = c2(f, w, get_elem(&xarr, 0));
+            return results_to_arr(vec![result], vec![]);
+        }
         let n = xarr.ia();
         let mut results = Vec::with_capacity(n);
         for i in 0..n {
@@ -362,6 +378,11 @@ fn each_c2(f: B, w: B, x: B) -> B {
     }
     if x_is_atom {
         let warr = arr_of(w);
+        // Rank-0 w: apply once, return rank-0
+        if warr.shape.is_empty() {
+            let result = c2(f, get_elem(&warr, 0), x);
+            return results_to_arr(vec![result], vec![]);
+        }
         let n = warr.ia();
         let mut results = Vec::with_capacity(n);
         for i in 0..n {
@@ -371,6 +392,11 @@ fn each_c2(f: B, w: B, x: B) -> B {
     }
     let warr = arr_of(w);
     let xarr = arr_of(x);
+    // Rank-0 arrays: apply once
+    if warr.shape.is_empty() && xarr.shape.is_empty() {
+        let result = c2(f, get_elem(&warr, 0), get_elem(&xarr, 0));
+        return results_to_arr(vec![result], vec![]);
+    }
     if warr.shape != xarr.shape {
         rbqn_core::error::throw("¨: 𝕨 and 𝕩 must have the same shape");
     }
@@ -587,10 +613,16 @@ fn scan_c2(f: B, w: B, x: B) -> B {
 
 fn cells_c1(f: B, x: B) -> B {
     if x.is_atom() {
-        // Rank 0: the single cell is the atom itself
-        return c1(f, x);
+        // NOTE: BQN f˘ on scalar returns rank-0 result (apply f once, wrap in rank-0 array).
+        let result = c1(f, x);
+        return results_to_arr(vec![result], vec![]);
     }
     let arr = arr_of(x);
+    // Rank-0 array: same as scalar
+    if arr.shape.is_empty() {
+        let result = c1(f, get_elem(&arr, 0));
+        return results_to_arr(vec![result], vec![]);
+    }
     let lead = arr.shape[0];
     if arr.rank() == 1 {
         // Rank 1: cells are individual elements (rank-0 atoms)
