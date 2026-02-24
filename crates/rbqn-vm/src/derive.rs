@@ -55,6 +55,11 @@ pub fn set_sys_args(args: &[String]) {
     *SYS_ARGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::vm::tag_arr(arr));
 }
 
+/// Import cache: maps canonical file path to the cached result B value.
+/// SENTINEL is used as a "currently loading" sentinel to detect circular imports.
+static IMPORT_CACHE: std::sync::LazyLock<Mutex<HashMap<String, B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Set •path and •name from the executing file path.
 pub fn set_sys_path(path: &str) {
     let path_chars: Vec<u32> = path.chars().map(|c| c as u32).collect();
@@ -1016,6 +1021,18 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         64 => file_bytes_c1(x),
         // NOTE: •file.Lines (namespace alias, same as sys 50)
         65 => file_lines_c1(x),
+        // NOTE: •Import — load and cache BQN source file
+        70 => sys_import_c1(x),
+        // NOTE: •ParseFloat — convert BQN string to number
+        75 => sys_parsefloat_c1(x),
+        // NOTE: •Hash — deterministic hash of value
+        76 => sys_hash_c1(x),
+        // NOTE: •FromUTF8 — byte array to character array
+        78 => sys_fromutf8_c1(x),
+        // NOTE: •ToUTF8 — character array to byte array
+        79 => sys_toutf8_c1(x),
+        // NOTE: •CurrentError — current error in catch context (stub)
+        80 => B::SENTINEL,
         201 => { // Internal: /⁼ (inverse of indices)
             let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());
             match r {
@@ -1086,6 +1103,8 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         54 => file_at_c2(w, x),
         // NOTE: •file.Rename dyadic — rename file: old •file.Rename new
         60 => file_rename_c2(w, x),
+        // NOTE: •Cmp dyadic — total order comparison: returns ¯1, 0, or 1
+        77 => sys_cmp_c2(w, x),
         100 => { // •BQN placeholder — just return SENTINEL for now
             B::SENTINEL
         }
@@ -1576,6 +1595,212 @@ fn file_remove_c1(x: B) -> B {
         rbqn_core::error::throw(format!("•file.Remove: cannot remove {path_str}: {e}"))
     });
     x
+}
+
+// --- •Import ---
+
+/// •Import: load and cache a BQN source file.
+fn sys_import_c1(x: B) -> B {
+    let path_str = b_to_string(x);
+    let resolved = resolve_path(path_str);
+
+    // Canonicalize path for cache key
+    let canonical = std::fs::canonicalize(&resolved)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| resolved.clone());
+
+    // Check cache first
+    {
+        let cache = IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&cached) = cache.get(&canonical) {
+            if cached.0 == B::SENTINEL.0 {
+                rbqn_core::error::throw(format!("•Import: circular import detected: {canonical}"));
+            }
+            return cached;
+        }
+    }
+
+    // Insert sentinel to detect circular imports
+    {
+        let mut cache = IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache.insert(canonical.clone(), B::SENTINEL);
+    }
+
+    // Read file contents
+    let contents = std::fs::read_to_string(&resolved).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•Import: cannot read {resolved}: {e}"))
+    });
+
+    // Set •path and •name for the imported file's context
+    let import_dir = std::path::Path::new(&resolved)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let old_path = SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let old_name = SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    set_sys_path(&resolved);
+
+    // Compile and execute the imported file using •BQN machinery
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dispatch_sys_bqn_eval_with_path(&contents, &import_dir)
+    }));
+
+    // Restore •path and •name
+    *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()) = old_path;
+    *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()) = old_name;
+
+    let result = match result {
+        Ok(v) => v,
+        Err(_) => {
+            // Remove sentinel on error so caller can retry
+            IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&canonical);
+            rbqn_core::error::throw(format!("•Import: error loading {resolved}"))
+        }
+    };
+
+    // Cache the result
+    IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(canonical, result);
+    result
+}
+
+/// Execute BQN source with a given working path context.
+fn dispatch_sys_bqn_eval_with_path(src: &str, _dir: &str) -> B {
+    dispatch_sys_bqn_eval(src)
+}
+
+// --- Utility functions ---
+
+/// •ParseFloat: convert BQN string to f64.
+/// Handles BQN number format: ¯ (minus), ∞ (infinity), π (pi).
+fn sys_parsefloat_c1(x: B) -> B {
+    let s = b_to_string(x);
+    // Pre-process BQN number format
+    let normalized: String = s.chars().map(|c| match c {
+        '¯' => '-',
+        c => c,
+    }).collect();
+    // Handle special values
+    let val: f64 = if normalized == "∞" || normalized == "inf" {
+        f64::INFINITY
+    } else if normalized == "-∞" || normalized == "-inf" {
+        f64::NEG_INFINITY
+    } else if normalized == "π" {
+        std::f64::consts::PI
+    } else if normalized == "-π" {
+        -std::f64::consts::PI
+    } else {
+        // Replace ∞ and π occurrences in mixed expressions
+        let s2 = normalized
+            .replace('∞', "inf")
+            .replace('π', "3.141592653589793");
+        s2.parse::<f64>().unwrap_or_else(|_| {
+            rbqn_core::error::throw(format!("•ParseFloat: cannot parse {:?}", s))
+        })
+    };
+    B::m_f64(val)
+}
+
+/// •Hash: compute a deterministic hash of a BQN value. Returns a non-negative f64.
+fn sys_hash_c1(x: B) -> B {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_b(b: B) -> u64 {
+        let mut h = DefaultHasher::new();
+        b.0.hash(&mut h);
+        if b.is_arr() {
+            if let Some(arr) = crate::vm::get_arr(b) {
+                for i in 0..arr.ia() {
+                    let elem = arr.get(i).unwrap_or(B::SENTINEL);
+                    hash_b(elem).hash(&mut h);
+                }
+            }
+        }
+        h.finish()
+    }
+
+    // Return as positive f64 (mask off sign bit)
+    let hash = hash_b(x);
+    let positive = (hash & 0x7FFFFFFFFFFFFFFF) as f64;
+    B::m_f64(positive)
+}
+
+/// •FromUTF8: convert byte array (numeric values 0-255) to character array.
+fn sys_fromutf8_c1(x: B) -> B {
+    let bytes = b_to_byte_vec(x);
+    let s = String::from_utf8(bytes).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•FromUTF8: invalid UTF-8: {e}"))
+    });
+    let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
+/// •ToUTF8: convert character array to UTF-8 byte array.
+fn sys_toutf8_c1(x: B) -> B {
+    let s = b_to_string(x);
+    let bytes: Vec<f64> = s.bytes().map(|b| b as f64).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(bytes))
+}
+
+/// •Cmp dyadic: total order comparison. Returns ¯1 (w < x), 0 (w = x), 1 (w > x).
+fn sys_cmp_c2(w: B, x: B) -> B {
+    B::m_i32(total_order_cmp(w, x))
+}
+
+/// Total order comparison for BQN values.
+/// Type order: number(0) < character(1) < array(2) < function(3) < md1(4) < md2(5) < namespace(6)
+fn total_order_cmp(a: B, b: B) -> i32 {
+    let type_a = bqn_type_ord(a);
+    let type_b = bqn_type_ord(b);
+    if type_a != type_b {
+        return if type_a < type_b { -1 } else { 1 };
+    }
+    // Same type — compare by value
+    match type_a {
+        0 => { // numbers
+            let fa = a.o2f();
+            let fb = b.o2f();
+            if fa < fb { -1 } else if fa > fb { 1 } else { 0 }
+        }
+        1 => { // characters
+            let ca = a.0 as u32;
+            let cb = b.0 as u32;
+            if ca < cb { -1 } else if ca > cb { 1 } else { 0 }
+        }
+        2 => { // arrays — lexicographic comparison
+            let aa = crate::vm::get_arr(a);
+            let ab = crate::vm::get_arr(b);
+            match (aa, ab) {
+                (Some(arr_a), Some(arr_b)) => {
+                    let len = arr_a.ia().min(arr_b.ia());
+                    for i in 0..len {
+                        let ea = arr_a.get(i).unwrap_or(B::SENTINEL);
+                        let eb = arr_b.get(i).unwrap_or(B::SENTINEL);
+                        let c = total_order_cmp(ea, eb);
+                        if c != 0 { return c; }
+                    }
+                    if arr_a.ia() < arr_b.ia() { -1 }
+                    else if arr_a.ia() > arr_b.ia() { 1 }
+                    else { 0 }
+                }
+                _ => 0,
+            }
+        }
+        _ => { // functions/modifiers: compare by raw id
+            if a.0 < b.0 { -1 } else if a.0 > b.0 { 1 } else { 0 }
+        }
+    }
+}
+
+/// Map a B value to a type ordinal for total ordering.
+fn bqn_type_ord(b: B) -> i32 {
+    if b.is_f64() { 0 }
+    else if b.is_c32() { 1 }
+    else if b.is_arr() { 2 }
+    else if b.is_fun() { 3 }
+    else if b.is_md1() { 4 }
+    else if b.is_md2() { 5 }
+    else { 6 } // namespace or other
 }
 
 /// Resolve a path: if relative, join with •path directory. Otherwise return as-is.
