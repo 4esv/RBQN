@@ -251,7 +251,9 @@ fn native_inverse_reg(prim_idx: usize) -> Option<B> {
     // NOTE: These are monadic inverses (F⁼ x = inverse of F applied to x)
     // For dyadic F: w F⁼ x means "find y such that w F y = x"
     match prim_idx {
-        0 => Some(m_native_fn(0)),   // +⁼ = + (identity — handles char arithmetic via runtime)
+        // NOTE: +⁼ falls through to BQN runtime — the runtime returns -˜ as dyadic inverse
+        // and + as monadic inverse. Returning + here would break dyadic char arithmetic.
+        // 0 => Some(m_native_fn(0)),   // +⁼ = + (identity) — REMOVED: let runtime handle
         1 => Some(m_native_fn(1)),   // -⁼ = - (negate is its own inverse)
         // NOTE: ×⁼ (prim 2): monadic × = signum, not reliably invertible.
         // Remove: return None, let BQN runtime report an error.
@@ -749,8 +751,22 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 result
             }
             DerivedKind::LazyInvReg => {
-                let inv_fn = inv_reg(d.f);
-                c2(inv_fn, w, x)
+                // For dyadic F⁼, the native monadic inverse table is not correct.
+                // Fall through to the BQN runtime's inverse resolver which handles
+                // dyadic inverses properly (e.g., w+⁼x = x-w, w-⁼x = x+w, etc.).
+                let orig = d.f;
+                let reg_fn = INV_REG_FN.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(runtime_inv) = *reg_fn {
+                    drop(reg_fn);
+                    // Runtime's inv_reg returns a function; call it as c2 wrapper
+                    let inv_fn = c1(runtime_inv, orig);
+                    c2(inv_fn, w, x)
+                } else {
+                    drop(reg_fn);
+                    // No runtime — fall back to native monadic inverse table (may be wrong for dyadic)
+                    let inv_fn = inv_reg(orig);
+                    c2(inv_fn, w, x)
+                }
             }
             DerivedKind::LazyInvSwap => {
                 let inv_fn = inv_swap(d.f);
@@ -1185,6 +1201,15 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         1123 => rand_subset_c2(w, x),
         // NOTE: •SH dyadic: options •SH args
         145 => sh_exec_c2(w, x),
+        // NOTE: w√⁼x = x^w (dyadic sqrt-inverse = power with args swapped)
+        // √⁼ monadic is x^2 (sys 203 c1); dyadic is x raised to the power w.
+        203 => {
+            let r = rbqn_prim::arith_dyad::pow_c2(x, x_arr.as_ref(), w, w_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c2)")),
     }
 }

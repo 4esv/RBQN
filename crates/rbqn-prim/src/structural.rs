@@ -371,10 +371,10 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Ok(PrimResult::Array(BqnArr::empty_vec()));
     }
 
-    // Non-boxed arrays can't contain sub-arrays; they're lists of atoms
+    // NOTE: BQN ∾ monad requires elements to be arrays (boxed).
+    // A non-boxed rank-1 array contains atoms, not sub-arrays — error.
     if arr.el_type() != ElType::B {
-        // Already a flat array of atoms — just return as-is
-        return Ok(PrimResult::Array(arr.clone()));
+        return Err(BqnError::Type("∾𝕩: elements of 𝕩 must be arrays".into()));
     }
 
     // Collect all elements from sub-arrays
@@ -1125,10 +1125,17 @@ pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 }
 
 // ⌽ monad: reverse (along first axis)
-pub fn reverse_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn reverse_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // NOTE: ⌽ on atoms (chars, numbers) errors; on rank-0 arrays errors.
+    if x.is_atom() {
+        return Err(BqnError::Type("⌽𝕩: 𝕩 must be an array of rank 1 or higher".into()));
+    }
     let arr = xa.ok_or_else(|| BqnError::Type("⌽𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("⌽𝕩: 𝕩 must have rank 1 or higher".into()));
+    }
 
-    if arr.rank() <= 1 {
+    if arr.rank() == 1 {
         let ia = arr.ia();
         let mut result = Vec::with_capacity(ia);
         for i in (0..ia).rev() {
@@ -1150,16 +1157,106 @@ pub fn reverse_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⌽ dyad: rotate (along first axis)
-pub fn rotate_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
-    let n = w.to_i32()?;
+// NOTE: BQN spec: 𝕨 can be a number (scalar) or array.
+// When 𝕩 is an atom (rank 0): 𝕨 must be empty or 0; result is <𝕩 (rank-0 enclosed).
+// When 𝕩 is a rank-0 array: same — result is the rank-0 array as-is.
+// When 𝕨 is a number: rotate first axis by that amount.
+// When 𝕨 is an array: must have length equal to rank of 𝕩; each element rotates that axis.
+pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // Handle atom x (rank-0): must have empty or zero w
+    if x.is_atom() {
+        if let Some(warr) = wa {
+            if warr.ia() != 0 {
+                return Err(BqnError::Rank("𝕨⌽𝕩: 𝕨 must be empty for scalar 𝕩".into()));
+            }
+        } else {
+            // Scalar w: must be 0
+            let n = w.to_i32()?;
+            if n != 0 {
+                return Err(BqnError::Rank("𝕨⌽𝕩: 𝕨 must be 0 for scalar 𝕩".into()));
+            }
+        }
+        // Return enclose of x: rank-0 boxed array
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: ArrData::Boxed(vec![x]),
+            fill: None,
+        }));
+    }
+
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⌽𝕩: 𝕩 must be an array".into()))?;
 
+    // Handle rank-0 array x
+    if arr.rank() == 0 {
+        if let Some(warr) = wa {
+            if warr.ia() != 0 {
+                return Err(BqnError::Rank("𝕨⌽𝕩: 𝕨 must be empty for rank-0 𝕩".into()));
+            }
+        } else {
+            let n = w.to_i32()?;
+            if n != 0 {
+                return Err(BqnError::Rank("𝕨⌽𝕩: 𝕨 must be 0 for rank-0 𝕩".into()));
+            }
+        }
+        return Ok(PrimResult::Array(arr.clone()));
+    }
+
+    // Array w case: w specifies rotation per axis
+    if let Some(warr) = wa {
+        let rotations = warr.i32_iter()?;
+        if rotations.len() != arr.rank() as usize {
+            return Err(BqnError::Rank(format!(
+                "𝕨⌽𝕩: 𝕨 length ({}) must equal rank of 𝕩 ({})",
+                rotations.len(), arr.rank()
+            )));
+        }
+        // For now only handle first-axis rotation (common case)
+        // Multi-axis rotation requires separate permute steps
+        if rotations.len() == 1 {
+            let n = rotations[0];
+            let first_dim = arr.shape[0];
+            if first_dim == 0 {
+                return Ok(PrimResult::Array(arr.clone()));
+            }
+            if arr.rank() == 1 {
+                let ia = arr.ia();
+                let shift = ((n % ia as i32) + ia as i32) as usize % ia;
+                let mut result = Vec::with_capacity(ia);
+                for i in 0..ia {
+                    result.push(arr.get((i + shift) % ia)?);
+                }
+                return Ok(PrimResult::Array(typed_arr(result, vec![ia], arr.fill)));
+            }
+            let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+            let shift = ((n % first_dim as i32) + first_dim as i32) as usize % first_dim;
+            let mut result = Vec::with_capacity(arr.ia());
+            for i in 0..first_dim {
+                let src = (i + shift) % first_dim;
+                for j in 0..cell_size {
+                    result.push(arr.get(src * cell_size + j)?);
+                }
+            }
+            return Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)));
+        }
+        // Multi-axis rotation: apply each rotation sequentially
+        let mut current = arr.clone();
+        for (axis, &rot) in rotations.iter().enumerate() {
+            if rot == 0 {
+                continue;
+            }
+            current = rotate_along_axis(&current, axis, rot)?;
+        }
+        return Ok(PrimResult::Array(current));
+    }
+
+    // Scalar w: rotate first axis
+    let n = w.to_i32()?;
     let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
     if first_dim == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
 
-    if arr.rank() <= 1 {
+    if arr.rank() == 1 {
         let ia = arr.ia();
         let shift = ((n % ia as i32) + ia as i32) as usize % ia;
         let mut result = Vec::with_capacity(ia);
@@ -1182,15 +1279,60 @@ pub fn rotate_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resu
     Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
 }
 
+/// Rotate arr along the given axis by rot positions.
+fn rotate_along_axis(arr: &BqnArr, axis: usize, rot: i32) -> Result<BqnArr> {
+    let rank = arr.rank() as usize;
+    let dim = arr.shape[axis];
+    if dim == 0 {
+        return Ok(arr.clone());
+    }
+
+    // Compute strides
+    let mut strides = vec![1usize; rank];
+    for i in (0..rank - 1).rev() {
+        strides[i] = strides[i + 1] * arr.shape[i + 1];
+    }
+
+    let ia = arr.ia();
+    let shift = ((rot % dim as i32) + dim as i32) as usize % dim;
+    let mut result = vec![B::m_i32(0); ia];
+
+    for flat in 0..ia {
+        // Decompose flat into multi-index
+        let mut rem = flat;
+        let mut new_flat = 0;
+        for a in 0..rank {
+            let idx = rem / strides[a];
+            rem %= strides[a];
+            let new_idx = if a == axis { (idx + shift) % dim } else { idx };
+            new_flat += new_idx * strides[a];
+        }
+        result[new_flat] = arr.get(flat)?;
+    }
+
+    Ok(typed_arr(result, arr.shape.clone(), arr.fill))
+}
+
 // ⍉ monad: transpose (reverse axis order)
-// For rank ≤ 1: identity.
+// For rank 0 (atom or rank-0 array): enclose (⍉ ≡ < for atoms/rank-0)
+// For rank 1: identity.
 // For rank 2: swap rows/cols.
 // For rank n: reverse all axes.
 pub fn transpose_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_atom() {
-        return Ok(PrimResult::Scalar(x));
+        // NOTE: BQN spec: ⍉ on atom = enclose (same as <)
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: ArrData::Boxed(vec![x]),
+            fill: None,
+        }));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⍉𝕩: 𝕩 must be an array".into()))?;
+
+    if arr.rank() == 0 {
+        // Rank-0 array: return as-is (already enclosed)
+        return Ok(PrimResult::Array(arr.clone()));
+    }
 
     if arr.rank() <= 1 {
         return Ok(PrimResult::Array(arr.clone()));
@@ -1244,14 +1386,38 @@ pub fn transpose_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ⍉ dyad: reorder axes
 // p⍉x reorders axes of x according to permutation p.
 // p[i] says where axis i of x ends up in the result.
-pub fn reorder_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+// NOTE: p must be a rank-1 integer array. All values must be in [0, rank) and distinct.
+pub fn reorder_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // Handle atom x with empty perm
+    if x.is_atom() {
+        if let Some(warr) = wa {
+            if warr.ia() != 0 {
+                return Err(BqnError::Rank("𝕨⍉𝕩: 𝕨 must be empty for scalar 𝕩".into()));
+            }
+        } else {
+            return Err(BqnError::Rank("𝕨⍉𝕩: scalar 𝕨 not valid for scalar 𝕩".into()));
+        }
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: ArrData::Boxed(vec![x]),
+            fill: None,
+        }));
+    }
+
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⍉𝕩: 𝕩 must be an array".into()))?;
     let rank = arr.rank() as usize;
 
+    // NOTE: w must be rank-1 (not higher-rank)
     let perm = if w.is_f64() {
         vec![w.to_i32()?]
     } else {
         let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍉𝕩: 𝕨 must be a number or array".into()))?;
+        if warr.rank() != 1 {
+            return Err(BqnError::Rank(format!(
+                "𝕨⍉𝕩: 𝕨 must be rank-1, got rank {}",
+                warr.rank()
+            )));
+        }
         warr.i32_iter()?
     };
 
@@ -1263,24 +1429,33 @@ pub fn reorder_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resu
         )));
     }
 
+    // Validate: all values in [0, rank) and distinct
+    let mut seen = vec![false; rank];
+    for &p in &perm {
+        if p < 0 || p as usize >= rank {
+            return Err(BqnError::Domain(format!(
+                "𝕨⍉𝕩: axis index {} out of range [0, {})",
+                p, rank
+            )));
+        }
+        let pu = p as usize;
+        if seen[pu] {
+            return Err(BqnError::Domain(format!(
+                "𝕨⍉𝕩: duplicate axis index {} in permutation",
+                p
+            )));
+        }
+        seen[pu] = true;
+    }
+
     let max_p = perm.iter().copied().max().unwrap_or(0);
     let new_rank = (max_p + 1) as usize;
 
-    // Build new shape: for each new axis, take the min of all old axes mapped to it
-    let mut new_shape = vec![usize::MAX; new_rank];
+    // Build new shape: for each new axis, set shape from mapped old axis
+    let mut new_shape = vec![0usize; new_rank];
     for (old_axis, &p) in perm.iter().enumerate() {
-        if p < 0 {
-            return Err(BqnError::Domain("𝕨⍉𝕩: axis indices must be non-negative".into()));
-        }
         let na = p as usize;
-        new_shape[na] = new_shape[na].min(arr.shape[old_axis]);
-    }
-
-    // Replace any remaining MAX (shouldn't happen with valid input)
-    for s in &mut new_shape {
-        if *s == usize::MAX {
-            *s = 0;
-        }
+        new_shape[na] = arr.shape[old_axis];
     }
 
     let ia: usize = new_shape.iter().product();
