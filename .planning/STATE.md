@@ -5,33 +5,34 @@
 See: .planning/PROJECT.md (updated 2026-02-23)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 1 — Runtime Bypass and Working Pipeline
+**Current focus:** Phase 2 — Test Baseline
 
 ## Current Position
 
-Phase: 1 of 6 (Runtime Bypass and Working Pipeline) -- COMPLETE
-Plan: 5 of 5 in current phase (all complete)
-Status: Phase 1 complete
-Last activity: 2026-02-24 — Completed plan 01-05 (REPL persistence and Phase 1 verification)
+Phase: 2 of 6 (Test Baseline)
+Plan: 2 of 3 in current phase (02-02 complete, 02-03 remaining)
+Status: In progress
+Last activity: 2026-02-24 — Completed plan 02-02 (fix simple and bytecode)
 
-Progress: [██░░░░░░░░] 17%
+Progress: [███░░░░░░░] 28%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 3
-- Average duration: 13 min
-- Total execution time: 0.63 hours
+- Total plans completed: 5
+- Average duration: 10 min
+- Total execution time: 0.83 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 3 | 38min | 13min |
+| 02 | 2 | 12min | 6min |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (2min), 01-04 (18min), 01-05 (18min)
-- Trend: Steady
+- Last 5 plans: 01-02 (2min), 01-04 (18min), 01-05 (18min), 02-01 (8min), 02-02 (4min)
+- Trend: Accelerating
 
 *Updated after each plan completion*
 
@@ -50,6 +51,8 @@ Progress: [██░░░░░░░░] 17%
 - [01-04]: sort_up/sort_down need full row extraction for rank>1, not single-element get
 - [01-05]: REPL persistence uses compiler varNames/varDepths (depth=-1) rather than CBQN-style in-place scope mutation
 - [01-05]: Search primitives (⊐ ⊒ ∊ ⍷) required deep_equal fix for nested array comparison
+- [02-02]: v_get and v_get_move need array handling for SETM with list targets (destructuring modify-assign)
+- [02-02]: syntax.bqn improved from 152 to 153 as collateral benefit of v_get array fix
 
 ### Pending Todos
 
@@ -65,5 +68,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 01-05-PLAN.md (REPL persistence and Phase 1 verification)
+Stopped at: Completed 02-02-PLAN.md (fix simple and bytecode to 100%)
 Resume file: None

@@ -64,10 +64,10 @@
 - [ ] **SYS-26**: •HashMap (hash map operations)
 
 ### TEST: Official Test Suite (13 files)
-- [ ] **TEST-01**: Pass simple.bqn
+- [x] **TEST-01**: Pass simple.bqn
 - [ ] **TEST-02**: Pass literal.bqn
 - [ ] **TEST-03**: Pass syntax.bqn
-- [ ] **TEST-04**: Pass bytecode.bqn
+- [x] **TEST-04**: Pass bytecode.bqn
 - [ ] **TEST-05**: Pass prim.bqn
 - [ ] **TEST-06**: Pass token.bqn
 - [ ] **TEST-07**: Pass header.bqn
@@ -136,10 +136,10 @@
 | SYS-03 | Phase 1 | Complete |
 | SYS-04 | Phase 1 | Complete |
 | SYS-05 | Phase 1 | Complete |
-| TEST-01 | Phase 2 | Pending |
+| TEST-01 | Phase 2 | Complete |
 | TEST-02 | Phase 2 | Pending |
 | TEST-03 | Phase 2 | Pending |
-| TEST-04 | Phase 2 | Pending |
+| TEST-04 | Phase 2 | Complete |
 | MOD-01 | Phase 3 | Pending |
 | MOD-02 | Phase 3 | Pending |
 | MOD-03 | Phase 3 | Pending |
