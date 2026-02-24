@@ -10,28 +10,28 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 1 of 6 (Runtime Bypass and Working Pipeline)
-Plan: 2 of 3 in current phase
+Plan: 5 of 5 in current phase
 Status: In progress
-Last activity: 2026-02-23 — Completed plan 01-02 (system functions)
+Last activity: 2026-02-23 — Completed plan 01-04 (compiler pipeline gap closure)
 
-Progress: [██░░░░░░░░] 10%
+Progress: [███░░░░░░░] 15%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 2 min
-- Total execution time: 0.03 hours
+- Total plans completed: 2
+- Average duration: 10 min
+- Total execution time: 0.33 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 1 | 2min | 2min |
+| 01 | 2 | 20min | 10min |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (2min)
-- Trend: Starting
+- Last 5 plans: 01-02 (2min), 01-04 (18min)
+- Trend: Ramping
 
 *Updated after each plan completion*
 
@@ -46,6 +46,8 @@ Progress: [██░░░░░░░░] 10%
 - [01-02]: System functions use global Mutex<Option<SysRuntime>> for •BQN re-evaluation state
 - [01-02]: Environment values resolved at lookup time, not as callable functions
 - [01-02]: •Out/•BQN tests blocked on pre-existing compiler string literal bug
+- [01-04]: Root cause of string bug was in build.rs C literal parser, not in VM execution
+- [01-04]: sort_up/sort_down need full row extraction for rank>1, not single-element get
 
 ### Pending Todos
 
@@ -61,5 +63,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-23
-Stopped at: Completed 01-02-PLAN.md (system functions)
+Stopped at: Completed 01-04-PLAN.md (compiler pipeline gap closure)
 Resume file: None

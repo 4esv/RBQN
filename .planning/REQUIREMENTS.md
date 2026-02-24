@@ -6,14 +6,14 @@
 ## v2.0 Requirements
 
 ### PIPE: Runtime Pipeline (Bypass + Compiler)
-- [ ] **PIPE-01**: Runtime bypass verified — native Rust primitives serve as runtime, not runtime0 BQN overrides
-- [ ] **PIPE-02**: PrimInd assertion — `•PrimInd "+"` returns correct index through bypass path
-- [ ] **PIPE-03**: SetInv callback wires inverse tables for ⁼ and ⌾ correctly (dyadic call)
-- [ ] **PIPE-04**: Runtime1 executes successfully with bypass in place
-- [ ] **PIPE-05**: Compiler loads and compiles arbitrary BQN source strings
-- [ ] **PIPE-06**: Formatter loads and provides •Fmt and •Repr
+- [x] **PIPE-01**: Runtime bypass verified — native Rust primitives serve as runtime, not runtime0 BQN overrides
+- [x] **PIPE-02**: PrimInd assertion — `•PrimInd "+"` returns correct index through bypass path
+- [x] **PIPE-03**: SetInv callback wires inverse tables for ⁼ and ⌾ correctly (dyadic call)
+- [x] **PIPE-04**: Runtime1 executes successfully with bypass in place
+- [x] **PIPE-05**: Compiler loads and compiles arbitrary BQN source strings
+- [x] **PIPE-06**: Formatter loads and provides •Fmt and •Repr
 - [ ] **PIPE-07**: REPL mode with variable persistence across evaluations
-- [ ] **PIPE-08**: `rbqn -e '1+1'` outputs `2`
+- [x] **PIPE-08**: `rbqn -e '1+1'` outputs `2`
 
 ### MOD: Missing Modifiers
 - [ ] **MOD-01**: Undo (⁼) — native inverse table for 12 required primitives (+, -, ÷, ⋆, √, ∧, ¬, ⊢, ⊣, <, ⌽, ⍉, /)
@@ -123,14 +123,14 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PIPE-01 | Phase 1 | Pending |
-| PIPE-02 | Phase 1 | Pending |
-| PIPE-03 | Phase 1 | Pending |
-| PIPE-04 | Phase 1 | Pending |
-| PIPE-05 | Phase 1 | Pending |
-| PIPE-06 | Phase 1 | Pending |
+| PIPE-01 | Phase 1 | Complete |
+| PIPE-02 | Phase 1 | Complete |
+| PIPE-03 | Phase 1 | Complete |
+| PIPE-04 | Phase 1 | Complete |
+| PIPE-05 | Phase 1 | Complete |
+| PIPE-06 | Phase 1 | Complete |
 | PIPE-07 | Phase 1 | Pending |
-| PIPE-08 | Phase 1 | Pending |
+| PIPE-08 | Phase 1 | Complete |
 | SYS-01 | Phase 1 | Complete |
 | SYS-02 | Phase 1 | Complete |
 | SYS-03 | Phase 1 | Complete |
