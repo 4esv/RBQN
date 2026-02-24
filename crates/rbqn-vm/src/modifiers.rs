@@ -527,6 +527,27 @@ fn fold_c2(f: B, w: B, x: B) -> B {
 // 1-modifier: ˝ Insert
 // ============================================================
 
+/// Identity for ∾˝ (join-insert) on empty leading axis.
+/// For input shape 0‿s₁‿s₂‿...‿sₙ, result shape is 0‿s₂‿...‿sₙ.
+fn insert_join_identity(f: B, cell_shape: &[usize], arr: &BqnArr) -> Option<B> {
+    if !f.is_fun() { return None; }
+    let fid = (f.0 & 0xFFFFFFFFFFFF) >> 3;
+    let d = crate::derive::get_derived(fid);
+    match d.kind {
+        crate::derive::DerivedKind::NativeFn { prim_idx: 23 } => {
+            // ∾ (join): identity = empty array with shape 0‿cell_shape[1..]
+            let mut result_shape = vec![0usize];
+            if cell_shape.len() > 1 {
+                result_shape.extend_from_slice(&cell_shape[1..]);
+            }
+            let mut result_arr = rbqn_core::array::typed_arr_from_b_vec(vec![], result_shape, None);
+            result_arr.fill = arr.fill;
+            Some(crate::vm::tag_arr(result_arr))
+        },
+        _ => None,
+    }
+}
+
 fn insert_c1(f: B, x: B) -> B {
     let arr = arr_of(x);
     if arr.rank() < 2 {
@@ -538,6 +559,13 @@ fn insert_c1(f: B, x: B) -> B {
         // CBQN: insert on empty array returns identity element broadcast to cell shape.
         let cell_shape = arr.shape[1..].to_vec();
         let cell_ia: usize = cell_shape.iter().product::<usize>().max(1);
+
+        // Special case: ∾˝ (join insert) on empty leading axis
+        // Identity is an empty array with shape 0‿cell_shape[1..]
+        if let Some(join_id) = insert_join_identity(f, &cell_shape, &arr) {
+            return join_id;
+        }
+
         if let Some(id) = fold_identity(f) {
             // Fill cell_shape with identity value
             let elems: Vec<B> = (0..cell_ia).map(|_| id).collect();
