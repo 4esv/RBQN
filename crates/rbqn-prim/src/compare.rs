@@ -176,7 +176,7 @@ fn scalar_le(w: B, x: B) -> i32 {
     if w.is_c32() && x.is_f64() {
         return 0;
     }
-    (compare::compare(w, x) <= 0) as i32
+    rbqn_core::error::throw("≤: Cannot compare non-data values")
 }
 
 fn scalar_ge(w: B, x: B) -> i32 {
@@ -196,7 +196,7 @@ fn scalar_lt(w: B, x: B) -> i32 {
     if w.is_c32() && x.is_f64() {
         return 0;
     }
-    (compare::compare(w, x) < 0) as i32
+    rbqn_core::error::throw("<: Cannot compare non-data values")
 }
 
 fn scalar_gt(w: B, x: B) -> i32 {

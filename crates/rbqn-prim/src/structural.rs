@@ -387,6 +387,9 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         vec![w.to_usz()?]
     } else {
         let warr = wa.ok_or_else(|| BqnError::Type("𝕨⥊𝕩: 𝕨 must be a number or array of numbers".into()))?;
+        if warr.rank() > 1 {
+            return Err(BqnError::Rank("𝕨⥊𝕩: 𝕨 must have rank ≤ 1".into()));
+        }
         // BQN spec: shape can contain ∘ (exact), ⌊ (floor), or ⌈ (ceil) to compute a dimension
         if warr.is_num_arr() {
             warr.i32_iter()?.iter().map(|&s| s as usize).collect()
@@ -1063,6 +1066,9 @@ pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Ok(PrimResult::Array(BqnArr::new_vec_i32(vals)));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("↕𝕩: 𝕩 must be a number or array".into()))?;
+    if arr.rank() != 1 {
+        return Err(BqnError::Rank("↕𝕩: 𝕩 must be a number or rank-1 list".into()));
+    }
 
     // Multi-dimensional range: ↕ s produces array of index lists
     let dims = arr.i32_iter()?;
@@ -1107,9 +1113,11 @@ pub fn windows_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Res
 
     let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
 
-    // BQN: result first-dim = max(0, 1 + first_dim - n)
-    // When n > first_dim, result has 0 windows (empty along first axis)
-    let num_windows = if n > first_dim { 0 } else { first_dim - n + 1 };
+    if n > first_dim + 1 {
+        return Err(BqnError::Domain(format!("↕: 𝕨 must be at most 1+≠𝕩 ({} > {})", n, first_dim + 1)));
+    }
+
+    let num_windows = first_dim + 1 - n;
 
     if num_windows == 0 {
         // Return empty array with correct shape: ⟨0, n, ...cell_shape⟩
@@ -1192,6 +1200,14 @@ pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // « dyad: shift after
 pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨«𝕩: 𝕩 must be an array".into()))?;
+
+    if let Some(warr) = wa {
+        let wr = warr.rank();
+        let xr = arr.rank();
+        if wr != xr && wr + 1 != xr {
+            return Err(BqnError::Rank("«: 𝕨 must be a cell of 𝕩 or have compatible shape".into()));
+        }
+    }
 
     if arr.rank() > 1 {
         // Multi-rank: shift major cells along first axis
@@ -1292,6 +1308,15 @@ pub fn shiftb_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // » dyad: shift before
 pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨»𝕩: 𝕩 must be an array".into()))?;
+
+    // Validate w rank: must be x.rank (multi-cell shift) or x.rank-1 (single cell) or atom
+    if let Some(warr) = wa {
+        let wr = warr.rank();
+        let xr = arr.rank();
+        if wr != xr && wr + 1 != xr {
+            return Err(BqnError::Rank("»: 𝕨 must be a cell of 𝕩 or have compatible shape".into()));
+        }
+    }
 
     if arr.rank() > 1 {
         // Multi-rank: shift major cells along first axis

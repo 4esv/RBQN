@@ -500,6 +500,9 @@ fn fold_identity(f: B) -> Option<B> {
 
 fn fold_c1(f: B, x: B) -> B {
     let arr = arr_of(x);
+    if arr.rank() == 0 {
+        rbqn_core::error::throw("´: 𝕩 must have rank ≥ 1");
+    }
     let n = arr.ia();
     if n == 0 {
         return fold_identity(f).unwrap_or_else(||
@@ -550,6 +553,9 @@ fn insert_join_identity(f: B, cell_shape: &[usize], arr: &BqnArr) -> Option<B> {
 
 fn insert_c1(f: B, x: B) -> B {
     let arr = arr_of(x);
+    if arr.rank() == 0 {
+        rbqn_core::error::throw("˝: 𝕩 must have rank ≥ 1");
+    }
     if arr.rank() < 2 {
         return fold_c1(f, x);
     }
@@ -606,12 +612,12 @@ fn insert_c2(f: B, w: B, x: B) -> B {
 
 fn scan_c1(f: B, x: B) -> B {
     if x.is_atom() {
-        return rbqn_core::error::throw("F`𝕩: 𝕩 must be an array");
+        return rbqn_core::error::throw("`: 𝕩 must be an array");
     }
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
-        return crate::vm::tag_arr(arr.clone());
+        rbqn_core::error::throw("`: 𝕩 must have rank ≥ 1");
     }
     let lead = arr.shape[0];
     if lead == 0 {
