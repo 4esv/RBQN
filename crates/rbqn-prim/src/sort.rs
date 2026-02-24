@@ -54,6 +54,22 @@ fn grade(arr: &BqnArr, ascending: bool) -> Result<Vec<i32>> {
     Ok(indices)
 }
 
+/// Apply a row permutation to an array.
+/// `indices` contains row indices (from grade). For rank-1, each "row" is one element.
+/// For higher-rank, each "row" is a cell of `cell_size` elements along the first axis.
+fn apply_row_permutation(arr: &BqnArr, indices: &[i32]) -> Result<BqnArr> {
+    let cell_size: usize = if arr.rank() <= 1 { 1 } else { arr.shape[1..].iter().product() };
+    let ia = arr.ia();
+    let mut result = Vec::with_capacity(ia);
+    for &row_idx in indices {
+        let base = row_idx as usize * cell_size;
+        for col in 0..cell_size {
+            result.push(arr.get(base + col)?);
+        }
+    }
+    Ok(array::typed_arr_from_b_vec(result, arr.shape.clone(), arr.fill))
+}
+
 // ⍋ monad: grade up
 pub fn grade_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍋𝕩: 𝕩 must be an array".into()))?;
@@ -72,12 +88,7 @@ pub fn grade_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 pub fn sort_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("∧𝕩: 𝕩 must be an array".into()))?;
     let indices = grade(arr, true)?;
-    // Apply the permutation to get sorted values
-    let mut result = Vec::with_capacity(indices.len());
-    for &idx in &indices {
-        result.push(arr.get(idx as usize)?);
-    }
-    let out = array::typed_arr_from_b_vec(result, arr.shape.clone(), arr.fill);
+    let out = apply_row_permutation(arr, &indices)?;
     Ok(PrimResult::Array(out))
 }
 
@@ -85,12 +96,7 @@ pub fn sort_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("∨𝕩: 𝕩 must be an array".into()))?;
     let indices = grade(arr, false)?;
-    // Apply the permutation to get sorted values
-    let mut result = Vec::with_capacity(indices.len());
-    for &idx in &indices {
-        result.push(arr.get(idx as usize)?);
-    }
-    let out = array::typed_arr_from_b_vec(result, arr.shape.clone(), arr.fill);
+    let out = apply_row_permutation(arr, &indices)?;
     Ok(PrimResult::Array(out))
 }
 
