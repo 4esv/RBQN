@@ -8,7 +8,7 @@ RBQN has the architecture in place: five crates, NaN-boxed values, a working VM,
 
 ## Phases
 
-- [ ] **Phase 1: Runtime Bypass and Working Pipeline** - Verify Option B bypass, get compiler executing arbitrary BQN, REPL working
+- [x] **Phase 1: Runtime Bypass and Working Pipeline** - Verify Option B bypass, get compiler executing arbitrary BQN, REPL working (completed 2026-02-24)
 - [ ] **Phase 2: Test Baseline** - Wire official test harness, establish pass/fail count, pass simple/literal/syntax/bytecode
 - [ ] **Phase 3: Language Completeness** - All missing modifiers, primitive edge cases, essential system functions
 - [ ] **Phase 4: Full Test Suite Green** - Drive all 13 official test files to 0 failures
@@ -27,7 +27,7 @@ RBQN has the architecture in place: five crates, NaN-boxed values, a working VM,
   3. REPL maintains variable state: `a←5` entered on one line is accessible on the next
   4. `•Out "hello"` prints to stdout; `•BQN "1+1"` evaluates to `2`; `•Exit 0` terminates
   5. Runtime1, compiler, and formatter all load without panicking
-**Plans:** 5 plans
+**Plans:** 23/5 plans complete
 
 Plans:
 - [x] 01-01-PLAN.md — Fix compiler/VM correctness bugs and verify bypass pipeline (PIPE-01..06)
@@ -117,7 +117,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Runtime Bypass and Working Pipeline | 0/3 | Planning complete | - |
+| 1. Runtime Bypass and Working Pipeline | 0/3 | Complete    | 2026-02-24 |
 | 2. Test Baseline | 0/3 | Planning complete | - |
 | 3. Language Completeness | 0/? | Not started | - |
 | 4. Full Test Suite Green | 0/? | Not started | - |
