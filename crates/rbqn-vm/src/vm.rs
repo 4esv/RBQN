@@ -443,7 +443,9 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 for i in 0..sz {
                     elems[sz - i - 1] = pop!();
                 }
-                push!(tag_arr(BqnArr::from_b_vec(elems)));
+                // NOTE: ARMM uses tag_arr_merge to mark as merge-destructuring target.
+                // v_set checks this to split by major cells instead of flat elements.
+                push!(rbqn_core::tag_arr_merge(BqnArr::from_b_vec(elems)));
             }
 
             // --- Block definitions ---

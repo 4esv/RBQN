@@ -139,8 +139,11 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         }
     } else if s.0 == B::SENTINEL.0 {
         // assigning to Nothing: ignore
+    } else if rbqn_core::is_arr_merge(s) {
+        // Merge-destructuring ([...] syntax): split x along its first axis (major cells)
+        v_merge(pscs, s, x, upd, chk);
     } else if s.is_arr() {
-        // Array destructuring: assign each element of x to corresponding target in s
+        // List destructuring (a‿b syntax): assign each element of x to corresponding target in s
         let s_arr = rbqn_core::get_arr(s)
             .unwrap_or_else(|| rbqn_core::error::throw("v_set: invalid array target"));
         let x_arr = rbqn_core::get_arr(x)
@@ -149,7 +152,7 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         let x_len = x_arr.ia();
         if s_len != x_len {
             rbqn_core::error::throw(format!(
-                "v_set: destructuring length mismatch ({} targets vs {} values)",
+                "Assignment: Mismatched shape for spread assignment ({} targets vs {} values)",
                 s_len, x_len
             ));
         }
@@ -160,6 +163,71 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         }
     } else {
         rbqn_core::error::throw("v_set: complex assignment not yet implemented");
+    }
+}
+
+/// Merge-destructuring: split x along its first axis and assign to each target in s.
+/// This implements CBQN's v_merge for `[a⋄b]←val` syntax (ARMM targets).
+fn v_merge(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
+    let s_arr = rbqn_core::get_arr(s)
+        .unwrap_or_else(|| rbqn_core::error::throw("v_merge: invalid merge target"));
+    let s_len = s_arr.ia();
+
+    if !x.is_arr() {
+        let op = if upd { '\u{21A9}' } else { '\u{2190}' };
+        rbqn_core::error::throw(format!("[...]{}x: x cannot have rank 0", op));
+    }
+    let x_arr = rbqn_core::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("v_merge: invalid array value"));
+
+    if x_arr.rank() == 0 {
+        let op = if upd { '\u{21A9}' } else { '\u{2190}' };
+        rbqn_core::error::throw(format!("[...]{}x: x cannot have rank 0", op));
+    }
+
+    let first_axis = x_arr.shape[0];
+    if first_axis != s_len {
+        let op = if upd { '\u{21A9}' } else { '\u{2190}' };
+        rbqn_core::error::throw(format!(
+            "[...]{}x: Target length & leading axis of x didn't match ({} vs {})",
+            op, s_len, first_axis
+        ));
+    }
+
+    if s_len == 0 {
+        return;
+    }
+
+    if x_arr.rank() == 1 {
+        // Rank 1: each element becomes a unit (rank-0) array like CBQN's m_unit (<x)
+        for i in 0..s_len {
+            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            let xi = x_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            // Wrap in rank-0 array (shape []) — equivalent to <x
+            let unit = rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(
+                vec![xi], vec![], x_arr.fill,
+            ));
+            v_set(pscs, si, unit, upd, chk);
+        }
+    } else {
+        // Rank > 1: split into major cells (toCells)
+        // Cell shape is shape[1..]
+        let cell_shape: Vec<usize> = x_arr.shape[1..].to_vec();
+        let cell_size: usize = cell_shape.iter().product();
+        for i in 0..s_len {
+            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            // Extract cell i: elements from i*cell_size to (i+1)*cell_size
+            let start = i * cell_size;
+            let mut cell_data = Vec::with_capacity(cell_size);
+            for j in 0..cell_size {
+                cell_data.push(x_arr.get(start + j)
+                    .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string())));
+            }
+            let cell = rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(
+                cell_data, cell_shape.clone(), x_arr.fill,
+            ));
+            v_set(pscs, si, cell, upd, chk);
+        }
     }
 }
 
@@ -181,6 +249,9 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
         }
     } else if s.0 == B::SENTINEL.0 {
         true
+    } else if rbqn_core::is_arr_merge(s) {
+        // Merge-destructuring header match: split x along first axis
+        v_merge_seth(pscs, s, x)
     } else if s.is_arr() {
         let s_arr = match rbqn_core::get_arr(s) {
             Some(a) => a,
@@ -206,6 +277,66 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
     } else {
         false
     }
+}
+
+/// Merge-destructuring for header match (v_seth variant).
+fn v_merge_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
+    let s_arr = match rbqn_core::get_arr(s) {
+        Some(a) => a,
+        None => return false,
+    };
+    let s_len = s_arr.ia();
+
+    if !x.is_arr() {
+        return false;
+    }
+    let x_arr = match rbqn_core::get_arr(x) {
+        Some(a) => a,
+        None => return false,
+    };
+    if x_arr.rank() == 0 {
+        return false;
+    }
+    if x_arr.shape[0] != s_len {
+        return false;
+    }
+    if s_len == 0 {
+        return true;
+    }
+
+    if x_arr.rank() == 1 {
+        for i in 0..s_len {
+            let si = match s_arr.get(i) { Ok(v) => v, Err(_) => return false };
+            let xi = match x_arr.get(i) { Ok(v) => v, Err(_) => return false };
+            let unit = rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(
+                vec![xi], vec![], x_arr.fill,
+            ));
+            if !v_seth(pscs, si, unit) {
+                return false;
+            }
+        }
+    } else {
+        let cell_shape: Vec<usize> = x_arr.shape[1..].to_vec();
+        let cell_size: usize = cell_shape.iter().product();
+        for i in 0..s_len {
+            let si = match s_arr.get(i) { Ok(v) => v, Err(_) => return false };
+            let start = i * cell_size;
+            let mut cell_data = Vec::with_capacity(cell_size);
+            for j in 0..cell_size {
+                match x_arr.get(start + j) {
+                    Ok(v) => cell_data.push(v),
+                    Err(_) => return false,
+                }
+            }
+            let cell = rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(
+                cell_data, cell_shape.clone(), x_arr.fill,
+            ));
+            if !v_seth(pscs, si, cell) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
