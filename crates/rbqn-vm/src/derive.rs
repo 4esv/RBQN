@@ -97,6 +97,9 @@ pub enum DerivedKind {
     SysFn { sys_idx: u32 },
     LazyInvReg,   // Lazy inverse-reg wrapper: f = original function
     LazyInvSwap,  // Lazy inverse-swap wrapper: f = original function
+    InvBlock,     // Function block inverse body: bl has inv_x_body / inv_w_body
+    InvMd1Block,  // 1-modifier block inverse: bl=modifier block, f=operand fn
+    InvMd2Block,  // 2-modifier block inverse: bl=modifier block, f=left operand, h=right operand
 }
 
 #[derive(Debug)]
@@ -161,6 +164,60 @@ pub fn inv_reg(func: B) -> B {
         if let DerivedKind::NativeFn { prim_idx } = d.kind {
             if let Some(inv) = native_inverse_reg(prim_idx) {
                 return inv;
+            }
+        }
+
+        // Block inverse: check for inverse header bodies (𝕊⁼: or 𝕊⁼𝕨:)
+        if d.kind == DerivedKind::FunBlock {
+            if let Some(ref bl) = d.bl {
+                if crate::vm::prim_trace_enabled() {
+                    eprintln!("[INV_REG FunBlock] inv_m={} inv_x={} inv_w={}",
+                        bl.inv_m_body.is_some(), bl.inv_x_body.is_some(), bl.inv_w_body.is_some());
+                }
+                if bl.inv_m_body.is_some() || bl.inv_x_body.is_some() || bl.inv_w_body.is_some() {
+                    let psc = d.sc.clone().unwrap();
+                    return m_inv_block(bl.clone(), psc);
+                }
+            }
+        }
+
+        // Md1D modifier block inverse: check if the modifier has inverse bodies (𝔽_𝕣⁼𝕩: etc.)
+        if d.kind == DerivedKind::Md1D {
+            let modifier = d.g;
+            if modifier.is_md1() {
+                let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
+                let md = get_derived(mid);
+
+                // ˜ (prim 45): inv_reg(F˜) = inv_swap(F) — inverse of self-swap is swap-inverse
+                if md.kind == (DerivedKind::NativeMd1 { prim_idx: 45 }) {
+                    return inv_swap(d.f);
+                }
+
+                if md.kind == DerivedKind::Md1Block {
+                    if let Some(ref bl) = md.bl {
+                        if bl.inv_m_body.is_some() || bl.inv_x_body.is_some() {
+                            let psc = md.sc.clone().unwrap();
+                            return m_inv_md1_block(bl.clone(), psc, d.f);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Md2D modifier block inverse: check if the modifier has inverse bodies.
+        if d.kind == DerivedKind::Md2D {
+            let modifier = d.g;
+            if modifier.is_md2() {
+                let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
+                let md = get_derived(mid);
+                if md.kind == DerivedKind::Md2Block {
+                    if let Some(ref bl) = md.bl {
+                        if bl.inv_m_body.is_some() || bl.inv_x_body.is_some() {
+                            let psc = md.sc.clone().unwrap();
+                            return m_inv_md2_block(bl.clone(), psc, d.f, d.h);
+                        }
+                    }
+                }
             }
         }
 
@@ -236,6 +293,35 @@ pub fn inv_swap(func: B) -> B {
                 return inv;
             }
         }
+
+        // Block swap inverse: check for inv_w_body (B˜⁼: header) or inv_x_body
+        if d.kind == DerivedKind::FunBlock {
+            if let Some(ref bl) = d.bl {
+                if bl.inv_w_body.is_some() || bl.inv_x_body.is_some() {
+                    // Create an InvBlock that for c1 uses inv_x_body and for c2 uses inv_w_body
+                    let psc = d.sc.clone().unwrap();
+                    return m_inv_block(bl.clone(), psc);
+                }
+            }
+        }
+
+        // Md1D swap inverse: check if the modifier is a Md1Block with inv_w_body (𝔽_𝕣˜⁼: header)
+        if d.kind == DerivedKind::Md1D {
+            let modifier = d.g;
+            if modifier.is_md1() {
+                let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
+                let md = get_derived(mid);
+                if md.kind == DerivedKind::Md1Block {
+                    if let Some(ref bl) = md.bl {
+                        if bl.inv_w_body.is_some() || bl.inv_x_body.is_some() {
+                            // Create an InvMd1Block using the dyadic inverse body
+                            let psc = md.sc.clone().unwrap();
+                            return m_inv_md1_block(bl.clone(), psc, d.f);
+                        }
+                    }
+                }
+            }
+        }
     }
     let swap_fn = INV_SWAP_FN.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(||
         rbqn_core::error::throw("⁼: inverse system not initialized (setInv not called)")
@@ -267,7 +353,9 @@ fn native_inverse_reg(prim_idx: usize) -> Option<B> {
         13 => Some(m_native_fn(12)), // >⁼ = < (box)
         20 => Some(m_native_fn(20)), // ⊣⁼ = ⊣
         21 => Some(m_native_fn(21)), // ⊢⁼ = ⊢
-        31 => Some(m_native_fn(31)), // ⌽⁼ = ⌽ (reverse is its own inverse)
+        // NOTE: ⌽⁼ monadic = ⌽, but dyadic n⌽⁼ x = (-n)⌽ x (not n⌽ x).
+        // Returning ⌽ breaks dyadic. Let BQN runtime handle ⌽⁼ correctly.
+        // 31 => Some(m_native_fn(31)), // REMOVED: BQN runtime handles n⌽⁼ x = (-n)⌽ x
         32 => Some(m_native_fn(32)), // ⍉⁼ = ⍉ (transpose is its own inverse for rank≤2)
         33 => Some(m_sys_fn(201)),   // /⁼ = inverse of indices (counts from sorted indices)
         37 => Some(m_native_fn(24)), // ⊑⁼ = ≍ (solo: first inverse wraps in 1-element array)
@@ -359,6 +447,40 @@ pub fn m_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::FunBlock,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: Some(bl), sc: Some(psc),
+    });
+    tagu64(id << 3, FUN_TAG)
+}
+
+/// Create an inverse-block wrapper. When called (c1 or c2), executes the block's
+/// inv_m_body (monadic) or inv_w_body/inv_x_body (dyadic) header body.
+pub fn m_inv_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::InvBlock,
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: Some(bl), sc: Some(psc),
+    });
+    tagu64(id << 3, FUN_TAG)
+}
+
+/// Create an inverse 1-modifier-block wrapper.
+/// bl = the modifier block (with inv_m_body), f = operand function.
+/// When called, executes bl.inv_m_body with [self, x, w?, modifier, operand] args.
+pub fn m_inv_md1_block(bl: Arc<Block>, psc: Arc<Scope>, operand: B) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::InvMd1Block,
+        f: operand, g: B::SENTINEL, h: B::SENTINEL,
+        bl: Some(bl), sc: Some(psc),
+    });
+    tagu64(id << 3, FUN_TAG)
+}
+
+/// Create an inverse 2-modifier-block wrapper.
+/// bl = the modifier block (with inv_m_body), f = left operand, h = right operand.
+pub fn m_inv_md2_block(bl: Arc<Block>, psc: Arc<Scope>, f_operand: B, g_operand: B) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::InvMd2Block,
+        f: f_operand, g: B::SENTINEL, h: g_operand,
         bl: Some(bl), sc: Some(psc),
     });
     tagu64(id << 3, FUN_TAG)
@@ -613,6 +735,72 @@ pub fn c1(f: B, x: B) -> B {
                 let inv_fn = inv_swap(d.f);
                 c1(inv_fn, x)
             }
+            DerivedKind::InvBlock => {
+                // Block inverse body: execute inv_m_body (monadic 𝕊⁼:) for monadic call.
+                // Fall back to inv_x_body (dyadic-inverse monadic half) if inv_m_body absent.
+                // NOTE: 𝕊 in the inverse body refers to the FORWARD function (the block itself).
+                let bl = d.bl.as_ref().unwrap().clone();
+                let psc = d.sc.as_ref().unwrap().clone();
+                let inv_body = bl.inv_m_body.clone().or_else(|| bl.inv_x_body.clone());
+                if let Some(body) = inv_body {
+                    // Reconstruct the forward block function for 𝕊 binding
+                    let forward_fn = m_fun_block(bl.clone(), psc.clone());
+                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_fn, x, B::SENTINEL])
+                } else {
+                    rbqn_core::error::throw("Block has no monadic inverse header (𝕊⁼:)")
+                }
+            }
+            DerivedKind::InvMd1Block => {
+                // 1-modifier block inverse: execute the inverse body of the modifier block.
+                // bl = modifier block (with inv_m_body), d.f = operand function.
+                // Args: [forward_derived, x, SENTINEL, modifier_val, operand]
+                // NOTE: 𝕊 in the inverse body refers to the FORWARD derived (not the inverse).
+                // This allows the inverse body to call the forward function recursively.
+                let bl = d.bl.as_ref().unwrap().clone();
+                let psc = d.sc.as_ref().unwrap().clone();
+                let operand = d.f;
+                let inv_body = bl.inv_m_body.clone().or_else(|| bl.inv_x_body.clone());
+                if let Some(body) = inv_body {
+                    // Reconstruct modifier B value for 𝔽 binding
+                    let modifier_val = {
+                        let tmp_id = store_derived(Derived {
+                            kind: DerivedKind::Md1Block,
+                            f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+                            bl: Some(bl.clone()), sc: Some(psc.clone()),
+                        });
+                        tagu64(tmp_id << 3, MD1_TAG)
+                    };
+                    // Build the forward derived function (operand modifier) for 𝕊 binding
+                    let forward_derived = m_md1d(modifier_val, operand);
+                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, operand])
+                } else {
+                    rbqn_core::error::throw("Modifier block has no inverse header (𝔽_𝕣⁼:)")
+                }
+            }
+            DerivedKind::InvMd2Block => {
+                // 2-modifier block inverse: execute the inverse body of the modifier block.
+                // bl = modifier block, d.f = left operand, d.h = right operand.
+                // NOTE: 𝕊 in the inverse body refers to the FORWARD derived function.
+                let bl = d.bl.as_ref().unwrap().clone();
+                let psc = d.sc.as_ref().unwrap().clone();
+                let f_operand = d.f;
+                let g_operand = d.h;
+                let inv_body = bl.inv_m_body.clone().or_else(|| bl.inv_x_body.clone());
+                if let Some(body) = inv_body {
+                    let modifier_val = {
+                        let tmp_id = store_derived(Derived {
+                            kind: DerivedKind::Md2Block,
+                            f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+                            bl: Some(bl.clone()), sc: Some(psc.clone()),
+                        });
+                        tagu64(tmp_id << 3, MD2_TAG)
+                    };
+                    let forward_derived = m_md2d(modifier_val, f_operand, g_operand);
+                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, f_operand, g_operand])
+                } else {
+                    rbqn_core::error::throw("2-modifier block has no inverse header")
+                }
+            }
             _ => rbqn_core::error::throw("c1: unhandled derived kind"),
         }
     } else if f.is_md() {
@@ -771,6 +959,69 @@ pub fn c2(f: B, w: B, x: B) -> B {
             DerivedKind::LazyInvSwap => {
                 let inv_fn = inv_swap(d.f);
                 c2(inv_fn, w, x)
+            }
+            DerivedKind::InvBlock => {
+                // Block dyadic inverse: prefer inv_w_body (𝕊⁼𝕨:), then inv_x_body.
+                // NOTE: inv_m_body is only for monadic calls (𝕊⁼:); don't use it for dyadic.
+                // NOTE: 𝕊 refers to the FORWARD function (block itself, not the inverse).
+                let bl = d.bl.as_ref().unwrap().clone();
+                let psc = d.sc.as_ref().unwrap().clone();
+                let inv_body = bl.inv_w_body.clone()
+                    .or_else(|| bl.inv_x_body.clone());
+                if let Some(body) = inv_body {
+                    let forward_fn = m_fun_block(bl.clone(), psc.clone());
+                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_fn, x, w])
+                } else {
+                    rbqn_core::error::throw("Block has no dyadic inverse header (𝕊⁼𝕨:)")
+                }
+            }
+            DerivedKind::InvMd1Block => {
+                // 1-modifier block inverse dyadic: execute inverse body with w given.
+                // Prefer inv_w_body (˜⁼ path), then inv_x_body, then inv_m_body.
+                // NOTE: 𝕊 refers to the FORWARD derived (not the inverse).
+                let bl = d.bl.as_ref().unwrap().clone();
+                let psc = d.sc.as_ref().unwrap().clone();
+                let operand = d.f;
+                let inv_body = bl.inv_w_body.clone()
+                    .or_else(|| bl.inv_x_body.clone())
+                    .or_else(|| bl.inv_m_body.clone());
+                if let Some(body) = inv_body {
+                    let modifier_val = {
+                        let tmp_id = store_derived(Derived {
+                            kind: DerivedKind::Md1Block,
+                            f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+                            bl: Some(bl.clone()), sc: Some(psc.clone()),
+                        });
+                        tagu64(tmp_id << 3, MD1_TAG)
+                    };
+                    let forward_derived = m_md1d(modifier_val, operand);
+                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, operand])
+                } else {
+                    rbqn_core::error::throw("Modifier block has no dyadic inverse header")
+                }
+            }
+            DerivedKind::InvMd2Block => {
+                // 2-modifier block inverse dyadic: execute inverse body with w given.
+                // NOTE: 𝕊 refers to the FORWARD derived (not the inverse).
+                let bl = d.bl.as_ref().unwrap().clone();
+                let psc = d.sc.as_ref().unwrap().clone();
+                let f_operand = d.f;
+                let g_operand = d.h;
+                let inv_body = bl.inv_x_body.clone().or_else(|| bl.inv_m_body.clone());
+                if let Some(body) = inv_body {
+                    let modifier_val = {
+                        let tmp_id = store_derived(Derived {
+                            kind: DerivedKind::Md2Block,
+                            f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+                            bl: Some(bl.clone()), sc: Some(psc.clone()),
+                        });
+                        tagu64(tmp_id << 3, MD2_TAG)
+                    };
+                    let forward_derived = m_md2d(modifier_val, f_operand, g_operand);
+                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, f_operand, g_operand])
+                } else {
+                    rbqn_core::error::throw("2-modifier block has no dyadic inverse header")
+                }
             }
             _ => rbqn_core::error::throw("c2: unhandled derived kind"),
         }
