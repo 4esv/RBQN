@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 3 of 6 (Language Completeness) -- COMPLETE
-Plan: 4 of 4 in current phase (03-04 complete)
-Status: Phase 3 complete — ready for Phase 4
-Last activity: 2026-02-24 — Completed plan 03-04 (modifier gap closure: sys 203 c2, dyadic +⁼, functional-k Under)
+Plan: 5 of 5 in current phase (03-05 complete)
+Status: Phase 3 complete — all plans done, ready for Phase 4
+Last activity: 2026-02-24 — Completed plan 03-05 (prim edge case fixes: 75.5%→81.2%, overall 81.1%→84.7%)
 
-Progress: [███████░░░] 60%
+Progress: [████████░░] 70%
 
 ## Performance Metrics
 
@@ -29,11 +29,11 @@ Progress: [███████░░░] 60%
 |-------|-------|-------|----------|
 | 01 | 3 | 38min | 13min |
 | 02 | 3 | 20min | 7min |
-| 03 | 3 | ~37min | ~12min |
+| 03 | 5 | ~72min | ~14min |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (8min), 02-02 (4min), 02-03 (8min), 03-02 (~15min), 03-03 (~35min)
-- Trend: Steady (averaging ~11min)
+- Last 5 plans: 03-01 (~15min), 03-02 (~15min), 03-03 (~35min), 03-04 (~12min), 03-05 (~35min)
+- Trend: Steady (averaging ~14min)
 
 *Updated after each plan completion*
 
@@ -65,6 +65,9 @@ Progress: [███████░░░] 60%
 - [Phase 03]: native_inverse_reg removes + shortcut so BQN runtime handles dyadic +⁼ char arithmetic: 3+⁼'d'='a' via runtime -˜ inverse
 - [Phase 03]: sys 203 c2 dispatch: w√⁼x = x^w implemented via pow_c2(x, xa, w, wa) with swapped args
 - [Phase 03]: Functional-k Under: detect left_op.is_fun() in try_structural_under, evaluate c1(left_op,x) to get numeric k before take/drop
+- [03-05]: ⊏ scalar select from rank-1 returns rank-0 cell (not plain scalar) — enables (<'c')≡2⊏"abc"
+- [03-05]: ⍉ diagonal (duplicate perm values) is valid BQN; only gaps in new axes are errors
+- [03-05]: ⍋/⍒ bins validate x.trailing_shape == w.cell_shape (not x.cell_shape == w.cell_shape)
 
 ### Pending Todos
 
@@ -80,5 +83,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 03-04-PLAN.md (modifier gap closure: sys 203 c2, dyadic +⁼ char fallthrough, functional-k Under)
+Stopped at: Completed 03-05-PLAN.md (prim edge case fixes — prim 81.2%, overall 84.7% excl. namespace)
 Resume file: None

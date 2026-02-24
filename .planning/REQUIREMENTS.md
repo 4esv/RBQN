@@ -25,7 +25,7 @@
 - [ ] **PRIM-01**: Pervasive extension (deep array arithmetic on nested arrays)
 - [ ] **PRIM-02**: Fill element propagation through all structural operations (↑, «, », >, ⥊↑)
 - [ ] **PRIM-03**: Identity elements for fold on empty arrays
-- [ ] **PRIM-04**: All edge cases in official test suite (empty arrays, rank-0, high-rank)
+- [x] **PRIM-04**: All edge cases in official test suite (empty arrays, rank-0, high-rank)
 
 ### SYS: System Functions (~50 total)
 
@@ -147,7 +147,7 @@
 | PRIM-01 | Phase 3 | Pending |
 | PRIM-02 | Phase 3 | Pending |
 | PRIM-03 | Phase 3 | Pending |
-| PRIM-04 | Phase 3 | Pending |
+| PRIM-04 | Phase 3 | Complete |
 | SYS-06 | Phase 3 | Complete |
 | SYS-07 | Phase 3 | Complete |
 | SYS-08 | Phase 3 | Complete |

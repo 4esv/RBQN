@@ -10,7 +10,7 @@ RBQN has the architecture in place: five crates, NaN-boxed values, a working VM,
 
 - [x] **Phase 1: Runtime Bypass and Working Pipeline** - Verify Option B bypass, get compiler executing arbitrary BQN, REPL working (completed 2026-02-24)
 - [x] **Phase 2: Test Baseline** - Wire official test harness, establish pass/fail count, pass simple/literal/syntax/bytecode (completed 2026-02-24)
-- [ ] **Phase 3: Language Completeness** - All missing modifiers, primitive edge cases, essential system functions
+- [x] **Phase 3: Language Completeness** - All missing modifiers, primitive edge cases, essential system functions (completed 2026-02-24)
 - [ ] **Phase 4: Full Test Suite Green** - Drive all 13 official test files to 0 failures
 - [ ] **Phase 5: GPU Integration** - Wire rbqn-gpu into primitive dispatch with precision guards and benchmarks
 - [ ] **Phase 6: Self-Hosting** - Compile own bytecode, embed in binary, ship via cargo install
@@ -62,14 +62,14 @@ Plans:
   3. `f⎉1` applies f to rank-1 cells; `f⚇2` applies f at depth 2 (Rank and Depth correct)
   4. Fill propagation: `5↑1‿2‿3` pads with correct fill; `«` and `»` shift with correct fill element
   5. `•FChars "f.bqn"` reads a file; `•math.Sin π÷2` returns `1`; `•Out`, `•SH`, `•Import` all work
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 - [x] 03-01-PLAN.md — Fix modifier semantics (Undo, Under, Rank, Depth) and primitive completeness (fill, identity, pervasive)
 - [x] 03-02-PLAN.md — File I/O system functions, Import with caching, introspection, utility functions
 - [x] 03-03-PLAN.md — Math/rand/platform namespaces, time functions, shell execution, •_while_ modifier
-- [ ] 03-04-PLAN.md — [gap closure] Fix Undo gaps (sys 203 c2, dyadic +⁼) and Under functional-k patterns (MOD-01, MOD-02)
-- [ ] 03-05-PLAN.md — [gap closure] Fix prim structural edge cases to push pass rate above 80% (PRIM-04)
+- [x] 03-04-PLAN.md — [gap closure] Fix Undo gaps (sys 203 c2, dyadic +⁼) and Under functional-k patterns (MOD-01, MOD-02)
+- [x] 03-05-PLAN.md — [gap closure] Fix prim structural edge cases — prim 81.2% (458/564), overall 84.7% excl. namespace (PRIM-04)
 
 ### Phase 4: Full Test Suite Green
 **Goal**: All 13 official BQN test files pass with 0 failures
