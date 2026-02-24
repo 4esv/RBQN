@@ -13,17 +13,33 @@ pub fn compile_all(
     all_blocks: &[B],
     all_bodies: &[B],
     indices: B,
-    _token_info: B,
+    token_info: B,
     src: B,
     fullpath: B,
     sc: Option<&Scope>,
     ns_result: i32,
 ) -> Arc<Block> {
+    // Extract nameList from tokenInfo (CBQN: tokenInfo[2][0])
+    let name_list = if token_info.is_arr() {
+        if let Some(ti_arr) = get_arr(token_info) {
+            if ti_arr.ia() > 2 {
+                let t = ti_arr.get(2).unwrap_or(B::SENTINEL);
+                if t.is_arr() {
+                    if let Some(t_arr) = get_arr(t) {
+                        if t_arr.ia() > 0 {
+                            t_arr.get(0).unwrap_or(B::SENTINEL)
+                        } else { B::SENTINEL }
+                    } else { B::SENTINEL }
+                } else { B::SENTINEL }
+            } else { B::SENTINEL }
+        } else { B::SENTINEL }
+    } else { B::SENTINEL };
+
     let comp = Arc::new(Comp {
         src,
         fullpath,
         indices,
-        name_list: B::SENTINEL,
+        name_list,
         objs,
         kind: CompKind::Unknown,
         block_am: 0,
@@ -365,9 +381,57 @@ fn compile_block(
                         }
                     }
                     Some(Op::FLDO) => {
-                        // TODO: FLDG with str2gid when nameList available
-                        new_bc.push(Op::FLDO as i32);
-                        new_bc.push(bc[c + 1] as i32);
+                        // Convert FLDO to FLDG by resolving name via nameList + str2gid
+                        // (matches CBQN: case FLDO: FLDG, str2gid(IGetU(nameList, c[1])))
+                        let raw_idx = bc[c + 1] as usize;
+                        let name_list = comp.name_list;
+                        if name_list.is_arr() {
+                            if let Some(nl_arr) = get_arr(name_list) {
+                                if raw_idx < nl_arr.ia() {
+                                    let name_b = nl_arr.get(raw_idx).unwrap_or(B::SENTINEL);
+                                    let name = crate::derive::b_to_string_pub(name_b);
+                                    let gid = crate::namespace::str2gid(&name);
+                                    new_bc.push(Op::FLDG as i32);
+                                    new_bc.push(gid);
+                                } else {
+                                    // Fallback: pass through raw index
+                                    new_bc.push(Op::FLDO as i32);
+                                    new_bc.push(bc[c + 1] as i32);
+                                }
+                            } else {
+                                new_bc.push(Op::FLDO as i32);
+                                new_bc.push(bc[c + 1] as i32);
+                            }
+                        } else {
+                            // No nameList available, pass through raw index
+                            new_bc.push(Op::FLDO as i32);
+                            new_bc.push(bc[c + 1] as i32);
+                        }
+                    }
+                    Some(Op::ALIM) => {
+                        // Convert ALIM name index via nameList + str2gid (same as FLDO)
+                        let raw_idx = bc[c + 1] as usize;
+                        let name_list = comp.name_list;
+                        if name_list.is_arr() {
+                            if let Some(nl_arr) = get_arr(name_list) {
+                                if raw_idx < nl_arr.ia() {
+                                    let name_b = nl_arr.get(raw_idx).unwrap_or(B::SENTINEL);
+                                    let name = crate::derive::b_to_string_pub(name_b);
+                                    let gid = crate::namespace::str2gid(&name);
+                                    new_bc.push(Op::ALIM as i32);
+                                    new_bc.push(gid);
+                                } else {
+                                    new_bc.push(Op::ALIM as i32);
+                                    new_bc.push(bc[c + 1] as i32);
+                                }
+                            } else {
+                                new_bc.push(Op::ALIM as i32);
+                                new_bc.push(bc[c + 1] as i32);
+                            }
+                        } else {
+                            new_bc.push(Op::ALIM as i32);
+                            new_bc.push(bc[c + 1] as i32);
+                        }
                     }
                     Some(op_e) => {
                         // Default: copy verbatim
@@ -401,7 +465,7 @@ fn compile_block(
                         Op::SETH | Op::PRED => {
                             h += crate::bytecode::stack_diff(op_e);
                         }
-                        Op::FLDO => {
+                        Op::FLDO | Op::ALIM => {
                             h += crate::bytecode::stack_diff(op_e);
                         }
                         _ => {} // handled in the default arm above

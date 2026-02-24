@@ -975,6 +975,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             }
             crate::vm::b_vec_to_arr(results)
         }
+        // NOTE: •file.Lines
+        50 => file_lines_c1(x),
+        // NOTE: •file.List
+        51 => file_list_c1(x),
         201 => { // Internal: /⁼ (inverse of indices)
             let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());
             match r {
@@ -1013,6 +1017,8 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         23 => { // •_groupOrd dyadic: w is lengths, x is indices
             dispatch_sys_group_ord_c2(w, w_arr.as_ref(), x, x_arr.as_ref())
         }
+        // NOTE: •file.Lines dyadic
+        50 => file_lines_c2(w, x),
         100 => { // •BQN placeholder — just return SENTINEL for now
             B::SENTINEL
         }
@@ -1204,6 +1210,8 @@ fn sys_name_to_b(name: &str) -> B {
         "name"      => dispatch_sys_env(39),
         "wdpath"    => dispatch_sys_env(40),
         "state"     => dispatch_sys_env(41),
+        // NOTE: •file namespace object (Lines, List)
+        "file"      => make_file_namespace(),
         _ => B::SENTINEL,
     }
 }
@@ -1234,6 +1242,88 @@ pub fn dispatch_sys_env(idx: u32) -> B {
         41 => B::SENTINEL, // •state placeholder
         _ => B::SENTINEL,
     }
+}
+
+// --- •file namespace ---
+
+/// Cached •file namespace object. Built once on first access.
+static FILE_NS: std::sync::LazyLock<Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Build the •file namespace with Lines and List fields.
+fn make_file_namespace() -> B {
+    let mut guard = FILE_NS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ns_b) = *guard {
+        return ns_b;
+    }
+
+    use crate::namespace::{str2gid, NSDesc, NS};
+
+    let lines_gid = str2gid("lines");
+    let list_gid = str2gid("list");
+
+    let desc = Arc::new(NSDesc {
+        var_am: 2,
+        exp_gids: vec![lines_gid, list_gid],
+    });
+
+    // Create a minimal Body for the Scope constructor
+    let body = Arc::new(crate::block::Body::new(2, 0, 0, 0));
+
+    // Build scope with the two system function values
+    let sc = Arc::new(crate::scope::Scope::new(
+        body,
+        None,
+        2,
+        &[m_sys_fn(50), m_sys_fn(51)],
+    ));
+
+    let ns = NS { desc, sc };
+    let ns_b = crate::namespace::store_ns(ns);
+    *guard = Some(ns_b);
+    ns_b
+}
+
+/// •file.Lines: read a file and return an array of BQN strings (one per line).
+fn file_lines_c1(x: B) -> B {
+    let path = b_to_string(x);
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•file.Lines: cannot read {path}: {e}"))
+    });
+    let lines: Vec<B> = content.lines().map(|line| {
+        let chars: Vec<u32> = line.chars().map(|c| c as u32).collect();
+        crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+    }).collect();
+    crate::vm::b_vec_to_arr(lines)
+}
+
+/// •file.Lines dyadic: w •file.Lines x — read file x with encoding/options w.
+/// For now just ignores w and reads as UTF-8.
+fn file_lines_c2(_w: B, x: B) -> B {
+    file_lines_c1(x)
+}
+
+/// •file.List: list directory entries and return a sorted array of filename strings.
+fn file_list_c1(x: B) -> B {
+    let path = b_to_string(x);
+    let entries = std::fs::read_dir(&path).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("•file.List: cannot list {path}: {e}"))
+    });
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    let bqn_names: Vec<B> = names.iter().map(|name| {
+        let chars: Vec<u32> = name.chars().map(|c| c as u32).collect();
+        crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+    }).collect();
+    crate::vm::b_vec_to_arr(bqn_names)
+}
+
+/// Public wrapper for b_to_string, used by compiler.rs for nameList resolution.
+pub fn b_to_string_pub(x: B) -> String {
+    b_to_string(x)
 }
 
 /// Convert a B value (character array) to a Rust String.
