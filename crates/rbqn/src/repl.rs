@@ -2,6 +2,7 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
 use crate::bootstrap::Runtime;
+use crate::ReplState;
 
 pub fn run_repl(rt: &Runtime, silent: bool) {
     let mut rl = match DefaultEditor::new() {
@@ -18,6 +19,8 @@ pub fn run_repl(rt: &Runtime, silent: bool) {
         let _ = rl.load_history(path);
     }
 
+    let mut state = ReplState::new();
+
     loop {
         match rl.readline("   ") {
             Ok(line) => {
@@ -25,7 +28,7 @@ pub fn run_repl(rt: &Runtime, silent: bool) {
                     continue;
                 }
                 let _ = rl.add_history_entry(&line);
-                eval_line(rt, &line, silent);
+                eval_line(rt, &line, silent, &mut state);
             }
             Err(ReadlineError::Interrupted) => {
                 continue;
@@ -46,7 +49,7 @@ pub fn run_repl(rt: &Runtime, silent: bool) {
     }
 }
 
-fn eval_line(rt: &Runtime, line: &str, silent: bool) {
+fn eval_line(rt: &Runtime, line: &str, silent: bool, state: &mut ReplState) {
     // Handle REPL commands
     if line.starts_with(')') {
         let cmd = line[1..].trim();
@@ -57,7 +60,7 @@ fn eval_line(rt: &Runtime, line: &str, silent: bool) {
         return;
     }
 
-    match crate::exec_string(rt, line) {
+    match crate::exec_repl_line(rt, line, state) {
         Ok(result) => {
             if !silent {
                 let formatted = crate::format_result(rt, &result);

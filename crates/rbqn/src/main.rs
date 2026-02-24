@@ -322,6 +322,246 @@ fn exec_string_inner(
     Ok(eval_fun_block(block, root_scope))
 }
 
+/// REPL state: accumulated variable names and values across REPL lines.
+pub(crate) struct ReplState {
+    pub var_names: Vec<String>,
+    pub var_values: Vec<B>,
+}
+
+impl ReplState {
+    pub fn new() -> Self {
+        ReplState {
+            var_names: Vec::new(),
+            var_values: Vec::new(),
+        }
+    }
+}
+
+/// Execute a REPL line with accumulated variable state.
+/// Returns the result value and updates the ReplState with any new/modified variables.
+pub(crate) fn exec_repl_line(
+    rt: &bootstrap::Runtime,
+    code: &str,
+    state: &mut ReplState,
+) -> rbqn_core::Result<B> {
+    if rt.compiler.q_n() || rt.compiler.0 == B::SENTINEL.0 {
+        return Err(BqnError::Nyi(
+            "compiler not available (bootstrap failed?)".into(),
+        ));
+    }
+
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        exec_repl_line_inner(rt, code, state)
+    })) {
+        Ok(result) => result,
+        Err(panic) => {
+            let msg = if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "unknown error".into()
+            };
+            let msg = msg.strip_prefix("Domain error: ")
+                .or_else(|| msg.strip_prefix("Not yet implemented: "))
+                .unwrap_or(&msg);
+            Err(BqnError::Domain(msg.to_string()))
+        }
+    }
+}
+
+/// Build a BQN varNames value (list of strings) from Rust strings.
+fn build_var_names_b(names: &[String]) -> B {
+    if names.is_empty() {
+        return tag_arr(BqnArr::empty_harr());
+    }
+    let name_arrs: Vec<B> = names.iter().map(|name| {
+        let chars: Vec<u32> = name.chars().map(|c| c as u32).collect();
+        tag_arr(BqnArr::new_vec_c32(chars))
+    }).collect();
+    tag_arr(BqnArr::from_b_vec(name_arrs))
+}
+
+/// Extract the nameList from compiler tokenInfo: tokenInfo[2][0].
+fn extract_name_list(token_info_b: B) -> Option<Vec<String>> {
+    let ti_arr = get_arr(token_info_b)?;
+    let ti2 = ti_arr.get(2).ok()?;
+    let ti2_arr = get_arr(ti2)?;
+    let name_list_b = ti2_arr.get(0).ok()?;
+    let nl_arr = get_arr(name_list_b)?;
+
+    let mut names = Vec::with_capacity(nl_arr.ia());
+    for i in 0..nl_arr.ia() {
+        let name_b = nl_arr.get(i).ok()?;
+        if let Some(name_arr) = get_arr(name_b) {
+            let s: String = (0..name_arr.ia())
+                .filter_map(|j| {
+                    name_arr.get(j).ok().and_then(|b| {
+                        if b.is_c32() {
+                            b.o2c().ok().and_then(char::from_u32)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            names.push(s);
+        } else {
+            names.push(String::new());
+        }
+    }
+    Some(names)
+}
+
+/// Extract varIDs from body[0]'s index 2.
+fn extract_var_ids(bodies_b: B) -> Option<Vec<usize>> {
+    let bodies_arr = get_arr(bodies_b)?;
+    let body0 = bodies_arr.get(0).ok()?;
+    let body0_arr = get_arr(body0)?;
+    if body0_arr.ia() < 3 { return None; }
+    let var_ids_b = body0_arr.get(2).ok()?;
+    let var_ids_arr = get_arr(var_ids_b)?;
+    let mut ids = Vec::with_capacity(var_ids_arr.ia());
+    for i in 0..var_ids_arr.ia() {
+        let v = var_ids_arr.get(i).ok()?;
+        ids.push(v.o2f() as usize);
+    }
+    Some(ids)
+}
+
+fn exec_repl_line_inner(
+    rt: &bootstrap::Runtime,
+    code: &str,
+    state: &mut ReplState,
+) -> rbqn_core::Result<B> {
+    // Build compiler arguments with accumulated variable names
+    let rt_arr = tag_arr(BqnArr::from_b_vec(rt.runtime.clone()));
+    let sys_fn = rbqn_vm::derive::m_sys_fn(100);
+    let var_names_b = build_var_names_b(&state.var_names);
+    // NOTE: CBQN uses depth -1 for REPL variables (loose mode).
+    // The BQN compiler recognizes depth -1 as "existing REPL scope" variables.
+    let var_depths: Vec<f64> = vec![-1.0; state.var_names.len()];
+    let var_depths_b = tag_arr(BqnArr::new_vec_f64(var_depths));
+    let comp_args = tag_arr(BqnArr::from_b_vec(vec![rt_arr, sys_fn, var_names_b, var_depths_b]));
+
+    let src_chars: Vec<u32> = code.chars().map(|c| c as u32).collect();
+    let src_b = tag_arr(BqnArr::new_vec_c32(src_chars));
+
+    // Call compiler: compiler(args, source) -> ⟨bc, objs, blocks, bodies, indices, tokenInfo⟩
+    let comp_result = c2(rt.compiler, comp_args, src_b);
+
+    let comp_arr = get_arr(comp_result)
+        .ok_or_else(|| BqnError::Domain("compiler did not return an array".into()))?;
+
+    let bc_b = comp_arr.get(0).map_err(|e| BqnError::Domain(e.to_string()))?;
+    let objs_b = comp_arr.get(1).map_err(|e| BqnError::Domain(e.to_string()))?;
+    let blocks_b = comp_arr.get(2).map_err(|e| BqnError::Domain(e.to_string()))?;
+    let bodies_b = comp_arr.get(3).map_err(|e| BqnError::Domain(e.to_string()))?;
+
+    let indices_b = comp_arr.get(4).unwrap_or(B::SENTINEL);
+    let token_info_b = comp_arr.get(5).unwrap_or(B::SENTINEL);
+
+    let bc_arr = get_arr(bc_b)
+        .ok_or_else(|| BqnError::Domain("compiler bc is not an array".into()))?;
+    let bc: Vec<i32> = bc_arr.i32_iter().map_err(|e| BqnError::Domain(e.to_string()))?;
+
+    let objs: Vec<B> = if let Some(objs_arr) = get_arr(objs_b) {
+        (0..objs_arr.ia()).map(|i| objs_arr.get(i).unwrap_or(B::SENTINEL)).collect()
+    } else {
+        vec![]
+    };
+    let blocks: Vec<B> = if let Some(blocks_arr) = get_arr(blocks_b) {
+        (0..blocks_arr.ia()).map(|i| blocks_arr.get(i).unwrap_or(B::SENTINEL)).collect()
+    } else {
+        vec![]
+    };
+    let bodies: Vec<B> = if let Some(bodies_arr) = get_arr(bodies_b) {
+        (0..bodies_arr.ia()).map(|i| bodies_arr.get(i).unwrap_or(B::SENTINEL)).collect()
+    } else {
+        vec![]
+    };
+
+    // Extract nameList and varIDs before compile_all
+    let name_list = extract_name_list(token_info_b);
+    let var_ids = extract_var_ids(bodies_b);
+    let prev_var_count = state.var_names.len();
+
+    let src_chars2: Vec<u32> = code.chars().map(|c| c as u32).collect();
+    let src_b2 = tag_arr(BqnArr::new_vec_c32(src_chars2));
+
+    // Compile without passing a scope — the compiler already knows about
+    // existing variables via varNames. All variables (old + new) are assigned
+    // positions at depth 0 in the body's scope.
+    let block = compile_all(
+        &bc,
+        objs,
+        &blocks,
+        &bodies,
+        indices_b,
+        token_info_b,
+        src_b2,
+        B::SENTINEL,
+        None,
+        0,
+    );
+
+    let body = block.bodies[0].clone();
+    let var_am = body.var_am;
+
+    // Pre-populate scope with accumulated variable values.
+    // Positions 0..prev_var_count-1 get old values (compiler preserves positions
+    // for names it received in varNames). New variables get NO_VAR.
+    let mut init_vars = Vec::with_capacity(var_am as usize);
+    for i in 0..var_am as usize {
+        if i < state.var_values.len() {
+            init_vars.push(state.var_values[i]);
+        } else {
+            init_vars.push(B::NO_VAR);
+        }
+    }
+
+    // Execute directly with eval_bc so we retain scope access afterwards.
+    // The root block is ty=0, imm=true. exec_block would create a child scope
+    // and we'd lose the variable values. Instead we call eval_bc with our scope.
+    let exec_scope = Arc::new(Scope::new(body.clone(), None, var_am, &init_vars));
+    let result = rbqn_vm::vm::eval_bc(&body, exec_scope.clone(), &block);
+
+    // Read back variable values from exec_scope
+    let mut new_values = Vec::with_capacity(var_am as usize);
+    {
+        let vars = exec_scope.vars.lock().unwrap_or_else(|e| e.into_inner());
+        for i in 0..var_am as usize {
+            if i < vars.len() {
+                new_values.push(vars[i]);
+            }
+        }
+    }
+
+    // Build updated variable names list.
+    // Positions 0..prev_var_count-1 keep their names.
+    // New positions get names from nameList + varIDs.
+    let mut new_names = state.var_names.clone();
+    if let (Some(nl), Some(ids)) = (&name_list, &var_ids) {
+        for i in prev_var_count..var_am as usize {
+            if i < ids.len() && ids[i] < nl.len() {
+                new_names.push(nl[ids[i]].clone());
+            } else {
+                new_names.push(format!("_v{}", i));
+            }
+        }
+    } else {
+        // Fallback: generate placeholder names for new variables
+        for i in prev_var_count..var_am as usize {
+            new_names.push(format!("_v{}", i));
+        }
+    }
+
+    state.var_names = new_names;
+    state.var_values = new_values;
+
+    Ok(result)
+}
+
 /// Raw output for -o: write characters directly, error on non-characters
 fn output_raw(val: &B) -> rbqn_core::Result<()> {
     use std::io::Write;

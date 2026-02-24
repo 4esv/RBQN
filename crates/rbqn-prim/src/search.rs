@@ -12,7 +12,7 @@ pub fn self_indexOf_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let v = arr.get(i)?;
         let mut found = i;
         for j in 0..i {
-            if v.atom_equal(arr.get(j)?) {
+            if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
                 found = j;
                 break;
             }
@@ -38,7 +38,7 @@ pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
     if x.is_atom() {
         let mut found = wia as i32;
         for j in 0..wia {
-            if x.atom_equal(warr.get(j)?) {
+            if rbqn_core::compare::deep_equal(x, warr.get(j)?) {
                 found = j as i32;
                 break;
             }
@@ -53,7 +53,7 @@ pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
         let xv = xarr.get(i)?;
         let mut found = wia as i32;
         for j in 0..wia {
-            if xv.atom_equal(warr.get(j)?) {
+            if rbqn_core::compare::deep_equal(xv, warr.get(j)?) {
                 found = j as i32;
                 break;
             }
@@ -94,7 +94,7 @@ pub fn self_count_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let v = arr.get(i)?;
         let mut count = 0i32;
         for j in 0..i {
-            if v.atom_equal(arr.get(j)?) {
+            if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
                 count += 1;
             }
         }
@@ -115,7 +115,7 @@ pub fn count_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         let xv = xarr.get(i)?;
         let mut found = wia as i32;
         for j in 0..wia {
-            if !used[j] && xv.atom_equal(warr.get(j)?) {
+            if !used[j] && rbqn_core::compare::deep_equal(xv, warr.get(j)?) {
                 found = j as i32;
                 used[j] = true;
                 break;
@@ -137,7 +137,7 @@ pub fn mark_firsts_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let v = arr.get(i)?;
         let mut is_first = true;
         for j in 0..i {
-            if v.atom_equal(arr.get(j)?) {
+            if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
                 is_first = false;
                 break;
             }
@@ -158,7 +158,7 @@ pub fn member_of_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> R
         let wv = warr.get(i)?;
         let mut found = false;
         for j in 0..xia {
-            if wv.atom_equal(xarr.get(j)?) {
+            if rbqn_core::compare::deep_equal(wv, xarr.get(j)?) {
                 found = true;
                 break;
             }
@@ -179,7 +179,7 @@ pub fn deduplicate_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let v = arr.get(i)?;
         let mut is_dup = false;
         for j in 0..i {
-            if v.atom_equal(arr.get(j)?) {
+            if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
                 is_dup = true;
                 break;
             }
@@ -225,7 +225,7 @@ pub fn find_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result
         for j in 0..wia {
             let wv = warr.get(j)?;
             let xv = xarr.get(i + j)?;
-            if !wv.atom_equal(xv) {
+            if !rbqn_core::compare::deep_equal(wv, xv) {
                 matches = false;
                 break;
             }
