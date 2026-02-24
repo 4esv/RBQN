@@ -58,29 +58,44 @@ pub fn shape_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
 // ≡ monad: depth
 pub fn depth_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
-    fn compute_depth(x: B, xa: Option<&BqnArr>) -> i32 {
-        if x.is_atom() && xa.is_none() {
-            return 0;
+    fn compute_depth_b(x: B) -> i32 {
+        // Scalar atom (number or char) has depth 0
+        if x.is_f64() || x.is_c32() { return 0; }
+        // Array (including boxed scalar)
+        if let Some(arr) = get_arr(x) {
+            return compute_depth_arr(&arr);
         }
-        match xa {
-            Some(arr) => {
-                if arr.el_type() != ElType::B {
-                    return 1;
-                }
-                let mut max_d = 0i32;
-                let ia = arr.ia();
-                for i in 0..ia {
-                    if let Ok(v) = arr.get(i) {
-                        let d = compute_depth(v, None);
-                        max_d = max_d.max(d);
-                    }
-                }
-                max_d + 1
-            }
-            None => 0,
-        }
+        // Non-callable non-array (function, modifier): treat as depth 0
+        0
     }
-    Ok(PrimResult::Scalar(B::m_i32(compute_depth(x, xa))))
+
+    fn compute_depth_arr(arr: &BqnArr) -> i32 {
+        // Non-boxed array: depth = 1 (regardless of rank/content)
+        if arr.el_type() != ElType::B {
+            return 1;
+        }
+        // Boxed array: depth = 1 + max(depth of elements)
+        let ia = arr.ia();
+        if ia == 0 { return 1; }
+        let mut max_d = 0i32;
+        for i in 0..ia {
+            if let Ok(v) = arr.get(i) {
+                let d = compute_depth_b(v);
+                max_d = max_d.max(d);
+            }
+        }
+        max_d + 1
+    }
+
+    let depth = if x.is_f64() || x.is_c32() {
+        0
+    } else {
+        match xa {
+            Some(arr) => compute_depth_arr(arr),
+            None => compute_depth_b(x),
+        }
+    };
+    Ok(PrimResult::Scalar(B::m_i32(depth)))
 }
 
 // < monad: enclose

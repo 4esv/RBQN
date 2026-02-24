@@ -547,10 +547,100 @@ pub fn stile_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
 
 // ¬ dyad: span (1+w-x)
 pub fn not_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // NOTE: BQN dyadic ¬ is w¬x = 1+w-x. With char args:
+    // char¬char → num: 1 + (w_codepoint - x_codepoint)
+    // char¬num → char: char shifted by (1-x), i.e. codepoint + 1 - x
+    let wk = char_num_class(w, wa);
+    let xk = char_num_class(x, xa);
+
+    if wk == 'c' && xk == 'c' {
+        // char¬char = 1 + (w_cp - x_cp) → num
+        let sub = sub_c2(w, wa, x, xa)?;
+        return match sub {
+            PrimResult::Scalar(b) => Ok(PrimResult::Scalar(B::m_f64(b.o2f() + 1.0))),
+            PrimResult::Array(arr) => {
+                let ia = arr.ia();
+                let mut vals = Vec::with_capacity(ia);
+                for i in 0..ia {
+                    vals.push(arr.get(i)?.o2f() + 1.0);
+                }
+                let mut out = BqnArr::new_vec_f64(vals);
+                out.shape = arr.shape.clone();
+                Ok(PrimResult::Array(array::squeeze_num(out)))
+            }
+        };
+    }
+
+    if wk == 'c' && xk == 'n' {
+        // char¬num: w_cp + 1 - x = char shifted by (1-x)
+        // = char_add(w, 1.0 - x)
+        return not_char_num(w, wa, x, xa);
+    }
+
     if w.is_f64() && x.is_f64() {
         return Ok(PrimResult::Scalar(B::m_f64(1.0 + w.o2f() - x.o2f())));
     }
     pervasive_dyad(w, wa, x, xa, |a, b| 1.0 + a - b, "¬")
+}
+
+/// Handle char¬num: result is char shifted by (1 - x_num).
+fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    match (wa, xa) {
+        (None, None) => {
+            let c = w.o2c()?;
+            let n = x.to_f64()?;
+            let r = c as i64 + 1 - n as i64;
+            if r < 0 || r > value::CHR_MAX as i64 {
+                return Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()));
+            }
+            Ok(PrimResult::Scalar(B::m_c32(r as u32)))
+        }
+        (None, Some(xa_arr)) => {
+            let c = w.o2c()? as i64;
+            let nums = xa_arr.f64_iter()?;
+            let result: std::result::Result<Vec<u32>, _> = nums.iter().map(|&n| {
+                let r = c + 1 - n as i64;
+                if r < 0 || r > value::CHR_MAX as i64 {
+                    Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()))
+                } else { Ok(r as u32) }
+            }).collect();
+            let mut out = BqnArr::new_vec_c32(result?);
+            out.shape = xa_arr.shape.clone();
+            Ok(PrimResult::Array(out))
+        }
+        (Some(wa_arr), None) => {
+            let n = x.to_f64()? as i64;
+            let chars = wa_arr.c32_iter()?;
+            let result: std::result::Result<Vec<u32>, _> = chars.iter().map(|&c| {
+                let r = c as i64 + 1 - n;
+                if r < 0 || r > value::CHR_MAX as i64 {
+                    Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()))
+                } else { Ok(r as u32) }
+            }).collect();
+            let mut out = BqnArr::new_vec_c32(result?);
+            out.shape = wa_arr.shape.clone();
+            Ok(PrimResult::Array(out))
+        }
+        (Some(wa_arr), Some(xa_arr)) => {
+            let chars = wa_arr.c32_iter()?;
+            let nums = xa_arr.f64_iter()?;
+            if wa_arr.shape == xa_arr.shape {
+                let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
+                    let r = c as i64 + 1 - n as i64;
+                    if r < 0 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()))
+                    } else { Ok(r as u32) }
+                }).collect();
+                let mut out = BqnArr::new_vec_c32(result?);
+                out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else {
+                Err(BqnError::Shape(format!(
+                    "𝕨¬𝕩: Shape mismatch ({:?} vs {:?})", wa_arr.shape, xa_arr.shape
+                )))
+            }
+        }
+    }
 }
 
 // ∧ dyad: and (w×x)
