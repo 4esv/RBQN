@@ -288,7 +288,14 @@ fn parse_objects(src: &str) -> (Vec<(usize, ObjEntry)>, usize) {
 /// Parse a C char literal from m_c32(U'X'), handling escape sequences
 fn parse_c32_char(s: &str) -> u32 {
     // Format: U'X' or U'\0' or U'\n' etc.
-    let inner = s.trim().trim_start_matches("U'").trim_end_matches('\'');
+    // NOTE: trim_end_matches('\'') greedily strips ALL trailing quotes, which
+    // corrupts U'\'' (single-quote literal). Instead, strip exactly one trailing
+    // quote if present, then the U' prefix.
+    let inner = s.trim();
+    // Strip "U'" prefix and "'" suffix (exactly one of each)
+    let inner = inner.strip_prefix("U'")
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(inner);
     if inner.starts_with('\\') {
         match inner {
             "\\0" => 0,
@@ -297,7 +304,11 @@ fn parse_c32_char(s: &str) -> u32 {
             "\\r" => '\r' as u32,
             "\\\\" => '\\' as u32,
             "\\'" => '\'' as u32,
-            _ => 0,
+            "\\\"" => '"' as u32,
+            _ => {
+                // Fallback: try to parse as numeric escape or return 0
+                0
+            }
         }
     } else {
         inner.chars().next().map(|c| c as u32).unwrap_or(0)
