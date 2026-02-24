@@ -1401,8 +1401,10 @@ fn sys_name_to_b(name: &str) -> B {
         "delay"     => m_sys_fn(142),
         // NOTE: shell execution
         "sh"        => m_sys_fn(145),
-        // NOTE: •_while_ 2-modifier
-        "_while_"   => m_native_md2(crate::modifiers::MD2_WHILE),
+        // NOTE: •_while_ 2-modifier (CBQN compiler strips underscores → "while")
+        "_while_" | "while" => m_native_md2(crate::modifiers::MD2_WHILE),
+        // NOTE: •_fillBy_ 2-modifier (CBQN compiler strips underscores → "fillby")
+        "_fillBy_" | "_fillby_" | "fillby" => m_native_md2(crate::modifiers::MD2_FILL_BY),
         _ => B::SENTINEL,
     }
 }
