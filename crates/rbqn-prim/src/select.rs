@@ -114,6 +114,14 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         return Err(BqnError::Rank("𝕨⊏𝕩: 𝕨 must be a number or rank≥1 array".into()));
     }
 
+    // NOTE: rank>1 boxed 𝕨 is not a standard ⊏ pattern (would need nested cell structure)
+    if warr.rank() > 1 && warr.el_type() == ElType::B {
+        return Err(BqnError::Rank(format!(
+            "𝕨⊏𝕩: rank-{} boxed 𝕨 not supported for ⊏",
+            warr.rank()
+        )));
+    }
+
     // BQN select with non-numeric indices: recurse per-element for boxed arrays
     if warr.el_type() == ElType::B {
         let wia = warr.ia();
@@ -132,6 +140,10 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
             } else if idx_b.is_arr() {
                 let sub_arr = get_arr(idx_b)
                     .ok_or_else(|| BqnError::Type("𝕨⊏𝕩: index element not found".into()))?;
+                // NOTE: Enclosed (rank-0) array as index is not valid for ⊏
+                if sub_arr.rank() == 0 {
+                    return Err(BqnError::Rank("𝕨⊏𝕩: index element must not be rank-0 (enclosed)".into()));
+                }
                 let sub_indices = sub_arr.i32_iter()?;
                 for &si in &sub_indices {
                     let idx = resolve_index(si, first_dim)?;
