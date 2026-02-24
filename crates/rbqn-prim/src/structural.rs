@@ -666,25 +666,35 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
     if arr.rank() <= 1 {
         // Vector take
         let ia = arr.ia() as i32;
-        let (start, len) = if n >= 0 {
-            (0, n.min(ia) as usize)
-        } else {
-            let s = (ia + n).max(0);
-            (s as usize, (ia - s) as usize)
-        };
-
-        let mut result = Vec::with_capacity(n.unsigned_abs() as usize);
-        let take_len = n.unsigned_abs() as usize;
-        for i in 0..take_len {
-            let idx = start + i;
-            if idx < len + start && idx < arr.ia() {
-                result.push(arr.get(idx)?);
-            } else {
-                result.push(fill_val);
+        let abs_take = n.unsigned_abs() as usize;
+        let result = if n >= 0 {
+            // Positive take: take first n elements, fill at END if needed
+            let take_from = n.min(ia) as usize;
+            let fill_count = abs_take.saturating_sub(take_from);
+            let mut v = Vec::with_capacity(abs_take);
+            for i in 0..take_from {
+                v.push(arr.get(i)?);
             }
-        }
-        let take_len = n.unsigned_abs() as usize;
-        return Ok(PrimResult::Array(typed_arr(result, vec![take_len], arr.fill)));
+            for _ in 0..fill_count {
+                v.push(fill_val);
+            }
+            v
+        } else {
+            // Negative take: take last n elements, fill at START if needed
+            // ¯n↑x: last min(n, len) elements from arr, preceded by fill
+            let copy_count = abs_take.min(ia as usize);
+            let fill_count = abs_take.saturating_sub(copy_count);
+            let src_start = ia as usize - copy_count;
+            let mut v = Vec::with_capacity(abs_take);
+            for _ in 0..fill_count {
+                v.push(fill_val);
+            }
+            for i in 0..copy_count {
+                v.push(arr.get(src_start + i)?);
+            }
+            v
+        };
+        return Ok(PrimResult::Array(typed_arr(result, vec![abs_take], arr.fill)));
     }
 
     // Multi-rank take: operates along first axis
@@ -694,6 +704,7 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
 
     let mut result = Vec::with_capacity(abs_n * cell_size);
     if n >= 0 {
+        // Positive take: take first abs_n cells, fill remaining at END
         for i in 0..abs_n {
             if i < first_dim {
                 for j in 0..cell_size {
@@ -706,17 +717,20 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
             }
         }
     } else {
-        let start = (first_dim as i32 + n).max(0) as usize;
-        for i in 0..abs_n {
-            let src = start + i;
-            if src < first_dim {
-                for j in 0..cell_size {
-                    result.push(arr.get(src * cell_size + j)?);
-                }
-            } else {
-                for _ in 0..cell_size {
-                    result.push(fill_val);
-                }
+        // Negative take: take last abs_n cells, fill at START
+        let copy_count = abs_n.min(first_dim);
+        let fill_count = abs_n.saturating_sub(copy_count);
+        let src_start = first_dim.saturating_sub(copy_count);
+        // Fill cells at start
+        for _ in 0..fill_count {
+            for _ in 0..cell_size {
+                result.push(fill_val);
+            }
+        }
+        // Copy cells from end of array
+        for i in 0..copy_count {
+            for j in 0..cell_size {
+                result.push(arr.get((src_start + i) * cell_size + j)?);
             }
         }
     }
@@ -905,7 +919,7 @@ pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if ia == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
-    let fill_val = arr.fill.unwrap_or(B::m_i32(0));
+    let fill_val = arr_fill(arr);
 
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];
@@ -917,7 +931,7 @@ pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
                 result.push(arr.get(i * cell_size + j)?);
             }
         }
-        // Fill last cell
+        // Fill last cell with type-appropriate fill
         for _ in 0..cell_size {
             result.push(fill_val);
         }
@@ -941,7 +955,7 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         let first_dim = arr.shape[0];
         let cell_shape = &arr.shape[1..];
         let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
-        let fill_val = arr.fill.unwrap_or(B::m_i32(0));
+        let fill_val = arr_fill(arr);
 
         let shift = match wa {
             Some(warr) => {
@@ -961,7 +975,7 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
                 result.push(arr.get(i * cell_size + j)?);
             }
         }
-        // Fill remaining cells
+        // Fill remaining cells with type-appropriate fill
         let fill_cells = shift.min(first_dim);
         for _ in 0..fill_cells * cell_size {
             result.push(fill_val);
@@ -1005,13 +1019,13 @@ pub fn shiftb_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if ia == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
-    let fill_val = arr.fill.unwrap_or(B::m_i32(0));
+    let fill_val = arr_fill(arr);
 
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];
         let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
         let mut result = Vec::with_capacity(ia);
-        // Fill first cell
+        // Fill first cell with type-appropriate fill
         for _ in 0..cell_size {
             result.push(fill_val);
         }
@@ -1041,7 +1055,7 @@ pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         let first_dim = arr.shape[0];
         let cell_shape = &arr.shape[1..];
         let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
-        let fill_val = arr.fill.unwrap_or(B::m_i32(0));
+        let fill_val = arr_fill(arr);
 
         let shift = match wa {
             Some(warr) => {
@@ -1055,7 +1069,7 @@ pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         };
 
         let mut result = Vec::with_capacity(arr.ia());
-        // Fill first cells
+        // Fill first cells with type-appropriate fill
         let fill_cells = shift.min(first_dim);
         for _ in 0..fill_cells * cell_size {
             result.push(fill_val);

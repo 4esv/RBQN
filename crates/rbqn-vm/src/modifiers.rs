@@ -402,11 +402,15 @@ fn fold_identity(f: B) -> Option<B> {
             9 => Some(B::m_f64(1.0)),    // ¬ → 1
             10 => Some(B::m_f64(1.0)),   // ∧ → 1
             11 => Some(B::m_f64(0.0)),   // ∨ → 0
+            // NOTE: Comparison functions as fold identity elements (BQN spec)
+            12 => Some(B::m_f64(0.0)),   // < → 0
+            13 => Some(B::m_f64(0.0)),   // > → 0
             14 => Some(B::m_f64(0.0)),   // ≠ → 0
             15 => Some(B::m_f64(1.0)),   // = → 1
             16 => Some(B::m_f64(1.0)),   // ≤ → 1
             17 => Some(B::m_f64(1.0)),   // ≥ → 1
-            23 => Some(crate::vm::tag_arr(BqnArr::empty_vec())), // ∾ → ⟨⟩
+            // NOTE: ∾´⟨⟩ should fail — no universal identity for join (type depends on context)
+            // Per BQN spec, ∾ has no identity element
             _ => None,
         },
         _ => None,
@@ -449,6 +453,16 @@ fn insert_c1(f: B, x: B) -> B {
     }
     let lead = arr.shape[0];
     if lead == 0 {
+        // NOTE: Empty leading axis: return identity element in cell shape.
+        // CBQN: insert on empty array returns identity element broadcast to cell shape.
+        let cell_shape = arr.shape[1..].to_vec();
+        let cell_ia: usize = cell_shape.iter().product::<usize>().max(1);
+        if let Some(id) = fold_identity(f) {
+            // Fill cell_shape with identity value
+            let elems: Vec<B> = (0..cell_ia).map(|_| id).collect();
+            let cell = crate::vm::tag_arr(rbqn_core::array::typed_arr_from_b_vec(elems, cell_shape, None));
+            return cell;
+        }
         rbqn_core::error::throw("˝: empty leading axis with no identity");
     }
     let cell_size: usize = arr.shape[1..].iter().product();
