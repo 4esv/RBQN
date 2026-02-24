@@ -3,13 +3,45 @@ use rbqn_core::array::typed_arr_from_b_vec;
 use crate::dispatch::PrimResult;
 
 // ⊏ monad: first cell
+// For rank-1:
+//   - Flat (non-boxed) arrays: returns rank-0 unit containing the element
+//   - Boxed arrays: returns the first element directly (the inner array)
+// For rank-n (n>1): returns first major cell (rank n-1 array)
 pub fn first_cell_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⊏𝕩: 𝕩 must be an array".into()))?;
-    if arr.ia() == 0 {
-        return Err(BqnError::Domain("⊏𝕩: 𝕩 is empty".into()));
+    if arr.shape.is_empty() || arr.shape[0] == 0 {
+        return Err(BqnError::Domain("⊏𝕩: 𝕩 is empty along first axis".into()));
     }
-    let v = arr.get(0)?;
-    Ok(PrimResult::Scalar(v))
+    if arr.rank() == 1 {
+        let v = arr.get(0)?;
+        if arr.el_type() == ElType::B {
+            // NOTE: Boxed rank-1: first cell = first element directly (the inner value)
+            // The element v is already a B value that IS the inner array/scalar
+            if v.is_arr() {
+                // Return the inner array directly
+                if let Some(inner) = get_arr(v) {
+                    return Ok(PrimResult::Array(inner));
+                }
+            }
+            return Ok(PrimResult::Scalar(v));
+        }
+        // NOTE: Flat rank-1: first cell = rank-0 unit containing the element
+        let out = BqnArr {
+            shape: vec![],
+            data: ArrData::Boxed(vec![v]),
+            fill: None,
+        };
+        return Ok(PrimResult::Array(out));
+    }
+    // Rank >= 2: return first major cell (rank n-1 subarray)
+    let cell_shape = &arr.shape[1..];
+    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+    let mut result = Vec::with_capacity(cell_size);
+    for j in 0..cell_size {
+        result.push(arr.get(j)?);
+    }
+    let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), arr.fill);
+    Ok(PrimResult::Array(out))
 }
 
 fn resolve_index(i: i32, len: usize) -> Result<usize> {
@@ -22,18 +54,49 @@ fn resolve_index(i: i32, len: usize) -> Result<usize> {
     Ok(idx as usize)
 }
 
+/// Validate that a B value is an integer index (not fractional).
+fn validate_integer_index(v: B, name: &str) -> Result<i32> {
+    if !v.is_f64() {
+        return Err(BqnError::Type(format!("{name}: index must be a number")));
+    }
+    let f = v.o2f();
+    let i = f as i32;
+    if f != i as f64 {
+        return Err(BqnError::Domain(format!("{name}: index must be an integer, got {f}")));
+    }
+    Ok(i)
+}
+
 // ⊏ dyad: select
+// NOTE: Selects major cells along first axis of 𝕩.
+// When 𝕨 is a scalar: returns rank-0 cell (for rank-1 𝕩) or rank(𝕩)-1 cell.
+// When 𝕨 is a rank-1 array of integers: returns rank(𝕩) result with selected cells.
+// 𝕨 must not be rank-0 (enclosed) or rank>1 non-boxed.
 pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊏𝕩: 𝕩 must be an array".into()))?;
     // NOTE: BQN ⊏ selects along the first axis
     let first_dim = if arr.shape.is_empty() { arr.ia() } else { arr.shape[0] };
     let cell_shape: &[usize] = if arr.shape.len() > 1 { &arr.shape[1..] } else { &[] };
-    let cell_size: usize = cell_shape.iter().product();
+    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
 
     if w.is_f64() {
-        let idx = resolve_index(w.o2i(), first_dim)?;
+        let wi = validate_integer_index(w, "𝕨⊏𝕩")?;
+        let idx = resolve_index(wi, first_dim)?;
         if arr.rank() <= 1 {
-            return Ok(PrimResult::Scalar(arr.get(idx)?));
+            // NOTE: scalar select from rank-1 returns rank-0 cell (unit array)
+            let v = arr.get(idx)?;
+            let out = BqnArr {
+                shape: vec![],
+                data: if v.is_f64() {
+                    ArrData::F64(vec![v.o2f()])
+                } else if v.is_c32() {
+                    ArrData::C32(vec![v.0 as u32])
+                } else {
+                    ArrData::Boxed(vec![v])
+                },
+                fill: arr.fill,
+            };
+            return Ok(PrimResult::Array(out));
         }
         // Multi-dimensional: return the selected cell
         let mut result = Vec::with_capacity(cell_size);
@@ -45,6 +108,11 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
     }
 
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊏𝕩: 𝕨 must be a number or array".into()))?;
+
+    // NOTE: rank-0 𝕨 is not a valid index for ⊏
+    if warr.rank() == 0 {
+        return Err(BqnError::Rank("𝕨⊏𝕩: 𝕨 must be a number or rank≥1 array".into()));
+    }
 
     // BQN select with non-numeric indices: recurse per-element for boxed arrays
     if warr.el_type() == ElType::B {
@@ -133,11 +201,29 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
 
     if w.is_f64() {
-        let idx = resolve_index(w.o2i(), arr.ia())?;
+        // NOTE: BQN spec: scalar pick requires 𝕩 to be rank-1 (a list)
+        if arr.rank() != 1 {
+            return Err(BqnError::Rank(format!(
+                "𝕨⊑𝕩: 𝕩 must be a list when 𝕨 is a number ({:?} ≡ ≢𝕩)", arr.shape
+            )));
+        }
+        let wi = validate_integer_index(w, "𝕨⊑𝕩")?;
+        let idx = resolve_index(wi, arr.ia())?;
         return Ok(PrimResult::Scalar(arr.get(idx)?));
     }
 
+    // NOTE: w must be an array (not another scalar type)
+    if !w.is_arr() {
+        return Err(BqnError::Type("𝕨⊑𝕩: 𝕨 must be a number or array".into()));
+    }
+
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕨 must be a number or array".into()))?;
+
+    // NOTE: rank-0 w (enclosed index) is not valid for ⊑
+    if warr.rank() == 0 {
+        return Err(BqnError::Rank("𝕨⊑𝕩: 𝕨 must be a number or rank-1 list, not rank-0".into()));
+    }
+
     // Multi-dimensional pick: w is a list of indices
     if warr.rank() == 1 {
         let indices = warr.i32_iter()?;
