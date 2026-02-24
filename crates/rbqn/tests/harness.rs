@@ -3,11 +3,11 @@
 //!
 //! Run manually: CBQN_PATH=/path/to/CBQN cargo test -p rbqn --test harness -- --ignored --nocapture
 //!
-//! Baseline (2026-02-24):
+//! Baseline (2026-02-24, after 02-02):
 //!   simple    20/20   (100%)
 //!   literal   52/52   (100%)
-//!   syntax   152/156  ( 97%)  4 failures (destructuring assignment edge cases)
-//!   bytecode  36/37   ( 97%)  1 failure  (list assignment with ↩)
+//!   syntax   153/156  ( 98%)  3 failures (bracket destructuring edge cases)
+//!   bytecode  37/37   (100%)  FIXED: array destructuring in v_get/v_get_move
 //!   prim     409/564  ( 73%)  155 failures (fill, rank>1, inverse, group, search)
 //!   fill      29/62   ( 47%)  33 failures (fill propagation)
 //!   header   ~145/156 ( 93%)  11 failures + stack overflow on recursive case
@@ -18,7 +18,7 @@
 //!   undo      30/68   ( 44%)  38 failures (inverse system)
 //!   unhead    27/44   ( 61%)  17 failures (undo headers)
 //!
-//!   Total: ~1014/1316 (77%) passing
+//!   Total: ~1016/1316 (77%) passing
 
 use std::process::Command;
 
@@ -103,20 +103,19 @@ fn harness_syntax() {
 fn harness_bytecode() {
     let output = rbqn_harness(&["bytecode"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!("{}", stdout);
+    assert!(stdout.contains("All passed!"), "bytecode tests should all pass");
+}
+
+#[test]
+#[ignore]
+fn harness_simple_and_bytecode() {
+    let output = rbqn_harness(&["simple", "bytecode"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    eprintln!("STDOUT:\n{}", stdout);
-    if !stderr.is_empty() {
-        eprintln!("STDERR:\n{}", stderr);
-    }
-    assert!(
-        stdout.contains("Running 37 tests"),
-        "should run 37 bytecode tests"
-    );
-    assert!(
-        !stderr.contains("panicked"),
-        "harness should not panic: {}",
-        stderr
-    );
+    eprintln!("{}", stdout);
+    assert!(!stderr.contains("panicked"), "harness panicked: {stderr}");
+    assert!(!stdout.contains("failed!"), "some tests failed:\n{stdout}");
 }
 
 #[test]
