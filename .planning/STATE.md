@@ -9,19 +9,19 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 
 ## Current Position
 
-Phase: 3 of 6 (Language Completeness) -- IN PROGRESS
-Plan: 2 of 3 in current phase (03-02 complete)
-Status: Executing phase 3
-Last activity: 2026-02-24 — Completed plan 03-02 (file I/O, Import caching, utility functions: ParseFloat/ToUTF8/FromUTF8/Cmp)
+Phase: 3 of 6 (Language Completeness) -- COMPLETE
+Plan: 3 of 3 in current phase (03-03 complete)
+Status: Phase 3 complete — ready for Phase 4
+Last activity: 2026-02-24 — Completed plan 03-03 (math/rand/platform namespaces, time, shell, •_while_)
 
-Progress: [██████░░░░] 50%
+Progress: [███████░░░] 60%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
+- Total plans completed: 7
 - Average duration: 10 min
-- Total execution time: 0.97 hours
+- Total execution time: ~1.55 hours
 
 **By Phase:**
 
@@ -29,9 +29,10 @@ Progress: [██████░░░░] 50%
 |-------|-------|-------|----------|
 | 01 | 3 | 38min | 13min |
 | 02 | 3 | 20min | 7min |
+| 03 | 3 | ~37min | ~12min |
 
 **Recent Trend:**
-- Last 5 plans: 01-04 (18min), 01-05 (18min), 02-01 (8min), 02-02 (4min), 02-03 (8min)
+- Last 5 plans: 02-01 (8min), 02-02 (4min), 02-03 (8min), 03-02 (~15min), 03-03 (~35min)
 - Trend: Steady (averaging ~11min)
 
 *Updated after each plan completion*
@@ -58,6 +59,9 @@ Progress: [██████░░░░] 50%
 - [03-02]: Dyadic •FChars/•FBytes write variants share sys_idx with monadic reads (52/53) — arity distinguishes
 - [03-02]: •ImportCache uses B::SENTINEL as circular-import sentinel; canonical path as cache key via fs::canonicalize
 - [03-02]: •ParseFloat normalizes ¯→- then handles ∞ and π as special string cases before f64 parse
+- [03-03]: CBQN compiler strips underscores from modifier names — "_while_" → "while", "_fillBy_" → "fillby"
+- [03-03]: Math functions use sys indices 1100-1130 to avoid collision with existing sys 100 (system resolver)
+- [03-03]: BQN namespace field names are lowercased by compiler: "PI" → "pi" at access time
 
 ### Pending Todos
 
@@ -73,5 +77,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 03-02-PLAN.md (file I/O + utility functions: SYS-06 through SYS-15 all implemented)
+Stopped at: Completed 03-03-PLAN.md (math/rand/platform namespaces + time/shell/•_while_: SYS-16 through SYS-21 all implemented)
 Resume file: None

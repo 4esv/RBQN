@@ -49,12 +49,12 @@
 - [x] **SYS-15**: •CurrentError (error handling)
 
 #### Medium (extended functionality)
-- [ ] **SYS-16**: •math namespace (Sin, Cos, Tan, Asin, Acos, Atan, Log, Cbrt, Hypot, Erf, Comb, Fact, GCD, LCM)
-- [ ] **SYS-17**: •UnixTime, •MonoTime, •Delay (time)
-- [ ] **SYS-18**: •MakeRand / •rand.Range, •rand.Deal, •rand.Subset (randomness)
-- [ ] **SYS-19**: •platform namespace (os, cpu.arch, bqn.impl, etc.)
-- [ ] **SYS-20**: •SH (shell execution)
-- [ ] **SYS-21**: •_while_ (loop modifier)
+- [x] **SYS-16**: •math namespace (Sin, Cos, Tan, Asin, Acos, Atan, Log, Cbrt, Hypot, Erf, Comb, Fact, GCD, LCM)
+- [x] **SYS-17**: •UnixTime, •MonoTime, •Delay (time)
+- [x] **SYS-18**: •MakeRand / •rand.Range, •rand.Deal, •rand.Subset (randomness)
+- [x] **SYS-19**: •platform namespace (os, cpu.arch, bqn.impl, etc.)
+- [x] **SYS-20**: •SH (shell execution)
+- [x] **SYS-21**: •_while_ (loop modifier)
 
 #### Low (full parity)
 - [ ] **SYS-22**: •FFI (foreign function interface)
@@ -158,12 +158,12 @@
 | SYS-13 | Phase 3 | Complete |
 | SYS-14 | Phase 3 | Complete |
 | SYS-15 | Phase 3 | Complete |
-| SYS-16 | Phase 3 | Pending |
-| SYS-17 | Phase 3 | Pending |
-| SYS-18 | Phase 3 | Pending |
-| SYS-19 | Phase 3 | Pending |
-| SYS-20 | Phase 3 | Pending |
-| SYS-21 | Phase 3 | Pending |
+| SYS-16 | Phase 3 | Complete |
+| SYS-17 | Phase 3 | Complete |
+| SYS-18 | Phase 3 | Complete |
+| SYS-19 | Phase 3 | Complete |
+| SYS-20 | Phase 3 | Complete |
+| SYS-21 | Phase 3 | Complete |
 | TEST-05 | Phase 4 | Pending |
 | TEST-06 | Phase 4 | Pending |
 | TEST-07 | Phase 4 | Pending |
