@@ -116,23 +116,38 @@ pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⍋ dyad: bins (ascending)
-// NOTE: 𝕨 and 𝕩 must be compatible sorted arrays (rank-1 or same rank). Higher-rank with mismatched trailing shapes errors.
+// NOTE: 𝕨 and 𝕩 must be compatible sorted arrays. Elements must be comparable (numbers, chars, arrays).
 pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍋𝕩: 𝕨 must be an array".into()))?;
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍋𝕩: 𝕩 must be an array".into()))?;
 
-    // Validate rank compatibility
-    let wr = warr.rank();
-    let xr = xarr.rank();
-    if wr > 1 && xr > 1 && wr != xr {
+    // Validate: elements must be comparable (not functions/modifiers)
+    if warr.el_type() == ElType::B {
+        for i in 0..warr.ia() {
+            let v = warr.get(i)?;
+            if !v.is_f64() && !v.is_c32() && !v.is_arr() {
+                return Err(BqnError::Type("𝕨⍋𝕩: elements must be numbers, characters, or arrays".into()));
+            }
+        }
+    }
+
+    // Validate rank compatibility: x.rank must be >= w.rank-1, and x.shape must end with w.shape[1..]
+    let wr = warr.rank() as usize;
+    let xr = xarr.rank() as usize;
+    let w_cell_shape = if wr > 0 { &warr.shape[1..] } else { &[] as &[usize] };
+    let w_cell_rank = w_cell_shape.len();
+    if xr < w_cell_rank {
         return Err(BqnError::Rank(format!(
-            "𝕨⍋𝕩: 𝕨 and 𝕩 must have compatible ranks ({} vs {})", wr, xr
+            "𝕨⍋𝕩: 𝕩 rank {} too low for 𝕨 cell rank {} (need rank ≥ {})",
+            xr, w_cell_rank, w_cell_rank
         )));
     }
-    // Cell shapes must match: w.shape[1..] must equal x.shape[1..]
-    if wr >= 2 && xr >= 2 && warr.shape[1..] != xarr.shape[1..] {
+    // x's trailing shape must match w's cell shape
+    let x_tail = &xarr.shape[xr - w_cell_rank..];
+    if x_tail != w_cell_shape {
         return Err(BqnError::Shape(format!(
-            "𝕨⍋𝕩: trailing shapes must match ({:?} vs {:?})", &warr.shape[1..], &xarr.shape[1..]
+            "𝕨⍋𝕩: 𝕩 trailing shape {:?} doesn't match 𝕨 cell shape {:?}",
+            x_tail, w_cell_shape
         )));
     }
 

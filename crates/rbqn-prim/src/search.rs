@@ -50,6 +50,11 @@ pub fn self_indexOf_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊐𝕩: 𝕨 must be an array".into()))?;
 
+    // Validate: rank-0 w is not valid for ⊐
+    if warr.rank() == 0 {
+        return Err(BqnError::Rank("𝕨⊐𝕩: 𝕨 must be rank-1 or higher".into()));
+    }
+
     // Validate: w must be rank-1 (for simple indexOf) or rank-N with matching cell shapes
     if warr.rank() > 1 {
         // Higher-rank w: cell shape must match x's shape
