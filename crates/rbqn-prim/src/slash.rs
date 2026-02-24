@@ -45,6 +45,55 @@ pub fn indices_inverse_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     Ok(PrimResult::Array(BqnArr::new_vec_i32(counts)))
 }
 
+// /⁼ dyad: w /⁼ x — find replicate counts r such that r / x ≡ w
+// When w is a number: compute monadic /⁼ extended to length w
+// When w is an array: compute counts per element of x
+pub fn indices_inverse_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if w.is_f64() {
+        // Scalar w: compute /⁼ x extended to length w
+        let arr = xa.ok_or_else(|| BqnError::Type("𝕨/⁼𝕩: 𝕩 must be an array".into()))?;
+        let n = w.to_i32()? as usize;
+        if arr.ia() == 0 {
+            return Ok(PrimResult::Array(BqnArr::new_vec_i32(vec![0i32; n])));
+        }
+        let indices = arr.i32_iter()?;
+        let mut counts = vec![0i32; n];
+        for &idx in &indices {
+            if idx < 0 {
+                return Err(BqnError::Domain("𝕨/⁼𝕩: 𝕩 must consist of natural numbers".into()));
+            }
+            if (idx as usize) < n {
+                counts[idx as usize] += 1;
+            }
+        }
+        Ok(PrimResult::Array(BqnArr::new_vec_i32(counts)))
+    } else {
+        // Array w: find r such that r / x ≡ w
+        // r[i] = number of consecutive elements in w matching x[i]
+        let x_arr = xa.ok_or_else(|| BqnError::Type("𝕨/⁼𝕩: 𝕩 must be an array".into()))?;
+        let w_arr = wa.ok_or_else(|| BqnError::Type("𝕨/⁼𝕩: 𝕨 must be a number or array".into()))?;
+        let x_len = x_arr.ia();
+        let w_len = w_arr.ia();
+        let mut counts = vec![0i32; x_len];
+        let mut wi = 0usize;
+        for xi in 0..x_len {
+            while wi < w_len {
+                // Count matching elements
+                let w_val = w_arr.get(wi)?;
+                let x_val = x_arr.get(xi)?;
+                // Compare: for the replicate inverse, we need w[wi] == x[xi]
+                if w_val.0 == x_val.0 || (w_val.is_f64() && x_val.is_f64() && w_val.o2f() == x_val.o2f()) {
+                    counts[xi] += 1;
+                    wi += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(PrimResult::Array(BqnArr::new_vec_i32(counts)))
+    }
+}
+
 // / dyad: replicate
 pub fn replicate_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕩 must be an array".into()))?;

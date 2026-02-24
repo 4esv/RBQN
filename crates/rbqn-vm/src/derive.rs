@@ -1022,6 +1022,13 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         100 => { // •BQN placeholder — just return SENTINEL for now
             B::SENTINEL
         }
+        201 => { // Internal: w /⁼ x (dyadic inverse of indices)
+            let r = rbqn_prim::slash::indices_inverse_c2(w, w_arr.as_ref(), x, x_arr.as_ref());
+            match r {
+                Ok(pr) => prim_result_to_b(pr),
+                Err(e) => rbqn_core::error::throw(e.to_string()),
+            }
+        }
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c2)")),
     }
 }
