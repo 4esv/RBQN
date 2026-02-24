@@ -416,8 +416,11 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
                 glyphs,
             });
         }
-        Err(_panic) => {
-            eprintln!("rbqn: warning: runtime1 panicked. Using fruntime as fallback.");
+        Err(panic) => {
+            let msg = panic.downcast_ref::<String>().map(|s| s.as_str())
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown");
+            eprintln!("rbqn: warning: runtime1 panicked: {}. Using fruntime as fallback.", msg);
             return Ok(Runtime {
                 prims,
                 fruntime: fruntime.clone(),
