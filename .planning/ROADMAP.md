@@ -62,7 +62,7 @@ Plans:
   3. `f⎉1` applies f to rank-1 cells; `f⚇2` applies f at depth 2 (Rank and Depth correct)
   4. Fill propagation: `5↑1‿2‿3` pads with correct fill; `«` and `»` shift with correct fill element
   5. `•FChars "f.bqn"` reads a file; `•math.Sin π÷2` returns `1`; `•Out`, `•SH`, `•Import` all work
-**Plans:** 5 plans (3 executed + 2 gap closure)
+**Plans:** 4/5 plans executed
 
 Plans:
 - [x] 03-01-PLAN.md — Fix modifier semantics (Undo, Under, Rank, Depth) and primitive completeness (fill, identity, pervasive)
@@ -123,7 +123,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. Runtime Bypass and Working Pipeline | 0/3 | Complete    | 2026-02-24 |
 | 2. Test Baseline | 0/3 | Complete    | 2026-02-24 |
-| 3. Language Completeness | 3/5 | In Progress (gap closure) |  |
+| 3. Language Completeness | 4/5 | In Progress|  |
 | 4. Full Test Suite Green | 0/? | Not started | - |
 | 5. GPU Integration | 0/? | Not started | - |
 | 6. Self-Hosting | 0/? | Not started | - |

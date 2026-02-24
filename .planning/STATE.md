@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 3 of 6 (Language Completeness) -- COMPLETE
-Plan: 3 of 3 in current phase (03-03 complete)
+Plan: 4 of 4 in current phase (03-04 complete)
 Status: Phase 3 complete — ready for Phase 4
-Last activity: 2026-02-24 — Completed plan 03-03 (math/rand/platform namespaces, time, shell, •_while_)
+Last activity: 2026-02-24 — Completed plan 03-04 (modifier gap closure: sys 203 c2, dyadic +⁼, functional-k Under)
 
 Progress: [███████░░░] 60%
 
@@ -62,6 +62,9 @@ Progress: [███████░░░] 60%
 - [03-03]: CBQN compiler strips underscores from modifier names — "_while_" → "while", "_fillBy_" → "fillby"
 - [03-03]: Math functions use sys indices 1100-1130 to avoid collision with existing sys 100 (system resolver)
 - [03-03]: BQN namespace field names are lowercased by compiler: "PI" → "pi" at access time
+- [Phase 03]: native_inverse_reg removes + shortcut so BQN runtime handles dyadic +⁼ char arithmetic: 3+⁼'d'='a' via runtime -˜ inverse
+- [Phase 03]: sys 203 c2 dispatch: w√⁼x = x^w implemented via pow_c2(x, xa, w, wa) with swapped args
+- [Phase 03]: Functional-k Under: detect left_op.is_fun() in try_structural_under, evaluate c1(left_op,x) to get numeric k before take/drop
 
 ### Pending Todos
 
@@ -77,5 +80,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 03-03-PLAN.md (math/rand/platform namespaces + time/shell/•_while_: SYS-16 through SYS-21 all implemented)
+Stopped at: Completed 03-04-PLAN.md (modifier gap closure: sys 203 c2, dyadic +⁼ char fallthrough, functional-k Under)
 Resume file: None

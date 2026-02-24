@@ -16,8 +16,8 @@
 - [x] **PIPE-08**: `rbqn -e '1+1'` outputs `2`
 
 ### MOD: Missing Modifiers
-- [ ] **MOD-01**: Undo (⁼) — native inverse table for 12 required primitives (+, -, ÷, ⋆, √, ∧, ¬, ⊢, ⊣, <, ⌽, ⍉, /)
-- [ ] **MOD-02**: Under (⌾) — structural mode for common cases, computational fallback
+- [x] **MOD-01**: Undo (⁼) — native inverse table for 12 required primitives (+, -, ÷, ⋆, √, ∧, ¬, ⊢, ⊣, <, ⌽, ⍉, /)
+- [x] **MOD-02**: Under (⌾) — structural mode for common cases, computational fallback
 - [ ] **MOD-03**: Rank (⎉) — apply function at specified rank
 - [ ] **MOD-04**: Depth (⚇) — apply function at specified depth
 
@@ -140,8 +140,8 @@
 | TEST-02 | Phase 2 | Complete |
 | TEST-03 | Phase 2 | Complete |
 | TEST-04 | Phase 2 | Complete |
-| MOD-01 | Phase 3 | Pending |
-| MOD-02 | Phase 3 | Pending |
+| MOD-01 | Phase 3 | Complete |
+| MOD-02 | Phase 3 | Complete |
 | MOD-03 | Phase 3 | Pending |
 | MOD-04 | Phase 3 | Pending |
 | PRIM-01 | Phase 3 | Pending |
