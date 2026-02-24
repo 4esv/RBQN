@@ -76,6 +76,8 @@ Progress: [████████░░] 74%
 - [04-02]: reshape modes 0=exact,1=floor+cycle,2=ceil+cycle,3=ceil+pad; ⌊ and ↑ registered as statics at bootstrap
 - [04-02]: group multi-dim uses per-dimension matching Cartesian outer-product (NOT parallel flat-position indexing)
 - [04-02]: f¨/f˘ on scalars return rank-0 arrays (BQN semantics), not plain scalars
+- [Phase 04-full-test-suite-green]: ScanInv DerivedKind intercepts inv_reg(F') natively to avoid BQN runtime issues with rank>1 arrays
+- [Phase 04-full-test-suite-green]: ⍉ rank>2: move first axis to last (not full reverse); ⍉⁼ rank>2: move last axis to first using permutation 1‥(r-1)‥0
 
 ### Pending Todos
 

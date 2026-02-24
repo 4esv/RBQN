@@ -71,12 +71,12 @@
 - [x] **TEST-05**: Pass prim.bqn
 - [ ] **TEST-06**: Pass token.bqn
 - [x] **TEST-07**: Pass header.bqn
-- [ ] **TEST-08**: Pass unhead.bqn
+- [x] **TEST-08**: Pass unhead.bqn
 - [x] **TEST-09**: Pass namespace.bqn
 - [ ] **TEST-10**: Pass fill.bqn
 - [ ] **TEST-11**: Pass identity.bqn
 - [ ] **TEST-12**: Pass under.bqn
-- [ ] **TEST-13**: Pass undo.bqn
+- [x] **TEST-13**: Pass undo.bqn
 
 ### GPU: GPU Acceleration
 - [ ] **GPU-01**: Array transfer layer (BqnArr ↔ GpuBuffer, f64→f32 conversion)
@@ -167,12 +167,12 @@
 | TEST-05 | Phase 4 | Complete |
 | TEST-06 | Phase 4 | Pending |
 | TEST-07 | Phase 4 | Complete |
-| TEST-08 | Phase 4 | Pending |
+| TEST-08 | Phase 4 | Complete |
 | TEST-09 | Phase 4 | Complete |
 | TEST-10 | Phase 4 | Pending |
 | TEST-11 | Phase 4 | Pending |
 | TEST-12 | Phase 4 | Pending |
-| TEST-13 | Phase 4 | Pending |
+| TEST-13 | Phase 4 | Complete |
 | SYS-22 | Phase 4 | Pending |
 | SYS-23 | Phase 4 | Pending |
 | SYS-24 | Phase 4 | Pending |
