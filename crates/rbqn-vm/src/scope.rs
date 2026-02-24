@@ -94,6 +94,17 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         } else {
             rbqn_core::error::throw("v_get: no scope extension for EXT ref");
         }
+    } else if s.is_arr() {
+        // Array destructuring: read each variable reference in the array
+        let s_arr = rbqn_core::get_arr(s)
+            .unwrap_or_else(|| rbqn_core::error::throw("v_get: invalid array target"));
+        let len = s_arr.ia();
+        let mut results = Vec::with_capacity(len);
+        for i in 0..len {
+            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            results.push(v_get(pscs, si, chk));
+        }
+        rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(results, vec![len], None))
     } else {
         rbqn_core::error::throw("v_get: non-var access not yet implemented");
     }
@@ -222,6 +233,17 @@ pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         } else {
             rbqn_core::error::throw("v_get_move: no scope extension for EXT ref");
         }
+    } else if s.is_arr() {
+        // Array destructuring: read+move each variable reference in the array
+        let s_arr = rbqn_core::get_arr(s)
+            .unwrap_or_else(|| rbqn_core::error::throw("v_get_move: invalid array target"));
+        let len = s_arr.ia();
+        let mut results = Vec::with_capacity(len);
+        for i in 0..len {
+            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            results.push(v_get_move(pscs, si, chk));
+        }
+        rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(results, vec![len], None))
     } else {
         rbqn_core::error::throw("v_get_move: non-var access not yet implemented");
     }
