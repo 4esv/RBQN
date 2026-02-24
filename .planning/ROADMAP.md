@@ -9,7 +9,7 @@ RBQN has the architecture in place: five crates, NaN-boxed values, a working VM,
 ## Phases
 
 - [x] **Phase 1: Runtime Bypass and Working Pipeline** - Verify Option B bypass, get compiler executing arbitrary BQN, REPL working (completed 2026-02-24)
-- [ ] **Phase 2: Test Baseline** - Wire official test harness, establish pass/fail count, pass simple/literal/syntax/bytecode
+- [x] **Phase 2: Test Baseline** - Wire official test harness, establish pass/fail count, pass simple/literal/syntax/bytecode (completed 2026-02-24)
 - [ ] **Phase 3: Language Completeness** - All missing modifiers, primitive edge cases, essential system functions
 - [ ] **Phase 4: Full Test Suite Green** - Drive all 13 official test files to 0 failures
 - [ ] **Phase 5: GPU Integration** - Wire rbqn-gpu into primitive dispatch with precision guards and benchmarks
@@ -45,7 +45,7 @@ Plans:
   2. `simple.bqn` passes: basic arithmetic, assignment, and simple conditionals all correct
   3. `literal.bqn` passes: number literals, character literals, and string literals all parse and evaluate correctly
   4. `syntax.bqn` and `bytecode.bqn` pass: block syntax and compiled bytecode correctness verified
-**Plans:** 3 plans
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 02-01-PLAN.md — Wire official test harness: implement •file namespace (Lines, List), run baseline
@@ -118,7 +118,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Runtime Bypass and Working Pipeline | 0/3 | Complete    | 2026-02-24 |
-| 2. Test Baseline | 0/3 | Planning complete | - |
+| 2. Test Baseline | 0/3 | Complete    | 2026-02-24 |
 | 3. Language Completeness | 0/? | Not started | - |
 | 4. Full Test Suite Green | 0/? | Not started | - |
 | 5. GPU Integration | 0/? | Not started | - |
