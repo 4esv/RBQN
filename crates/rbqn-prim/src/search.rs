@@ -294,43 +294,78 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
         )));
     }
 
+    let rank = warr.rank() as usize;
+
+    // Result shape: 1+≢x-≢w per axis (clamped to 0)
+    let mut result_shape = Vec::with_capacity(rank);
+    for r in 0..rank {
+        let d = 1isize + xarr.shape[r] as isize - warr.shape[r] as isize;
+        result_shape.push(if d < 0 { 0 } else { d as usize });
+    }
+    let result_ia: usize = result_shape.iter().product();
+
+    if result_ia == 0 {
+        return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(vec![]), fill: None }));
+    }
+
+    // For rank-1: sliding window match
+    if rank <= 1 {
+        let wlen = warr.ia();
+        let mut result = Vec::with_capacity(result_ia);
+        for i in 0..result_ia {
+            let mut matches = true;
+            for j in 0..wlen {
+                if !rbqn_core::compare::deep_equal(warr.get(j)?, xarr.get(i + j)?) {
+                    matches = false;
+                    break;
+                }
+            }
+            result.push(matches as i32);
+        }
+        return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(result), fill: None }));
+    }
+
+    // For rank>1: multi-dimensional sliding window match
+    let w_shape = &warr.shape;
+    let x_shape = &xarr.shape;
     let wia = warr.ia();
-    let xia = xarr.ia();
 
-    if wia == 0 {
-        // Empty needle: all positions match
-        let result = vec![1i32; xia];
-        let mut out = BqnArr::new_vec_i32(result);
-        out.shape = xarr.shape.clone();
-        return Ok(PrimResult::Array(out));
+    // Compute x strides
+    let mut x_strides = vec![1usize; rank];
+    for r in (0..rank - 1).rev() {
+        x_strides[r] = x_strides[r + 1] * x_shape[r + 1];
     }
 
-    if wia > xia {
-        let result = vec![0i32; xia];
-        let mut out = BqnArr::new_vec_i32(result);
-        out.shape = xarr.shape.clone();
-        return Ok(PrimResult::Array(out));
-    }
-
-    let mut result = vec![0i32; xia];
-    let num_positions = xia - wia + 1;
-
-    for i in 0..num_positions {
+    let mut result = Vec::with_capacity(result_ia);
+    for flat_pos in 0..result_ia {
+        // Convert flat position to multi-dim result index
+        let mut rem = flat_pos;
+        let mut result_idx = vec![0usize; rank];
+        for r in (0..rank).rev() {
+            result_idx[r] = rem % result_shape[r];
+            rem /= result_shape[r];
+        }
+        // Check if w matches x at this offset
         let mut matches = true;
-        for j in 0..wia {
-            let wv = warr.get(j)?;
-            let xv = xarr.get(i + j)?;
-            if !rbqn_core::compare::deep_equal(wv, xv) {
+        for w_flat in 0..wia {
+            let mut w_idx = vec![0usize; rank];
+            let mut w_rem = w_flat;
+            for r in (0..rank).rev() {
+                w_idx[r] = w_rem % w_shape[r];
+                w_rem /= w_shape[r];
+            }
+            // x position = result_idx + w_idx per axis
+            let mut x_flat = 0;
+            for r in 0..rank {
+                x_flat += (result_idx[r] + w_idx[r]) * x_strides[r];
+            }
+            if !rbqn_core::compare::deep_equal(warr.get(w_flat)?, xarr.get(x_flat)?) {
                 matches = false;
                 break;
             }
         }
-        if matches {
-            result[i] = 1;
-        }
+        result.push(matches as i32);
     }
 
-    let mut out = BqnArr::new_vec_i32(result);
-    out.shape = xarr.shape.clone();
-    Ok(PrimResult::Array(out))
+    Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(result), fill: None }))
 }
