@@ -1221,20 +1221,58 @@ fn depth_c2(f: B, g: B, w: B, x: B) -> B {
 // ============================================================
 
 fn repeat_c1(f: B, g: B, x: B) -> B {
+    // NOTE: If g is an array, apply f⍟g(i) x for each element of g
+    if g.is_arr() {
+        let garr = arr_of(g);
+        return repeat_c1_arr(f, &garr, x);
+    }
     let n = if g.is_f64() {
         g.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
     } else {
+        // g is a function: compute count by calling g(x)
         let n_b = c1(g, x);
+        if n_b.is_arr() {
+            let narr = arr_of(n_b);
+            return repeat_c1_arr(f, &narr, x);
+        }
         n_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
     };
     if n < 0 {
-        rbqn_core::error::throw("⍟: negative repeat count requires inverse");
+        // NOTE: Negative repeat: apply inverse n times
+        let f_inv = crate::derive::inv_reg(f);
+        let mut acc = x;
+        for _ in 0..n.unsigned_abs() {
+            acc = c1(f_inv, acc);
+        }
+        return acc;
     }
     let mut acc = x;
     for _ in 0..n {
         acc = c1(f, acc);
     }
     acc
+}
+
+fn repeat_c1_arr(f: B, counts: &rbqn_core::BqnArr, x: B) -> B {
+    // Apply repeat for each count value when g is an array
+    // Result shape = g shape, each element is f⍟count(i) x
+    let n = counts.ia();
+    let mut results = Vec::with_capacity(n);
+    for i in 0..n {
+        let count_b = get_elem(counts, i);
+        let count = count_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+        if count < 0 {
+            let f_inv = crate::derive::inv_reg(f);
+            let mut acc = x;
+            for _ in 0..count.unsigned_abs() { acc = c1(f_inv, acc); }
+            results.push(acc);
+        } else {
+            let mut acc = x;
+            for _ in 0..count { acc = c1(f, acc); }
+            results.push(acc);
+        }
+    }
+    results_to_arr(results, counts.shape.clone())
 }
 
 fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
@@ -1245,7 +1283,13 @@ fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
         n_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
     };
     if n < 0 {
-        rbqn_core::error::throw("⍟: negative repeat count requires inverse");
+        // NOTE: Negative repeat: apply inverse n times
+        let f_inv = crate::derive::inv_reg(f);
+        let mut acc = x;
+        for _ in 0..n.unsigned_abs() {
+            acc = c1(f_inv, acc);
+        }
+        return acc;
     }
     let mut acc = x;
     for _ in 0..n {

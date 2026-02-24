@@ -118,11 +118,9 @@ pub fn first_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Ok(PrimResult::Scalar(x));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⊑𝕩: 𝕩 must be an array".into()))?;
+    // NOTE: BQN spec: ⊑ on empty array always errors (no fill element access)
     if arr.ia() == 0 {
-        return match arr.fill {
-            Some(f) => Ok(PrimResult::Scalar(f)),
-            None => Err(BqnError::Domain("⊑𝕩: 𝕩 is empty with no fill".into())),
-        };
+        return Err(BqnError::Domain("⊑𝕩: 𝕩 is empty".into()));
     }
     Ok(PrimResult::Scalar(arr.get(0)?))
 }
