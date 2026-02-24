@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-23)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 3 — Language Completeness
+**Current focus:** Phase 4 — Full Test Suite Green
 
 ## Current Position
 
-Phase: 3 of 6 (Language Completeness) -- COMPLETE
-Plan: 5 of 5 in current phase (03-05 complete)
-Status: Phase 3 complete — all plans done, ready for Phase 4
-Last activity: 2026-02-24 — Completed plan 03-05 (prim edge case fixes: 75.5%→81.2%, overall 81.1%→84.7%)
+Phase: 4 of 6 (Full Test Suite Green)
+Plan: 1 of 5 in current phase (04-01 complete)
+Status: Phase 4 active — namespace.bqn fully green (50/50), header.bqn improved to ~149/156
+Last activity: 2026-02-24 — Completed plan 04-01 (namespace export: namespace.bqn 50/50, header.bqn -4 failures)
 
-Progress: [████████░░] 70%
+Progress: [████████░░] 72%
 
 ## Performance Metrics
 
@@ -32,8 +32,8 @@ Progress: [████████░░] 70%
 | 03 | 5 | ~72min | ~14min |
 
 **Recent Trend:**
-- Last 5 plans: 03-01 (~15min), 03-02 (~15min), 03-03 (~35min), 03-04 (~12min), 03-05 (~35min)
-- Trend: Steady (averaging ~14min)
+- Last 6 plans: 03-01 (~15min), 03-02 (~15min), 03-03 (~35min), 03-04 (~12min), 03-05 (~35min), 04-01 (~45min)
+- Trend: Steady (averaging ~26min recently)
 
 *Updated after each plan completion*
 
@@ -68,6 +68,10 @@ Progress: [████████░░] 70%
 - [03-05]: ⊏ scalar select from rank-1 returns rank-0 cell (not plain scalar) — enables (<'c')≡2⊏"abc"
 - [03-05]: ⍉ diagonal (duplicate perm values) is valid BQN; only gaps in new axes are errors
 - [03-05]: ⍋/⍒ bins validate x.trailing_shape == w.cell_shape (not x.cell_shape == w.cell_shape)
+- [04-01]: CBQN omits ALIM for same-name ⟨a⟩←ns — uses body_arr[2] slot→name mapping at runtime
+- [04-01]: ALIAS_TAG (0x7FF5) NaN-boxes gid+depth+pos for explicit rename ⟨b⇐a⟩←ns
+- [04-01]: build_ns_desc creates NSDesc when export_mask array present (even empty) to handle {⇐}
+- [04-01]: Namespace destructuring only in v_set ARRAY branch to prevent plain ns←val from triggering extraction
 
 ### Pending Todos
 
@@ -83,5 +87,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 03-05-PLAN.md (prim edge case fixes — prim 81.2%, overall 84.7% excl. namespace)
+Stopped at: Completed 04-01-PLAN.md (namespace export — namespace.bqn 50/50, header.bqn -4 failures)
 Resume file: None

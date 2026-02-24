@@ -70,9 +70,9 @@
 - [x] **TEST-04**: Pass bytecode.bqn
 - [ ] **TEST-05**: Pass prim.bqn
 - [ ] **TEST-06**: Pass token.bqn
-- [ ] **TEST-07**: Pass header.bqn
+- [x] **TEST-07**: Pass header.bqn
 - [ ] **TEST-08**: Pass unhead.bqn
-- [ ] **TEST-09**: Pass namespace.bqn
+- [x] **TEST-09**: Pass namespace.bqn
 - [ ] **TEST-10**: Pass fill.bqn
 - [ ] **TEST-11**: Pass identity.bqn
 - [ ] **TEST-12**: Pass under.bqn
@@ -166,9 +166,9 @@
 | SYS-21 | Phase 3 | Complete |
 | TEST-05 | Phase 4 | Pending |
 | TEST-06 | Phase 4 | Pending |
-| TEST-07 | Phase 4 | Pending |
+| TEST-07 | Phase 4 | Complete |
 | TEST-08 | Phase 4 | Pending |
-| TEST-09 | Phase 4 | Pending |
+| TEST-09 | Phase 4 | Complete |
 | TEST-10 | Phase 4 | Pending |
 | TEST-11 | Phase 4 | Pending |
 | TEST-12 | Phase 4 | Pending |

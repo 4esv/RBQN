@@ -80,10 +80,10 @@ Plans:
   2. `fill.bqn`, `identity.bqn`, `under.bqn`, and `undo.bqn` all pass
   3. `header.bqn`, `unhead.bqn`, `namespace.bqn`, and `token.bqn` all pass
   4. All 13 test files report 0 failures; test harness exits 0
-**Plans:** 5 plans
+**Plans:** 1/5 plans executed
 
 Plans:
-- [ ] 04-01-PLAN.md — Fix namespace export (compile_block NSDesc from body_arr[2]/[3]) and header namespace tests
+- [x] 04-01-PLAN.md — Fix namespace export (compile_block NSDesc from body_arr[2]/[3]) and header namespace tests — namespace.bqn 50/50
 - [ ] 04-02-PLAN.md — Fix prim gap clusters: table scalar args, group multi-dim, slash atoms, reshape auto-dim
 - [ ] 04-03-PLAN.md — Wire block header inverse bodies and implement missing native inverses (⌽⁼, ⍉⁼, +`⁼)
 - [ ] 04-04-PLAN.md — Fix fill propagation through structural ops, identity elements, remaining prim clusters
@@ -128,6 +128,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. Runtime Bypass and Working Pipeline | 0/3 | Complete    | 2026-02-24 |
 | 2. Test Baseline | 0/3 | Complete    | 2026-02-24 |
 | 3. Language Completeness | 5/5 | Complete   | 2026-02-24 |
-| 4. Full Test Suite Green | 0/5 | In Progress | - |
+| 4. Full Test Suite Green | 1/5 | In Progress|  |
 | 5. GPU Integration | 0/? | Not started | - |
 | 6. Self-Hosting | 0/? | Not started | - |
