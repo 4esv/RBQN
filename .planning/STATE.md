@@ -92,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-24
-Stopped at: Completed 04-02-PLAN.md (prim.bqn clusters — table/slash/group/reshape/each scalar fixes, 95 failures remaining)
+Last session: 2026-02-25
+Stopped at: Completed quick-4 (test snapshot of uncommitted-wip — no regressions vs pre-gap-closure baseline, 98 failures unchanged)
 Resume file: None
