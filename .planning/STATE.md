@@ -12,7 +12,7 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 Phase: 4 of 6 (Full Test Suite Green)
 Plan: 2 of 5 in current phase (04-02 complete)
 Status: Phase 4 active — prim.bqn reduced from 106 to 95 failures
-Last activity: 2026-02-24 — Completed plan 04-02 (table/slash/group/reshape/each scalar fixes: 11 prim.bqn failures resolved)
+Last activity: 2026-02-25 - Completed quick task 4: Run the bisect script to identify regression points
 
 Progress: [████████░░] 74%
 
@@ -89,6 +89,12 @@ None yet.
 - `setInv`/`setPrims` wrapped in `catch_unwind` in bootstrap.rs — panics are silently swallowed; remove before Phase 1 complete
 - GPU f32 precision: all GPU kernels use f32, BQN semantics are f64 — precision guard required before any GPU arithmetic dispatch in Phase 5
 - GPU staging buffers: current `GpuBuffer::storage()` lacks `MAP_READ`; pool staging buffers before any Phase 5 kernel wiring
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 4 | Run the bisect script to identify regression points | 2026-02-25 | 01a4147 | [4-run-the-bisect-script-to-identify-regres](./quick/4-run-the-bisect-script-to-identify-regres/) |
 
 ## Session Continuity
 
