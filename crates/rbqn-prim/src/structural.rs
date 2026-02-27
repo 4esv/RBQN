@@ -672,7 +672,29 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Err(BqnError::Type("∾𝕩: elements of 𝕩 must be arrays".into()));
     }
 
-    // Collect all elements from sub-arrays
+    // NOTE: BQN ∾ monad on a rank-1 list of arrays: elements may differ by at most 1 in rank.
+    // Find the maximum element rank to determine the common trailing shape.
+    // Lower-rank elements (rank = max_rank - 1) are treated as having first dim 1.
+    // All elements must have the same trailing shape (shape[1..] for max_rank elements,
+    // or shape itself for (max_rank-1)-rank elements).
+
+    // First pass: find max rank and validate.
+    let mut max_elem_rank = 0usize;
+    for i in 0..outer_len {
+        let elem = arr.get(i)?;
+        let elem_rank = if elem.is_atom() {
+            0usize
+        } else if let Some(sub) = get_arr(elem) {
+            sub.rank() as usize
+        } else {
+            return Err(BqnError::Type("∾𝕩: element is tagged as array but not found".into()));
+        };
+        if elem_rank > max_elem_rank {
+            max_elem_rank = elem_rank;
+        }
+    }
+
+    // Collect all elements from sub-arrays, promoting rank-(max-1) elements.
     let mut result = Vec::new();
     let mut inner_tail_shape: Option<Vec<usize>> = None;
     let mut total_first = 0usize;
@@ -680,7 +702,11 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     for i in 0..outer_len {
         let elem = arr.get(i)?;
         if elem.is_atom() {
-            // Atom in list: treat as single element
+            // Atom treated as rank-0. For max_elem_rank == 0: just add.
+            // For max_elem_rank == 1: treat as rank-1 length-1 singleton.
+            if max_elem_rank > 1 {
+                return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
+            }
             if let Some(ref ts) = inner_tail_shape {
                 if !ts.is_empty() {
                     return Err(BqnError::Shape("∾𝕩: incompatible element shapes".into()));
@@ -693,15 +719,32 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         } else {
             let sub = get_arr(elem)
                 .ok_or_else(|| BqnError::Type("∾𝕩: element is tagged as array but not found".into()))?;
-            let sub_tail = sub.shape[1..].to_vec();
+            let sub_rank = sub.rank() as usize;
+
+            if sub_rank < max_elem_rank.saturating_sub(1) {
+                return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
+            }
+
+            // Determine effective shape: if sub_rank == max_elem_rank - 1, prepend 1.
+            let (first_dim, sub_tail) = if sub_rank < max_elem_rank {
+                // Promote: treat as having first dim 1, tail = full shape.
+                (1usize, sub.shape.clone())
+            } else {
+                // Normal: first dim is shape[0], tail is shape[1..].
+                let first = if sub.shape.is_empty() { 1 } else { sub.shape[0] };
+                let tail = if sub.shape.is_empty() { vec![] } else { sub.shape[1..].to_vec() };
+                (first, tail)
+            };
+
             if let Some(ref ts) = inner_tail_shape {
                 if *ts != sub_tail {
-                    return Err(BqnError::Shape("∾𝕩: incompatible trailing shapes".into()));
+                    return Err(BqnError::Shape(format!(
+                        "∾𝕩: incompatible trailing shapes ({:?} vs {:?})", ts, sub_tail
+                    )));
                 }
             } else {
                 inner_tail_shape = Some(sub_tail);
             }
-            let first_dim = if sub.shape.is_empty() { 1 } else { sub.shape[0] };
             total_first += first_dim;
             let sub_ia = sub.ia();
             for j in 0..sub_ia {
@@ -2114,18 +2157,48 @@ pub fn reorder_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⍉𝕩: 𝕩 must be an array".into()))?;
     let rank = arr.rank() as usize;
 
-    // NOTE: w must be rank-1 (not higher-rank)
+    // NOTE: Handle rank-0 x (enclosed scalar, shape []) — empty perm is identity.
+    if arr.shape.is_empty() {
+        // w must be empty (no axes to permute for rank-0 x)
+        let perm_len = if w.is_f64() {
+            1
+        } else if let Some(warr) = wa {
+            warr.ia()
+        } else {
+            0
+        };
+        if perm_len != 0 {
+            return Err(BqnError::Rank("𝕨⍉𝕩: 𝕨 must be empty for rank-0 𝕩".into()));
+        }
+        return Ok(PrimResult::Array(arr.clone()));
+    }
+
+    // NOTE: w must be rank-1 (not higher-rank), but rank-0 w is treated as 1-element perm.
     let perm = if w.is_f64() {
         vec![w.to_i32()?]
     } else {
         let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍉𝕩: 𝕨 must be a number or array".into()))?;
-        if warr.rank() != 1 {
+        if warr.rank() == 0 {
+            // NOTE: rank-0 enclosed w: unbox to get the single element as the permutation index.
+            if warr.ia() == 0 {
+                // Empty rank-0 (shouldn't happen, but treat as empty perm)
+                vec![]
+            } else {
+                let inner = warr.get(0)?;
+                if inner.is_f64() {
+                    vec![inner.to_i32()?]
+                } else {
+                    return Err(BqnError::Type("𝕨⍉𝕩: rank-0 𝕨 must contain a number".into()));
+                }
+            }
+        } else if warr.rank() != 1 {
             return Err(BqnError::Rank(format!(
                 "𝕨⍉𝕩: 𝕨 must be rank-1, got rank {}",
                 warr.rank()
             )));
+        } else {
+            warr.i32_iter()?
         }
-        warr.i32_iter()?
     };
 
     // Validate length: perm must have length <= rank.

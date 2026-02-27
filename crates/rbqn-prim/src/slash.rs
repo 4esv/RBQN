@@ -166,11 +166,67 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
         }
     }
 
-    if arr.rank() != 1 {
-        return Err(BqnError::Rank(format!(
-            "𝕨/𝕩: 𝕩 must be rank-1, got rank {}",
-            arr.rank()
-        )));
+    // NOTE: BQN / on rank>1 𝕩: replicate along first axis.
+    // Scalar 𝕨 replicates each major cell 𝕨 times.
+    // Rank-1 𝕨 replicates major cell i by 𝕨[i] times.
+    if arr.rank() > 1 {
+        let first_dim = arr.shape[0];
+        let cell_shape = arr.shape[1..].to_vec();
+        let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+
+        let counts: Vec<i32> = if w.is_f64() {
+            let n = w.to_i32()?;
+            if n < 0 {
+                return Err(BqnError::Domain("𝕨/𝕩: 𝕨 must consist of natural numbers".into()));
+            }
+            vec![n; first_dim]
+        } else {
+            let warr = wa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕨 must be a number or array".into()))?;
+            let w_ref: &BqnArr;
+            let effective_warr;
+            if warr.rank() == 0 {
+                let inner_b = warr.get(0).map_err(|_| BqnError::Type("𝕨/𝕩: rank-0 𝕨 must enclose an array".into()))?;
+                effective_warr = get_arr(inner_b)
+                    .ok_or_else(|| BqnError::Type("𝕨/𝕩: rank-0 𝕨 must enclose an integer array".into()))?;
+                w_ref = &effective_warr;
+            } else {
+                w_ref = warr;
+            }
+            if w_ref.rank() != 1 {
+                return Err(BqnError::Rank(format!(
+                    "𝕨/𝕩: 𝕨 must be rank-1, got rank {}",
+                    w_ref.rank()
+                )));
+            }
+            let c = w_ref.i32_iter()?;
+            if c.len() != first_dim {
+                return Err(BqnError::Shape(format!(
+                    "𝕨/𝕩: 𝕨 must have same length as first axis of 𝕩 ({} vs {})",
+                    c.len(), first_dim
+                )));
+            }
+            c
+        };
+
+        for &c in &counts {
+            if c < 0 {
+                return Err(BqnError::Domain("𝕨/𝕩: 𝕨 must consist of natural numbers".into()));
+            }
+        }
+
+        let total_rows: usize = counts.iter().map(|&c| c as usize).sum();
+        let mut result = Vec::with_capacity(total_rows * cell_size);
+        for (row, &c) in counts.iter().enumerate() {
+            let base = row * cell_size;
+            for _ in 0..c as usize {
+                for j in 0..cell_size {
+                    result.push(arr.get(base + j)?);
+                }
+            }
+        }
+        let mut new_shape = vec![total_rows];
+        new_shape.extend_from_slice(&cell_shape);
+        return Ok(PrimResult::Array(typed_arr_from_b_vec(result, new_shape, arr.fill)));
     }
 
     // NOTE: BQN allows rank-0 𝕨 (enclosed array like <arr) — unwrap to get the inner array.
@@ -249,18 +305,35 @@ fn replicate_multi_axis(warr: &BqnArr, xarr: &BqnArr) -> Result<PrimResult> {
         let counts = if idx_b.is_f64() {
             // Scalar: replicate entire axis by this amount
             let n = idx_b.o2i();
+            if n < 0 {
+                return Err(BqnError::Domain("𝕨/𝕩: counts must be non-negative".into()));
+            }
             vec![n; current_shape[a]]
         } else if idx_b.is_arr() {
             let idx_arr = get_arr(idx_b)
                 .ok_or_else(|| BqnError::Type("𝕨/𝕩: axis element must be number or array".into()))?;
-            let c = idx_arr.i32_iter()?;
-            if c.len() != current_shape[a] {
-                return Err(BqnError::Shape(format!(
-                    "𝕨/𝕩: axis {} length {} doesn't match 𝕩 dimension {}",
-                    a, c.len(), current_shape[a]
-                )));
+            // NOTE: rank-0 enclosed scalar: treat as a uniform replication count (same as scalar).
+            if idx_arr.shape.is_empty() {
+                let inner = idx_arr.get(0)?;
+                let n = if inner.is_f64() {
+                    inner.to_i32()?
+                } else {
+                    return Err(BqnError::Type("𝕨/𝕩: rank-0 axis element must contain a number".into()));
+                };
+                if n < 0 {
+                    return Err(BqnError::Domain("𝕨/𝕩: counts must be non-negative".into()));
+                }
+                vec![n; current_shape[a]]
+            } else {
+                let c = idx_arr.i32_iter()?;
+                if c.len() != current_shape[a] {
+                    return Err(BqnError::Shape(format!(
+                        "𝕨/𝕩: axis {} length {} doesn't match 𝕩 dimension {}",
+                        a, c.len(), current_shape[a]
+                    )));
+                }
+                c
             }
-            c
         } else {
             return Err(BqnError::Type("𝕨/𝕩: axis element must be number or array".into()));
         };
