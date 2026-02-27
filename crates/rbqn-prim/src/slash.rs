@@ -148,7 +148,8 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
 
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕩 must be an array".into()))?;
 
-    // Multi-axis replicate: when 𝕨 is a boxed list, each element replicates along one axis.
+    // Multi-axis replicate: when 𝕨 is a boxed list with any array/enclosed element,
+    // each element replicates along one axis of x.
     if let Some(warr) = wa {
         if warr.rank() == 1 {
             if warr.ia() == 0 {
@@ -156,11 +157,14 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
                 return Ok(PrimResult::Array(arr.clone()));
             }
             if warr.el_type() == ElType::B {
-                // Check if first element is an array (multi-axis) vs number (standard)
-                if let Ok(first) = warr.get(0) {
-                    if first.is_arr() {
-                        return replicate_multi_axis(warr, arr);
-                    }
+                // NOTE: Multi-axis is triggered when ANY element is an array (including rank-0 enclosed).
+                // e.g. ⟨2,<3⟩/x is multi-axis (axis 0: 2×, axis 1: 3×).
+                // ⟨2,3⟩/x on rank-1 is standard replicate; on rank>1 it's an error (per CBQN).
+                let any_arr = (0..warr.ia()).any(|i| {
+                    warr.get(i).map(|v| v.is_arr()).unwrap_or(false)
+                });
+                if any_arr {
+                    return replicate_multi_axis(warr, arr);
                 }
             }
         }
@@ -344,7 +348,9 @@ fn replicate_multi_axis(warr: &BqnArr, xarr: &BqnArr) -> Result<PrimResult> {
 
         // Compute strides
         let outer_size: usize = current_shape[..a].iter().product::<usize>().max(1);
-        let inner_size: usize = current_shape[a+1..].iter().product::<usize>().max(1);
+        // NOTE: Do NOT use .max(1) here — when any trailing dimension is 0, inner_size must be 0
+        // to avoid out-of-bounds access on empty current_data.
+        let inner_size: usize = current_shape[a+1..].iter().product::<usize>();
         let slice_size = dim * inner_size;
 
         let mut new_data = Vec::with_capacity(outer_size * total * inner_size);
