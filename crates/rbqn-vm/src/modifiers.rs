@@ -954,8 +954,9 @@ pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
 
 fn cells_c1(f: B, x: B) -> B {
     if x.is_atom() {
-        // NOTE: BQN f˘ on scalar: scalar is its own cell, result = f(scalar) with no extra wrap.
-        // <˘ 7 = < 7 (rank-0 boxed 7), not arr([] B [< 7]) (double-wrapped).
+        // BQN runtime depends on f˘ atom returning the raw result (not wrapped in rank-0).
+        // This means `≡˘0` returns 0 (atom) instead of <0 (rank-0 array).
+        // TODO: Match CBQN behavior after bootstrap is independent of this.
         return c1(f, x);
     }
     let arr = arr_of(x);
