@@ -647,7 +647,13 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
         };
 
-        if inner_rank < outer_rank.saturating_sub(1) {
+        // NOTE: For outer_rank > 1, elements must have rank >= outer_rank (full block-matrix).
+        // For outer_rank == 1, atoms (rank 0) are allowed as individual elements.
+        if outer_rank > 1 {
+            if inner_rank < outer_rank {
+                return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
+            }
+        } else if inner_rank < outer_rank.saturating_sub(1) {
             return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
         }
 
@@ -686,7 +692,8 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             let inner_shape = &inner_arr.shape;
             let inner_r = inner_arr.rank() as usize;
 
-            if inner_r < outer_rank.saturating_sub(1) {
+            let min_inner_rank = if outer_rank > 1 { outer_rank } else { outer_rank.saturating_sub(1) };
+            if inner_r < min_inner_rank {
                 return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
             }
 
