@@ -354,8 +354,36 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
         }
         return Err(BqnError::Domain("𝕨⊑𝕩: 𝕩 must be a unit if 𝕨 contains an empty array".into()));
     }
-    // Validate: all elements must be the same "kind" (no mixed numeric+boxed)
-    // (CBQN errors with "mixed-type elements" for lists with scalar ints and boxed arrays)
+    // Validate: all elements must be the same "kind" (no mixed numeric+boxed),
+    // and any array element must be rank 1 (not rank 2+).
+    // (CBQN errors with "mixed-type elements" for lists with scalar ints and boxed arrays,
+    // and "Leaf arrays in 𝕨 must have rank 1" for rank-2+ array elements.)
+    {
+        let mut has_num = false;
+        let mut has_arr = false;
+        for i in 0..wia {
+            let elem = warr.get(i)?;
+            if elem.is_f64() || elem.is_c32() {
+                has_num = true;
+            } else if elem.is_arr() {
+                let ea = get_arr(elem)
+                    .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: index element not found".into()))?;
+                // rank-0 enclosed is OK (path into nested structure)
+                if ea.rank() > 1 {
+                    return Err(BqnError::Rank(format!(
+                        "𝕨⊑𝕩: Leaf arrays in 𝕨 must have rank 1 (element: {:?})", ea.shape
+                    )));
+                }
+                if ea.rank() == 1 {
+                    has_arr = true;
+                }
+                // rank-0 boxed: not counted as "array" for mixed-type purposes
+            }
+        }
+        if has_num && has_arr {
+            return Err(BqnError::Type("𝕨⊑𝕩: 𝕨 contained list with mixed-type elements".into()));
+        }
+    }
     let mut result = Vec::with_capacity(wia);
     for i in 0..wia {
         let idx_b = warr.get(i)?;

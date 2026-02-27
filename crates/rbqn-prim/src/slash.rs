@@ -148,6 +148,22 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
 
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕩 must be an array".into()))?;
 
+    // NOTE: 𝕩 must have rank >= 1 for simple 𝕨 (scalar or plain int array).
+    // Rank-0 (enclosed scalar) is not a valid target for simple replicate.
+    // This check runs before multi-axis detection; multi-axis handles rank-0 differently.
+    if arr.rank() == 0 {
+        // Only error if w is "simple": scalar, rank-1 non-boxed, or rank-0
+        let is_simple = w.is_f64() || {
+            match wa {
+                None => true,
+                Some(warr) => warr.el_type() != ElType::B,
+            }
+        };
+        if is_simple {
+            return Err(BqnError::Rank("𝕨/𝕩: 𝕩 must have rank at least 1 for simple 𝕨".into()));
+        }
+    }
+
     // Multi-axis replicate: when 𝕨 is a boxed list with any array/enclosed element,
     // each element replicates along one axis of x.
     if let Some(warr) = wa {
