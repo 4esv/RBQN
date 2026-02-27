@@ -1322,15 +1322,17 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
         }));
     }
     // Start with x, apply take along each axis
+    // NOTE: for atom x, treat as rank-n array with shape [1,1,...,1] containing x
+    let atom_arr;
     let arr = if x.is_atom() {
-        // Atom x with list w: create array of appropriate rank filled with x
-        let mut shape = vec![1usize; axes.len()];
-        let mut data = vec![x];
+        let shape = vec![1usize; axes.len()];
         let fill = Some(prototype_of(x));
-        let result_shape: Vec<usize> = axes.iter().map(|&n| n.unsigned_abs() as usize).collect();
-        let total: usize = result_shape.iter().product();
-        let result_data = vec![x; total];
-        return Ok(PrimResult::Array(typed_arr(result_data, result_shape, fill)));
+        atom_arr = BqnArr {
+            shape,
+            data: ArrData::Boxed(vec![x]),
+            fill,
+        };
+        &atom_arr
     } else {
         xa.ok_or_else(|| BqnError::Type("𝕨↑𝕩: 𝕩 must be an array".into()))?
     };
@@ -1511,13 +1513,18 @@ fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
             fill: Some(prototype_of(x)),
         }));
     }
-    let arr = xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?;
-
-    let mut current_data: Vec<B> = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
-    let mut current_shape = arr.shape.clone();
-    // NOTE: If w has more elements than rank of x, prepend leading dims of 1.
-    // e.g. (5⥊0)↓↕3‿2‿1: w has 5 elements, x has rank 3.
-    // Extra leading axes of size 1 are prepended, then dropped by 0 = no change.
+    // NOTE: when x is a scalar atom, treat as rank-n array with all dims = 1
+    // (where n = len(axes)), containing that scalar.
+    let (mut current_data, mut current_shape, fill): (Vec<B>, Vec<usize>, Option<B>) =
+        if let Some(arr) = xa {
+            let data = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
+            (data, arr.shape.clone(), arr.fill)
+        } else {
+            // x is a scalar: treat as shape [1,1,...,1] (one 1 per axis in w)
+            let shape = vec![1usize; axes.len()];
+            (vec![x], shape, Some(prototype_of(x)))
+        };
+    // If w has more elements than rank of x, prepend leading dims of 1.
     while current_shape.len() < axes.len() {
         current_shape.insert(0, 1);
         // Wrap current_data in a size-1 leading axis by doing nothing (data is unchanged,
@@ -1550,7 +1557,7 @@ fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
         current_data = new_data;
     }
 
-    Ok(PrimResult::Array(typed_arr(current_data, current_shape, arr.fill)))
+    Ok(PrimResult::Array(typed_arr(current_data, current_shape, fill)))
 }
 
 // ↕ monad: range

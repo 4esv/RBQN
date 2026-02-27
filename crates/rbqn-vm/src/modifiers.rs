@@ -954,9 +954,9 @@ pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
 
 fn cells_c1(f: B, x: B) -> B {
     if x.is_atom() {
-        // NOTE: BQN f˘ on scalar returns rank-0 result (apply f once, wrap in rank-0 array).
-        let result = c1(f, x);
-        return results_to_arr(vec![result], vec![]);
+        // NOTE: BQN f˘ on scalar: scalar is its own cell, result = f(scalar) with no extra wrap.
+        // <˘ 7 = < 7 (rank-0 boxed 7), not arr([] B [< 7]) (double-wrapped).
+        return c1(f, x);
     }
     let arr = arr_of(x);
     // Rank-0 array: apply F to the whole rank-0 array; frame is ⟨⟩, merge result properly
@@ -1124,29 +1124,13 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
                     };
 
                     match rd.kind {
-                        // F⌾(k⊸↑) x — take under
+                        // F⌾(k⊸↑) x — take under (handles 1D and multi-dim)
                         crate::derive::DerivedKind::NativeFn { prim_idx: 26 } => {
-                            // Take k elements, apply F, then stitch back with remaining suffix
-                            // Result: (k↑ F(k↑x)) ∾ (k↓x)
-                            let take_fn = right_op;  // ↑
-                            let drop_fn = crate::derive::m_native_fn(27); // ↓
-                            let join_fn = crate::derive::m_native_fn(23);  // ∾
-                            let selected = c2(take_fn, k, x);             // k↑x
-                            let modified = c1(f, selected);                // F(k↑x)
-                            let suffix = c2(drop_fn, k, x);               // k↓x
-                            return Some(c2(join_fn, modified, suffix));    // modified ∾ suffix
+                            return Some(take_under(f, k, x, false));
                         }
-                        // F⌾(k⊸↓) x — drop under
+                        // F⌾(k⊸↓) x — drop under (handles 1D and multi-dim)
                         crate::derive::DerivedKind::NativeFn { prim_idx: 27 } => {
-                            // Drop k elements, apply F to suffix, prefix back
-                            // Result: (k↑x) ∾ (k↓ F(k↓x))
-                            let take_fn = crate::derive::m_native_fn(26); // ↑
-                            let drop_fn = right_op;  // ↓
-                            let join_fn = crate::derive::m_native_fn(23);  // ∾
-                            let prefix = c2(take_fn, k, x);               // k↑x
-                            let selected = c2(drop_fn, k, x);             // k↓x
-                            let modified = c1(f, selected);                // F(k↓x)
-                            return Some(c2(join_fn, prefix, modified));    // prefix ∾ modified
+                            return Some(take_under(f, k, x, true));
                         }
                         // F⌾(arr⊸⊏) x — structural select-under (k must be literal indices)
                         crate::derive::DerivedKind::NativeFn { prim_idx: 36 } => {
@@ -1207,6 +1191,60 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
                             let ld = crate::derive::get_derived(lid);
                             if let crate::derive::DerivedKind::NativeFn { prim_idx: 36 } = ld.kind {
                                 return Some(rank_select_under(f, fork_f, g_rsp, x));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Pattern: F⌾(a↓b↑⊢) x — drop-after-take chain that may introduce fill.
+    // Detect Fork(a, ↓, Fork(b, ↑, ⊢)) and check if b > len(x) → throw fill error.
+    if gd.kind == crate::derive::DerivedKind::Fork {
+        let fork_g = gd.g; // center function
+        // Check center = ↓ (prim 27)
+        if fork_g.is_fun() {
+            let cgid = (fork_g.0 & 0xFFFFFFFFFFFF) >> 3;
+            let cgd = crate::derive::get_derived(cgid);
+            if let crate::derive::DerivedKind::NativeFn { prim_idx: 27 } = cgd.kind {
+                // Center is ↓. Check h = Fork(b, ↑, ⊢).
+                let fork_h = gd.h;
+                if fork_h.is_fun() {
+                    let hhid = (fork_h.0 & 0xFFFFFFFFFFFF) >> 3;
+                    let hhd = crate::derive::get_derived(hhid);
+                    if hhd.kind == crate::derive::DerivedKind::Fork {
+                        let inner_g = hhd.g;
+                        let inner_h = hhd.h;
+                        // Check inner center = ↑ (prim 26) and inner right = ⊢ (prim 21).
+                        let inner_g_is_take = inner_g.is_fun() && {
+                            let igid = (inner_g.0 & 0xFFFFFFFFFFFF) >> 3;
+                            matches!(crate::derive::get_derived(igid).kind,
+                                     crate::derive::DerivedKind::NativeFn { prim_idx: 26 })
+                        };
+                        let inner_h_is_id = inner_h.is_fun() && {
+                            let ihid = (inner_h.0 & 0xFFFFFFFFFFFF) >> 3;
+                            matches!(crate::derive::get_derived(ihid).kind,
+                                     crate::derive::DerivedKind::NativeFn { prim_idx: 21 })
+                        };
+                        if inner_g_is_take && inner_h_is_id {
+                            // Inner left = n (the take amount). Check if it introduces fill.
+                            let inner_f = hhd.f;
+                            let n = if inner_f.is_f64() {
+                                Some(inner_f.o2f().abs() as usize)
+                            } else { None };
+                            if let Some(n_val) = n {
+                                if x.is_arr() {
+                                    if let Some(xa) = crate::vm::get_arr(x) {
+                                        let len = if xa.shape.is_empty() { 1 } else { xa.shape[0] };
+                                        if n_val > len {
+                                            rbqn_core::error::throw(format!(
+                                                "𝔽⌾(n⊸↑)𝕩: Cannot modify fill with Under ({} ≡ n, {:?} ≡ ≢𝕩)",
+                                                n_val, xa.shape
+                                            ));
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
