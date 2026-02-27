@@ -208,6 +208,25 @@ pub fn inv_reg(func: B) -> B {
                     // Fall through to BQN runtime for all native F˜⁼
                 }
 
+                // ˘ (prim 46): inv_reg(F˘) = (F_inv)˘ where F_inv is cells-compatible.
+                // For F=< (enclose, prim 12): inverse in cells context is > (merge, prim 13),
+                // NOT <⁼ (sys_fn 206), because merge_cells_result strips rank-0 boxing.
+                if md.kind == (DerivedKind::NativeMd1 { prim_idx: 46 }) {
+                    let cells_md1 = m_native_md1(46); // ˘
+                    // Special case: <˘⁻¹ = >˘ (merge/first per cell)
+                    let is_enclose = d.f.is_fun() && {
+                        let fid = (d.f.0 & 0xFFFFFFFFFFFF) >> 3;
+                        matches!(get_derived(fid).kind, DerivedKind::NativeFn { prim_idx: 12 })
+                    };
+                    if is_enclose {
+                        let merge_fn = m_native_fn(13); // >
+                        return m_md1d(cells_md1, merge_fn);
+                    }
+                    // General case: (inv_reg(F))˘
+                    let f_inv = inv_reg(d.f);
+                    return m_md1d(cells_md1, f_inv);
+                }
+
                 // ` (prim 52): inv_reg(F`) = ScanInv(F) — native scan inverse
                 // This intercepts scan-inverse before the BQN runtime, avoiding issues
                 // with the runtime's scan inverse not handling rank>1 arrays correctly.
