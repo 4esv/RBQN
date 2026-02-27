@@ -927,7 +927,16 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let mut new_shape = vec![total_first];
     new_shape.extend_from_slice(&tail);
 
-    Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
+    // NOTE: Fill of join result: use fill from inner elements if available, else from outer.
+    // This ensures ∾↑x has the same fill as x itself (the inner sub-arrays inherit x's fill).
+    let result_fill = if !result.is_empty() {
+        // Compute fill from the first result element
+        Some(prototype_of(result[0]))
+    } else {
+        // Empty result: try to get fill from inner element fill via outer arr.fill
+        arr.fill
+    };
+    Ok(PrimResult::Array(typed_arr(result, new_shape, result_fill)))
 }
 
 // ∾ dyad: join to
@@ -1411,7 +1420,16 @@ pub fn suffixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         }));
     }
 
-    Ok(PrimResult::Array(BqnArr::new_vec_b(suffixes)))
+    // NOTE: Fill of suffixes result = prototype of the last suffix (the empty suffix).
+    // This mirrors prefixes fill behavior and ensures consistent fill across ↑ and ↓.
+    let result_fill = if !suffixes.is_empty() {
+        Some(prototype_of(*suffixes.last().unwrap()))
+    } else {
+        None
+    };
+    let mut out = BqnArr::new_vec_b(suffixes);
+    out.fill = result_fill;
+    Ok(PrimResult::Array(out))
 }
 
 // ↓ dyad: drop

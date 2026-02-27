@@ -15,12 +15,25 @@ fn pervasive_boxed_scalar_arr(
     scalar_fn: fn(f64, f64) -> f64,
     name: &str,
 ) -> Result<PrimResult> {
+    // NOTE: If w is a rank-0 box broadcasting over xa_arr, extract its content
+    // so the result elements are unwrapped, matching BQN prefix broadcasting semantics.
+    let (w_eff, w_eff_arr_opt) = if let Some(wa) = get_arr(w) {
+        if wa.rank() == 0 && wa.ia() > 0 {
+            let content = wa.get(0)?;
+            let content_arr = get_arr(content);
+            (content, content_arr)
+        } else {
+            (w, Some(wa))
+        }
+    } else {
+        (w, None)
+    };
     let n = xa_arr.ia();
     let mut results: Vec<B> = Vec::with_capacity(n);
     for i in 0..n {
         let xi = xa_arr.get(i)?;
         let xi_arr = get_arr(xi);
-        let r = pervasive_dyad(w, None, xi, xi_arr.as_ref(), scalar_fn, name)?;
+        let r = pervasive_dyad(w_eff, w_eff_arr_opt.as_ref(), xi, xi_arr.as_ref(), scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
     let result_fill = if !results.is_empty() {
@@ -38,6 +51,30 @@ fn pervasive_boxed_arr_scalar(
     scalar_fn: fn(f64, f64) -> f64,
     name: &str,
 ) -> Result<PrimResult> {
+    // NOTE: If x is a rank-0 box (BQN scalar broadcast), extract its content so the
+    // result elements are unwrapped arrays, matching BQN prefix broadcasting semantics.
+    // e.g. 1‿0 × <↕3 → ⟨↕3, 0‿0‿0⟩ (elements are plain arrays, not rank-0 boxes)
+    if let Some(xa_arr) = get_arr(x) {
+        if xa_arr.rank() == 0 && xa_arr.ia() > 0 {
+            let x_content = xa_arr.get(0)?;
+            let x_content_arr = get_arr(x_content);
+            let n = wa_arr.ia();
+            let mut results: Vec<B> = Vec::with_capacity(n);
+            for i in 0..n {
+                let wi = wa_arr.get(i)?;
+                let wi_arr = get_arr(wi);
+                let r = pervasive_dyad(wi, wi_arr.as_ref(), x_content, x_content_arr.as_ref(), scalar_fn, name)?;
+                results.push(prim_result_to_b(r));
+            }
+            let result_fill = if !results.is_empty() {
+                Some(crate::structural::prototype_of(results[0]))
+            } else {
+                wa_arr.fill
+            };
+            let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
+            return Ok(PrimResult::Array(out));
+        }
+    }
     let n = wa_arr.ia();
     let mut results: Vec<B> = Vec::with_capacity(n);
     for i in 0..n {
@@ -104,8 +141,17 @@ fn pervasive_dyad(
     name: &str,
 ) -> Result<PrimResult> {
     match (wa, xa) {
-        // scalar-scalar
+        // scalar-scalar (or scalar-box: pervasion enters boxes)
         (None, None) => {
+            // If either side is a box (rank-0 array), open it and recurse.
+            if x.is_arr() {
+                let xa_arr = get_arr(x);
+                return pervasive_dyad(w, None, x, xa_arr.as_ref(), scalar_fn, name);
+            }
+            if w.is_arr() {
+                let wa_arr = get_arr(w);
+                return pervasive_dyad(w, wa_arr.as_ref(), x, None, scalar_fn, name);
+            }
             let wf = w.to_f64().map_err(|_| BqnError::Type(format!("𝕨{name}𝕩: Unexpected argument types")))?;
             let xf = x.to_f64().map_err(|_| BqnError::Type(format!("𝕨{name}𝕩: Unexpected argument types")))?;
             Ok(PrimResult::Scalar(B::m_f64(scalar_fn(wf, xf))))
@@ -140,15 +186,13 @@ fn pervasive_dyad(
         (Some(wa_arr), Some(xa_arr)) => {
             // NOTE: rank-0 arrays act as scalars in BQN pervasion.
             // When one side is rank-0 (shape=[]), extract its single element and use as scalar.
+            // NOTE: rank-0 arrays broadcast as scalars in BQN pervasion.
+            // Treat the rank-0 value itself (not its contents) as the repeating element.
             if wa_arr.rank() == 0 {
-                let scalar = wa_arr.get(0).unwrap_or(B::m_f64(0.0));
-                let scalar_arr = get_arr(scalar);
-                return pervasive_dyad(scalar, scalar_arr.as_ref(), x, Some(xa_arr), scalar_fn, name);
+                return pervasive_dyad(w, None, x, Some(xa_arr), scalar_fn, name);
             }
             if xa_arr.rank() == 0 {
-                let scalar = xa_arr.get(0).unwrap_or(B::m_f64(0.0));
-                let scalar_arr = get_arr(scalar);
-                return pervasive_dyad(w, Some(wa_arr), scalar, scalar_arr.as_ref(), scalar_fn, name);
+                return pervasive_dyad(w, Some(wa_arr), x, None, scalar_fn, name);
             }
             // Try fast numeric path first
             if let (Ok(wvals), Ok(xvals)) = (wa_arr.f64_iter(), xa_arr.f64_iter()) {

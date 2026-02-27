@@ -208,7 +208,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
             } else if idx_b.is_arr() {
                 let sub_arr = get_arr(idx_b)
                     .ok_or_else(|| BqnError::Type("𝕨⊏𝕩: index element not found".into()))?;
-                // rank-0 enclosed: error
+                // rank-0 enclosed: error (not valid for ⊏)
                 if sub_arr.rank() == 0 {
                     return Err(BqnError::Rank("𝕨⊏𝕩: index element must not be rank-0 (enclosed)".into()));
                 }
