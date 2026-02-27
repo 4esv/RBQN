@@ -208,13 +208,17 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
             } else if idx_b.is_arr() {
                 let sub_arr = get_arr(idx_b)
                     .ok_or_else(|| BqnError::Type("𝕨⊏𝕩: index element not found".into()))?;
-                // rank-0 enclosed: error (not valid for ⊏)
+                // rank-0 enclosed: single index that reduces this axis (no shape contribution)
                 if sub_arr.rank() == 0 {
-                    return Err(BqnError::Rank("𝕨⊏𝕩: index element must not be rank-0 (enclosed)".into()));
+                    let inner = sub_arr.get(0)?;
+                    let iv = validate_integer_index(inner, "𝕨⊏𝕩")?;
+                    axis_indices.push(vec![iv]);
+                    axis_shapes.push(vec![]); // no shape contribution (axis is reduced)
+                } else {
+                    let sub_indices = sub_arr.i32_iter()?;
+                    axis_shapes.push(sub_arr.shape.clone());
+                    axis_indices.push(sub_indices);
                 }
-                let sub_indices = sub_arr.i32_iter()?;
-                axis_shapes.push(sub_arr.shape.clone());
-                axis_indices.push(sub_indices);
             } else {
                 return Err(BqnError::Type("𝕨⊏𝕩: index must be number or array".into()));
             }
@@ -222,7 +226,13 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 
         // Build result shape: concat of all axis index shapes, plus trailing axes of x
         let arr_rank = arr.rank() as usize;
-        let n_axes = wia.min(arr_rank);
+        if wia > arr_rank {
+            return Err(BqnError::Rank(format!(
+                "𝕨⊏𝕩: Compound 𝕨 must not be longer than 𝕩 ({} ≡ ≠𝕨, {:?} ≡ ≢𝕩)",
+                wia, arr.shape
+            )));
+        }
+        let n_axes = wia;
         let mut out_shape: Vec<usize> = Vec::new();
         for sh in &axis_shapes {
             out_shape.extend_from_slice(sh);

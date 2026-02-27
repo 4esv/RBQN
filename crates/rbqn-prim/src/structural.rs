@@ -1351,7 +1351,7 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
         if a >= current_shape.len() { break; }
         let dim = current_shape[a];
         let abs_n = n.unsigned_abs() as usize;
-        let outer_size: usize = current_shape[..a].iter().product::<usize>().max(1);
+        let outer_size: usize = if a == 0 { 1 } else { current_shape[..a].iter().product::<usize>() };
         let inner_size: usize = current_shape[a+1..].iter().product::<usize>().max(1);
         let old_slice = dim * inner_size;
 
@@ -1540,7 +1540,7 @@ fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
             (0, (dim + n).max(0) as usize)
         };
         let remaining = end - start;
-        let outer_size: usize = current_shape[..a].iter().product::<usize>().max(1);
+        let outer_size: usize = if a == 0 { 1 } else { current_shape[..a].iter().product::<usize>() };
         let inner_size: usize = current_shape[a+1..].iter().product::<usize>().max(1);
         let old_slice = current_shape[a] * inner_size;
 
@@ -2137,12 +2137,17 @@ pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
 
     // Array w case: w specifies rotation per axis
     if let Some(warr) = wa {
-        let rotations = warr.i32_iter()?;
-        if rotations.len() != arr.rank() as usize {
+        let raw_rotations = warr.i32_iter()?;
+        if raw_rotations.len() > arr.rank() as usize {
             return Err(BqnError::Rank(format!(
-                "𝕨⌽𝕩: 𝕨 length ({}) must equal rank of 𝕩 ({})",
-                rotations.len(), arr.rank()
+                "𝕨⌽𝕩: 𝕨 length ({}) must be at most rank of 𝕩 ({})",
+                raw_rotations.len(), arr.rank()
             )));
+        }
+        // Pad with zeros for any trailing axes not covered by w
+        let mut rotations = raw_rotations;
+        while rotations.len() < arr.rank() as usize {
+            rotations.push(0);
         }
         // For now only handle first-axis rotation (common case)
         // Multi-axis rotation requires separate permute steps
@@ -2232,16 +2237,17 @@ fn rotate_along_axis(arr: &BqnArr, axis: usize, rot: i32) -> Result<BqnArr> {
     let mut result = vec![B::m_i32(0); ia];
 
     for flat in 0..ia {
-        // Decompose flat into multi-index
+        // Decompose flat into multi-index, compute source index
+        // BQN: result[i] = arr[(i+shift) % dim] along the rotated axis
         let mut rem = flat;
-        let mut new_flat = 0;
+        let mut src_flat = 0;
         for a in 0..rank {
             let idx = rem / strides[a];
             rem %= strides[a];
-            let new_idx = if a == axis { (idx + shift) % dim } else { idx };
-            new_flat += new_idx * strides[a];
+            let src_idx = if a == axis { (idx + shift) % dim } else { idx };
+            src_flat += src_idx * strides[a];
         }
-        result[new_flat] = arr.get(flat)?;
+        result[flat] = arr.get(src_flat)?;
     }
 
     Ok(typed_arr(result, arr.shape.clone(), arr.fill))

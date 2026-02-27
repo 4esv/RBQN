@@ -79,18 +79,21 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
         return Ok(PrimResult::Array(BqnArr::new_vec_b(vec![])));
     }
 
-    // Per-dimension specification
+    // Per-dimension specification.
+    // Each element of the input can be:
+    //   - a scalar n: contributes 0 axes to the tuple, 1 result axis
+    //   - an array of any rank r: contributes r axes to the tuple, 1 result axis
+    //     The array is raveled to get flat group indices.
+    //     When building tuples, flat positions are expanded back to multi-dim indices.
     enum DimSpec {
-        // Scalar n: 1 "position" (pos 0) → group n. Doesn't contribute to tuple.
-        // matches[n] = [0], all others = []
         Scalar {
             target_group: usize,
             result_size: usize,
         },
-        // Array: index array with explicit positions. Contributes to tuple.
         Array {
             result_size: usize,
-            matches: Vec<Vec<usize>>, // matches[g] = positions with index g
+            matches: Vec<Vec<usize>>, // matches[g] = flat positions with index g
+            elem_shape: Vec<usize>,   // original shape of the element (for expanding flat→multi-dim)
         },
     }
 
@@ -100,7 +103,6 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
     for k in 0..ndim {
         let elem = arr.get(k)?;
         if elem.is_f64() {
-            // Scalar n
             let n = elem.to_i32().map_err(|_| BqnError::Type(format!(
                 "⊔𝕩: element {} must be an integer", k
             )))?;
@@ -135,8 +137,22 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
                     matches[g as usize].push(i);
                 }
             }
-            dims.push(DimSpec::Array { result_size, matches });
+            dims.push(DimSpec::Array { result_size, matches, elem_shape: elem_arr.shape.clone() });
         }
+    }
+
+    // Helper: convert flat position to multi-dimensional index tuple
+    fn flat_to_multi(flat: usize, shape: &[usize]) -> Vec<i32> {
+        if shape.is_empty() {
+            return vec![];
+        }
+        let mut result = vec![0i32; shape.len()];
+        let mut rem = flat;
+        for k in (0..shape.len()).rev() {
+            result[k] = (rem % shape[k]) as i32;
+            rem /= shape[k];
+        }
+        result
     }
 
     // Compute result strides for flat cell index
@@ -147,6 +163,12 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
         }
         s
     };
+
+    // Compute tuple length: sum of ranks of array elements
+    let tuple_len: usize = dims.iter().map(|d| match d {
+        DimSpec::Scalar { .. } => 0,
+        DimSpec::Array { elem_shape, .. } => elem_shape.len(),
+    }).sum();
 
     let total_cells: usize = result_shape.iter().product();
     let mut result_cells: Vec<B> = Vec::with_capacity(total_cells);
@@ -161,39 +183,27 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
             group_indices.push(g);
         }
 
-        // For each dim, compute the count (for cell shape) and matches (for tuple, if array).
-        // Cell shape = ⟨count₀, count₁, ..., countₙ₋₁⟩
+        // For each dim, compute the count (for cell shape) and matches
         let mut cell_counts: Vec<usize> = Vec::with_capacity(ndim);
-        // For array dims, store the matches for the given group
-        let mut array_matches_for_cell: Vec<Vec<usize>> = Vec::new();
+        let mut array_matches_for_cell: Vec<(Vec<usize>, Vec<usize>)> = Vec::new(); // (flat_positions, elem_shape)
 
         for k in 0..ndim {
             let g = group_indices[k];
             match &dims[k] {
                 DimSpec::Scalar { target_group, .. } => {
-                    // Count is 1 if g == target, else 0
                     cell_counts.push(if g == *target_group { 1 } else { 0 });
                 }
-                DimSpec::Array { matches, .. } => {
+                DimSpec::Array { matches, elem_shape, .. } => {
                     let m = &matches[g];
                     cell_counts.push(m.len());
-                    array_matches_for_cell.push(m.clone());
+                    array_matches_for_cell.push((m.clone(), elem_shape.clone()));
                 }
             }
         }
 
-        // Cell total = product of all counts
         let cell_total: usize = cell_counts.iter().product();
 
-        // Build cell elements: enumerate over outer product
-        // Cell is indexed by (r₀, r₁, ..., rₙ₋₁) with 0 ≤ rk < count_k.
-        // For scalar dims, rk is always 0 (but no position in tuple).
-        // For array dims, rk indexes into array_matches_for_cell.
-        // Tuple = ⟨array_matches_for_cell[j][r_j] for each array dim j⟩
-
-        let n_arr_dims = array_matches_for_cell.len();
-
-        // Cell strides (over all dims, not just array dims)
+        // Cell strides
         let cell_strides: Vec<usize> = {
             let mut s = vec![1usize; ndim];
             for k in (0..ndim.saturating_sub(1)).rev() {
@@ -205,7 +215,6 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
         let mut cell_elems: Vec<B> = Vec::with_capacity(cell_total);
 
         for elem_flat in 0..cell_total {
-            // Decode multi-index
             let mut r_per_dim: Vec<usize> = Vec::with_capacity(ndim);
             let mut rem = elem_flat;
             for k in 0..ndim {
@@ -215,15 +224,19 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
                 r_per_dim.push(r);
             }
 
-            // Build tuple from array dims only
-            let mut pos_tuple: Vec<i32> = Vec::with_capacity(n_arr_dims);
+            // Build tuple: for each array dim, expand flat position to multi-dim index
+            let mut pos_tuple: Vec<i32> = Vec::with_capacity(tuple_len);
             let mut arr_dim_idx = 0usize;
             for k in 0..ndim {
                 match &dims[k] {
-                    DimSpec::Scalar { .. } => {} // skip, no position in tuple
+                    DimSpec::Scalar { .. } => {} // skip
                     DimSpec::Array { .. } => {
                         let r = r_per_dim[k];
-                        pos_tuple.push(array_matches_for_cell[arr_dim_idx][r] as i32);
+                        let (ref flat_positions, ref elem_shape) = array_matches_for_cell[arr_dim_idx];
+                        let flat_pos = flat_positions[r];
+                        // Expand flat position back to multi-dimensional index
+                        let multi_idx = flat_to_multi(flat_pos, elem_shape);
+                        pos_tuple.extend_from_slice(&multi_idx);
                         arr_dim_idx += 1;
                     }
                 }
@@ -231,7 +244,6 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
             cell_elems.push(tag_arr(BqnArr::new_vec_i32(pos_tuple)));
         }
 
-        // Build the cell as a rank-ndim boxed array with shape = cell_counts
         let cell_arr = {
             let mut a = BqnArr::new_vec_b(cell_elems);
             a.shape = cell_counts;
@@ -496,228 +508,250 @@ fn group_high_rank_w(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRes
 ///
 /// For scalar wₖ = n: position j matches group n for all j in axis k.
 fn group_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
-    let n_axes = warr.ia();
-    if n_axes == 0 {
-        return Err(BqnError::Domain("𝕨⊔𝕩: empty 𝕨 not supported".into()));
+    let n_dims = warr.ia();
+    if n_dims == 0 {
+        // BQN: ⟨⟩⊔x returns ⟨⟩ (empty result with fill derived from x)
+        let fill_b = if let Some(a) = xa {
+            let empty_cell = array::typed_arr_from_b_vec(vec![], a.shape.clone(), a.fill);
+            Some(rbqn_core::tag_arr(empty_cell))
+        } else {
+            None
+        };
+        let mut out = BqnArr::new_vec_b(vec![]);
+        out.fill = fill_b;
+        return Ok(PrimResult::Array(out));
     }
 
-    // x can be a scalar (rank 0): treat as rank-0 array with one element
-    let (xarr, x_rank, x_shape): (&BqnArr, usize, Vec<usize>) = if let Some(a) = xa {
-        (a, a.rank() as usize, a.shape.clone())
-    } else {
-        // Scalar x: synthetic single-element rank-0 array
-        // We'll handle this specially
-        return group_multi_axis_scalar_x(warr, x);
-    };
-
-    // Validate: number of axes in w must be ≤ rank of x
-    if n_axes > x_rank {
-        return Err(BqnError::Rank(format!(
-            "𝕨⊔𝕩: Total rank of 𝕨 must be at most rank of 𝕩 ({} > {})",
-            n_axes, x_rank
-        )));
+    // Parse w elements. Each can be:
+    //   - scalar (f64): target group index, doesn't consume an x axis
+    //   - rank-0 boxed (enclosed scalar like <2): same as scalar
+    //   - rank-1+ array: index array, consumes one x axis
+    enum WElem {
+        Scalar(i32),         // target group index
+        Array(Vec<i32>),     // index array (length matches one x axis)
     }
 
-    // trailing shape = x dims beyond the n_axes grouped dims
-    let trailing_shape = if x_rank > n_axes { x_shape[n_axes..].to_vec() } else { vec![] };
-    let cell_size: usize = trailing_shape.iter().product::<usize>().max(1);
-
-    // Parse each axis's w element
-    struct AxisSpec {
-        result_size: usize,
-        // matches[g] = sorted list of positions in axis k that map to group g
-        matches: Vec<Vec<usize>>,
-    }
-
-    let mut axes: Vec<AxisSpec> = Vec::with_capacity(n_axes);
-    let mut result_shape: Vec<usize> = Vec::with_capacity(n_axes);
-
-    for a in 0..n_axes {
+    let mut w_elems: Vec<WElem> = Vec::with_capacity(n_dims);
+    for a in 0..n_dims {
         let w_elem = warr.get(a)?;
-
         if w_elem.is_f64() {
-            // Scalar n: all positions in this axis map to group n
             let n = w_elem.to_i32().map_err(|_| BqnError::Domain(format!(
                 "𝕨⊔𝕩: axis {} w element must be an integer", a
             )))?;
-            if n < 0 {
-                return Err(BqnError::Domain(format!(
-                    "𝕨⊔𝕩: scalar w for axis {} must be ≥ 0, got {}", a, n
-                )));
-            }
-            let n_u = n as usize;
-            let result_size = n_u + 1;
-            let x_dim = if x_rank > a { x_shape[a] } else { 1 };
-            let mut matches: Vec<Vec<usize>> = vec![vec![]; result_size];
-            // All positions in x axis a go to group n_u
-            for j in 0..x_dim {
-                matches[n_u].push(j);
-            }
-            result_shape.push(result_size);
-            axes.push(AxisSpec { result_size, matches });
+            w_elems.push(WElem::Scalar(n));
         } else {
-            // Array: integer index array for this axis
             let w_arr = get_arr(w_elem)
                 .ok_or_else(|| BqnError::Type(format!("𝕨⊔𝕩: axis {} w element must be an array", a)))?;
-
-            // Unbox if needed
-            let indices_result: Result<Vec<i32>> = if w_arr.el_type() == ElType::B {
-                // Boxed scalar inside
-                let inner = w_arr.get(0)?;
-                if inner.is_f64() {
-                    Ok(vec![inner.to_i32()?])
-                } else {
-                    w_arr.i32_iter()
+            // Rank-0 boxed (enclosed scalar): treat as scalar
+            if w_arr.rank() == 0 {
+                if w_arr.ia() > 0 {
+                    let inner = w_arr.get(0)?;
+                    if inner.is_f64() {
+                        w_elems.push(WElem::Scalar(inner.to_i32()?));
+                        continue;
+                    }
                 }
-            } else {
-                w_arr.i32_iter()
-            };
-            let indices = indices_result.map_err(|_| BqnError::Type(format!(
+                return Err(BqnError::Type(format!("𝕨⊔𝕩: axis {} w element must be integer", a)));
+            }
+            // Rank-1+ array: integer indices
+            let indices = w_arr.i32_iter().map_err(|_| BqnError::Type(format!(
                 "𝕨⊔𝕩: axis {} w element must be an integer array", a
             )))?;
+            w_elems.push(WElem::Array(indices));
+        }
+    }
 
-            let x_dim = if x_rank > a { x_shape[a] } else { 1 };
+    // Count how many array w elements → must be <= x rank
+    let n_array_dims = w_elems.iter().filter(|e| matches!(e, WElem::Array(_))).count();
 
-            let (idx_vals, min_len) = if indices.len() == x_dim + 1 {
-                let last = *indices.last().unwrap();
-                let min = last.max(0) as usize;
-                (indices[..x_dim].to_vec(), min)
-            } else if indices.len() == x_dim {
-                (indices.clone(), 0usize)
-            } else {
-                return Err(BqnError::Shape(format!(
-                    "𝕨⊔𝕩: axis {} index length {} doesn't match 𝕩 dimension {}",
-                    a, indices.len(), x_dim
-                )));
-            };
+    // Get x info
+    let x_rank;
+    let x_shape: Vec<usize>;
+    let x_fill;
+    // For scalar x, synthesize a rank-0 array
+    let scalar_arr;
+    let xarr: &BqnArr = if let Some(a) = xa {
+        x_rank = a.rank() as usize;
+        x_shape = a.shape.clone();
+        x_fill = a.fill;
+        a
+    } else {
+        // Atom x: rank 0
+        x_rank = 0;
+        x_shape = vec![];
+        x_fill = None;
+        scalar_arr = BqnArr {
+            shape: vec![],
+            data: ArrData::Boxed(vec![x]),
+            fill: None,
+        };
+        &scalar_arr
+    };
 
-            for &v in &idx_vals {
-                if v < -1 {
+    if n_array_dims > x_rank {
+        return Err(BqnError::Rank(format!(
+            "𝕨⊔𝕩: Total rank of 𝕨 must be at most rank of 𝕩 ({} > {})",
+            n_array_dims, x_rank
+        )));
+    }
+
+    // Map each w element to its x axis (or None for scalars)
+    // Array elements consume consecutive x axes; scalar elements don't
+    let mut x_axis_for_dim: Vec<Option<usize>> = Vec::with_capacity(n_dims);
+    let mut next_x_axis = 0usize;
+    for e in &w_elems {
+        match e {
+            WElem::Scalar(_) => { x_axis_for_dim.push(None); }
+            WElem::Array(_) => {
+                x_axis_for_dim.push(Some(next_x_axis));
+                next_x_axis += 1;
+            }
+        }
+    }
+
+    // trailing shape = x dims beyond the consumed axes
+    let trailing_shape = if x_rank > n_array_dims { x_shape[n_array_dims..].to_vec() } else { vec![] };
+    let cell_size: usize = trailing_shape.iter().product::<usize>().max(1);
+
+    // Build per-dimension specs
+    struct DimSpec {
+        result_size: usize,
+        matches: Vec<Vec<usize>>,  // matches[g] = positions for group g
+    }
+
+    let mut dims: Vec<DimSpec> = Vec::with_capacity(n_dims);
+    let mut result_shape: Vec<usize> = Vec::with_capacity(n_dims);
+
+    for (a, (we, xa_idx)) in w_elems.iter().zip(x_axis_for_dim.iter()).enumerate() {
+        match we {
+            WElem::Scalar(n) => {
+                if *n < 0 {
                     return Err(BqnError::Domain(format!(
-                        "𝕨⊔𝕩: axis {} values must be ≥¯1, got {}", a, v
+                        "𝕨⊔𝕩: scalar w for axis {} must be ≥ 0, got {}", a, n
                     )));
                 }
+                let n_u = *n as usize;
+                let result_size = n_u + 1;
+                // Scalar: match[n_u] contains all positions (but positions don't consume x axis)
+                // For cell construction: a scalar dim contributes count=1 if g==n, else 0
+                let mut matches: Vec<Vec<usize>> = vec![vec![]; result_size];
+                matches[n_u] = vec![0]; // single "position" placeholder
+                result_shape.push(result_size);
+                dims.push(DimSpec { result_size, matches });
             }
+            WElem::Array(indices) => {
+                let xa_k = xa_idx.unwrap();
+                let x_dim = if xa_k < x_rank { x_shape[xa_k] } else { 1 };
 
-            let max_idx = idx_vals.iter().copied().max().unwrap_or(-1);
-            let result_size = ((max_idx + 1).max(0) as usize).max(min_len);
-            result_shape.push(result_size);
+                let (idx_vals, min_len) = if indices.len() == x_dim + 1 {
+                    let last = *indices.last().unwrap();
+                    let min = last.max(0) as usize;
+                    (indices[..x_dim].to_vec(), min)
+                } else if indices.len() == x_dim {
+                    (indices.clone(), 0usize)
+                } else {
+                    return Err(BqnError::Shape(format!(
+                        "𝕨⊔𝕩: axis {} index length {} doesn't match 𝕩 dimension {}",
+                        a, indices.len(), x_dim
+                    )));
+                };
 
-            let mut matches: Vec<Vec<usize>> = vec![vec![]; result_size];
-            for (j, &g) in idx_vals.iter().enumerate() {
-                if g >= 0 && (g as usize) < result_size {
-                    matches[g as usize].push(j);
+                for &v in &idx_vals {
+                    if v < -1 {
+                        return Err(BqnError::Domain(format!(
+                            "𝕨⊔𝕩: axis {} values must be ≥¯1, got {}", a, v
+                        )));
+                    }
                 }
+
+                let max_idx = idx_vals.iter().copied().max().unwrap_or(-1);
+                let result_size = ((max_idx + 1).max(0) as usize).max(min_len);
+                result_shape.push(result_size);
+
+                let mut matches: Vec<Vec<usize>> = vec![vec![]; result_size];
+                for (j, &g) in idx_vals.iter().enumerate() {
+                    if g >= 0 && (g as usize) < result_size {
+                        matches[g as usize].push(j);
+                    }
+                }
+                dims.push(DimSpec { result_size, matches });
             }
-            axes.push(AxisSpec { result_size, matches });
         }
     }
 
     // Compute result strides
     let result_ia: usize = result_shape.iter().product();
     let result_strides: Vec<usize> = {
-        let mut s = vec![1usize; n_axes];
-        for k in (0..n_axes.saturating_sub(1)).rev() {
+        let mut s = vec![1usize; n_dims];
+        for k in (0..n_dims.saturating_sub(1)).rev() {
             s[k] = s[k + 1] * result_shape[k + 1];
         }
         s
     };
 
-    // Build result: for each result cell, extract a submatrix of x
+    // Compute x strides for each x axis
+    let x_dim_strides: Vec<usize> = {
+        let mut s = vec![1usize; x_rank + 1];
+        for k in (0..x_rank).rev() {
+            s[k] = s[k + 1] * x_shape[k];
+        }
+        (0..x_rank).map(|k| s[k + 1]).collect()
+    };
+
+    // Build result
     let mut result: Vec<B> = Vec::with_capacity(result_ia);
 
     for cell_flat in 0..result_ia {
-        // Decode group indices
-        let mut group_idxs: Vec<usize> = Vec::with_capacity(n_axes);
+        // Decode group multi-index
+        let mut group_idxs: Vec<usize> = Vec::with_capacity(n_dims);
         let mut rem = cell_flat;
-        for k in 0..n_axes {
+        for k in 0..n_dims {
             let g = rem / result_strides[k];
             rem %= result_strides[k];
             group_idxs.push(g);
         }
 
-        // Get matching positions for each axis
-        let axis_matches: Vec<&[usize]> = (0..n_axes)
-            .map(|k| axes[k].matches[group_idxs[k]].as_slice())
+        // Get matching positions per dim
+        let dim_matches: Vec<&[usize]> = (0..n_dims)
+            .map(|k| dims[k].matches[group_idxs[k]].as_slice())
             .collect();
 
-        // Cell shape = ⟨count₀,...,countₙ₋₁, trailing...⟩
-        let counts: Vec<usize> = axis_matches.iter().map(|m| m.len()).collect();
+        // Cell shape: for each dim, count of matches
+        // For scalar dims with wrong group, count=0 (empty matches)
+        let counts: Vec<usize> = dim_matches.iter().map(|m| m.len()).collect();
         let cell_count: usize = counts.iter().product();
         let mut cell_shape = counts.clone();
         cell_shape.extend_from_slice(&trailing_shape);
         let cell_total = cell_count * cell_size;
 
-        // Compute strides for the n_axes dimensions of x
-        // x_strides[k] = product of x.shape[k+1..n_axes]
-        let x_axis_strides: Vec<usize> = {
-            let mut s = vec![1usize; n_axes];
-            for k in (0..n_axes.saturating_sub(1)).rev() {
-                s[k] = s[k + 1] * (if k + 1 < x_rank { x_shape[k + 1] } else { 1 });
-            }
-            s
-        };
-        // Full x stride for axis k: includes trailing dims too
-        let x_full_strides: Vec<usize> = {
-            let mut s = vec![1usize; n_axes];
-            // s[k] = product of x.shape[k+1..]
-            for k in (0..n_axes.saturating_sub(1)).rev() {
-                s[k] = s[k + 1] * (if k + 1 < x_rank { x_shape[k + 1] } else { 1 });
-            }
-            if n_axes > 0 {
-                // s[last] = cell_size (trailing)
-                s[n_axes - 1] = cell_size;
-                for k in (0..n_axes.saturating_sub(1)).rev() {
-                    s[k] = s[k + 1] * (if k + 1 < x_rank { x_shape[k + 1] } else { 1 });
-                }
-            }
-            s
-        };
-
-        // Enumerate all positions in the cell via multi-index over matches
-        // Cell position (r₀,...,rₙ₋₁) maps to x positions:
-        //   axis 0: axis_matches[0][r₀]
-        //   axis 1: axis_matches[1][r₁]
-        //   ...
-        //   base offset in x = sum_k(x_axis_stride[k] * axis_matches[k][rk]) * cell_size
-        // then extract cell_size elements from that offset
-
-        // Compute x strides for each axis (including trailing)
-        // x is stored with strides: x_shape[1]*...*x_shape[rank-1], ..., cell_size, 1
-        let x_dim_strides: Vec<usize> = {
-            let total_dims = x_rank;
-            let mut s = vec![1usize; total_dims + 1];
-            for k in (0..total_dims).rev() {
-                s[k] = s[k + 1] * x_shape[k];
-            }
-            // stride for axis k = s[k+1]
-            (0..total_dims).map(|k| s[k + 1]).collect()
-        };
-
         let mut cell_elems: Vec<B> = Vec::with_capacity(cell_total);
 
-        // Enumerate over the outer product of axis_matches
-        enumerate_product(&axis_matches, |axis_positions| {
-            // Compute x base offset
-            let x_base: usize = axis_positions.iter().enumerate()
-                .map(|(k, &pos)| pos * x_dim_strides.get(k).copied().unwrap_or(1))
-                .sum();
-            // Extract cell_size elements
+        // Enumerate outer product of dim_matches
+        enumerate_product(&dim_matches, |positions| {
+            // Compute x offset from the array-dim positions only
+            let mut x_base = 0usize;
+            for (k, &pos) in positions.iter().enumerate() {
+                if let Some(xa_k) = x_axis_for_dim[k] {
+                    // This is an array dim — pos is an actual x axis position
+                    x_base += pos * x_dim_strides.get(xa_k).copied().unwrap_or(1);
+                }
+                // Scalar dims: pos is a placeholder (0), doesn't contribute to x offset
+            }
             for j in 0..cell_size {
                 cell_elems.push(xarr.get(x_base + j).unwrap_or(B::SENTINEL));
             }
         });
 
-        let cell_arr = array::typed_arr_from_b_vec(cell_elems, cell_shape, xarr.fill);
+        let cell_arr = array::typed_arr_from_b_vec(cell_elems, cell_shape, x_fill);
         result.push(tag_arr(cell_arr));
     }
 
     let empty_cell_shape = {
-        let mut s = vec![0usize; n_axes];
+        let mut s = vec![0usize; n_dims];
         s.extend_from_slice(&trailing_shape);
         s
     };
-    let group_fill_arr = array::typed_arr_from_b_vec(vec![], empty_cell_shape, xarr.fill);
+    let group_fill_arr = array::typed_arr_from_b_vec(vec![], empty_cell_shape, x_fill);
     let group_fill = rbqn_core::tag_arr(group_fill_arr);
     let mut out = BqnArr::new_vec_b(result);
     out.shape = result_shape;
