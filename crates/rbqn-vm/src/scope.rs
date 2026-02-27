@@ -340,16 +340,77 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
     } else if rbqn_core::is_arr_merge(s) {
         // Merge-destructuring header match: split x along first axis
         v_merge_seth(pscs, s, x)
+    } else if s.is_alias() {
+        // ALIAS_TAG in header: ⟨al⇐a⟩: — extract field by GID from namespace x,
+        // then bind to local variable at (depth, pos) encoded in the alias.
+        let gid = s.alias_gid();
+        let d = s.alias_depth() as usize;
+        let p = s.alias_pos() as usize;
+        if x.is_nsp() {
+            let ns = get_ns(x);
+            match ns.get_by_gid(gid) {
+                Some(field_val) => {
+                    if d < pscs.len() {
+                        pscs[d].var_set(p, field_val);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                None => false, // field not found → header doesn't match
+            }
+        } else {
+            false
+        }
     } else if s.is_arr() {
         let s_arr = match rbqn_core::get_arr(s) {
             Some(a) => a,
             None => return false,
         };
+        let s_len = s_arr.ia();
+
+        // NOTE: when x is a namespace, try namespace destructuring in header
+        if x.is_nsp() {
+            let ns = get_ns(x);
+            for i in 0..s_len {
+                let si = match s_arr.get(i) { Ok(v) => v, Err(_) => return false };
+                if si.is_var() {
+                    // Plain VAR ref: use the variable's own GID as field name
+                    let dep = si.v_depth() as usize;
+                    let pos = si.v_pos() as usize;
+                    if dep >= pscs.len() { return false; }
+                    let gid = if pos < pscs[dep].body.all_var_gids.len() {
+                        pscs[dep].body.all_var_gids[pos]
+                    } else {
+                        -1
+                    };
+                    if gid < 0 { return false; }
+                    match ns.get_by_gid(gid) {
+                        Some(field_val) => pscs[dep].var_set(pos, field_val),
+                        None => return false, // required field missing → header fails
+                    }
+                } else if si.is_alias() {
+                    // ALIAS: ⟨local⇐field⟩ — extract field by GID, bind to local var
+                    let field_gid = si.alias_gid();
+                    let dep = si.alias_depth() as usize;
+                    let pos = si.alias_pos() as usize;
+                    if dep >= pscs.len() { return false; }
+                    match ns.get_by_gid(field_gid) {
+                        Some(field_val) => pscs[dep].var_set(pos, field_val),
+                        None => return false, // required field missing → header fails
+                    }
+                } else {
+                    // Other pattern elements (literals, nested arrays) — fall through → no match
+                    return false;
+                }
+            }
+            return true;
+        }
+
         let x_arr = match rbqn_core::get_arr(x) {
             Some(a) => a,
             None => return false,
         };
-        let s_len = s_arr.ia();
         let x_len = x_arr.ia();
         if s_len != x_len {
             return false;
@@ -361,6 +422,18 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
                 return false;
             }
         }
+        true
+    } else if s.is_f64() && x.is_f64() {
+        // Literal number matching: {2: 4; 𝕩} type headers
+        s.o2f() == x.o2f()
+    } else if s.is_c32() && x.is_c32() {
+        // Literal character matching
+        s.0 == x.0
+    } else if s.is_f64() || s.is_c32() {
+        // Literal vs non-matching type
+        false
+    } else if (s.is_fun() || s.is_md1() || s.is_md2()) && s.0 == x.0 {
+        // Identity match for functions/modifiers
         true
     } else {
         false

@@ -109,12 +109,53 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊏𝕩: 𝕨 must be a number or array".into()))?;
 
-    // NOTE: rank-0 𝕨 is not a valid index for ⊏
+    // rank-0 boxed 𝕨: unbox and use as index array for first axis
     if warr.rank() == 0 {
+        if warr.el_type() == ElType::B {
+            let inner = warr.get(0)?;
+            if inner.is_f64() {
+                let idx = resolve_index(validate_integer_index(inner, "𝕨⊏𝕩")?, first_dim)?;
+                if arr.rank() <= 1 {
+                    return Ok(PrimResult::Scalar(arr.get(idx)?));
+                }
+                let mut result = Vec::with_capacity(cell_size);
+                for j in 0..cell_size {
+                    result.push(arr.get(idx * cell_size + j)?);
+                }
+                let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), arr.fill);
+                return Ok(PrimResult::Array(out));
+            }
+            if inner.is_arr() {
+                let inner_arr = get_arr(inner)
+                    .ok_or_else(|| BqnError::Type("𝕨⊏𝕩: index not found".into()))?;
+                let indices = inner_arr.i32_iter()?;
+                if cell_shape.is_empty() && arr.rank() <= 1 {
+                    let mut result = Vec::with_capacity(indices.len());
+                    for &i in &indices {
+                        let idx = resolve_index(i, first_dim)?;
+                        result.push(arr.get(idx)?);
+                    }
+                    let out = typed_arr_from_b_vec(result, inner_arr.shape.clone(), arr.fill);
+                    return Ok(PrimResult::Array(out));
+                } else {
+                    let mut result = Vec::with_capacity(indices.len() * cell_size);
+                    for &i in &indices {
+                        let idx = resolve_index(i, first_dim)?;
+                        for j in 0..cell_size {
+                            result.push(arr.get(idx * cell_size + j)?);
+                        }
+                    }
+                    let mut out_shape = inner_arr.shape.clone();
+                    out_shape.extend_from_slice(cell_shape);
+                    let out = typed_arr_from_b_vec(result, out_shape, arr.fill);
+                    return Ok(PrimResult::Array(out));
+                }
+            }
+        }
         return Err(BqnError::Rank("𝕨⊏𝕩: 𝕨 must be a number or rank≥1 array".into()));
     }
 
-    // NOTE: rank>1 boxed 𝕨 is not a standard ⊏ pattern (would need nested cell structure)
+    // NOTE: rank>1 boxed 𝕨 is not a standard ⊏ pattern
     if warr.rank() > 1 && warr.el_type() == ElType::B {
         return Err(BqnError::Rank(format!(
             "𝕨⊏𝕩: rank-{} boxed 𝕨 not supported for ⊏",
@@ -233,7 +274,7 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
 
     // NOTE: rank-0 w (enclosed index) is not valid for ⊑
     if warr.rank() == 0 {
-        return Err(BqnError::Rank("𝕨⊑𝕩: 𝕨 must be a number or rank-1 list, not rank-0".into()));
+        return Err(BqnError::Rank("𝕨⊑𝕩: 𝕨 must be a number or rank≥1 array".into()));
     }
 
     // Multi-dimensional pick: w is a list of indices
@@ -268,6 +309,10 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
                 // Nested index list
                 let idx_arr = get_arr(idx_b)
                     .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: index element not found".into()))?;
+                // NOTE: Enclosed (rank-0) array as index is not valid for ⊑
+                if idx_arr.rank() == 0 {
+                    return Err(BqnError::Rank("𝕨⊑𝕩: index element must not be rank-0 (enclosed)".into()));
+                }
                 let indices = idx_arr.i32_iter()?;
                 if indices.len() != arr.rank() as usize {
                     return Err(BqnError::Rank(
@@ -291,4 +336,76 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
     }
 
     Err(BqnError::Type("𝕨⊑𝕩: unsupported index type".into()))
+}
+
+/// Deep pick helper: given an index value and a target, pick one element.
+/// Handles: scalar index (pick from rank-1), rank-1 int list (multi-axis),
+/// rank-0 boxed (unbox and recurse), rank-1 boxed (path walk).
+fn deep_pick_one(idx: B, target: B) -> Result<B> {
+    if idx.is_f64() {
+        // Scalar index: pick from first axis
+        if target.is_atom() {
+            return Ok(target);
+        }
+        let arr = get_arr(target)
+            .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
+        let i = validate_integer_index(idx, "𝕨⊑𝕩")?;
+        let resolved = resolve_index(i, if arr.rank() <= 1 { arr.ia() } else { arr.shape[0] })?;
+        if arr.rank() <= 1 {
+            return Ok(arr.get(resolved)?);
+        }
+        // Multi-dimensional: return cell
+        let cell_shape = &arr.shape[1..];
+        let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+        let mut result = Vec::with_capacity(cell_size);
+        for j in 0..cell_size {
+            result.push(arr.get(resolved * cell_size + j)?);
+        }
+        let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), arr.fill);
+        Ok(tag_arr(out))
+    } else if idx.is_arr() {
+        let idx_arr = get_arr(idx)
+            .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: index not found".into()))?;
+        if idx_arr.rank() == 0 && idx_arr.el_type() == ElType::B {
+            // Rank-0 boxed: unbox and recurse
+            let inner = idx_arr.get(0)?;
+            return deep_pick_one(inner, target);
+        }
+        if target.is_atom() {
+            return Ok(target);
+        }
+        let arr = get_arr(target)
+            .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
+        if idx_arr.el_type() != ElType::B {
+            // Rank-1 numeric: multi-axis pick
+            let indices = idx_arr.i32_iter()?;
+            if indices.len() != arr.rank() as usize {
+                return Err(BqnError::Rank("𝕨⊑𝕩: index length must equal rank of 𝕩".into()));
+            }
+            let mut flat_idx = 0usize;
+            let mut stride = 1usize;
+            for j in (0..indices.len()).rev() {
+                let resolved = resolve_index(indices[j], arr.shape[j])?;
+                flat_idx += resolved * stride;
+                stride *= arr.shape[j];
+            }
+            return Ok(arr.get(flat_idx)?);
+        }
+        // Rank-1 boxed: path walk
+        let wia = idx_arr.ia();
+        let mut current = target;
+        for i in 0..wia {
+            let step = idx_arr.get(i)?;
+            current = deep_pick_one(step, current)?;
+        }
+        Ok(current)
+    } else {
+        Err(BqnError::Type("𝕨⊑𝕩: index must be number or array".into()))
+    }
+}
+
+/// Deep pick entry: used when w is rank-0 boxed
+fn deep_pick(w: B, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let result = deep_pick_one(w, x)?;
+    Ok(PrimResult::Scalar(result))
 }

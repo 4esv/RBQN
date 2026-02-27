@@ -89,14 +89,18 @@ fn apply_row_permutation(arr: &BqnArr, indices: &[i32]) -> Result<BqnArr> {
 pub fn grade_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍋𝕩: 𝕩 must be an array".into()))?;
     let indices = grade(arr, true)?;
-    Ok(PrimResult::Array(BqnArr::new_vec_i32(indices)))
+    let mut out = BqnArr::new_vec_i32(indices);
+    out.fill = Some(B::m_i32(0));
+    Ok(PrimResult::Array(out))
 }
 
 // ⍒ monad: grade down
 pub fn grade_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍒𝕩: 𝕩 must be an array".into()))?;
     let indices = grade(arr, false)?;
-    Ok(PrimResult::Array(BqnArr::new_vec_i32(indices)))
+    let mut out = BqnArr::new_vec_i32(indices);
+    out.fill = Some(B::m_i32(0));
+    Ok(PrimResult::Array(out))
 }
 
 // ∧ monad: sort up (ascending) — returns sorted values, NOT the grade
@@ -117,9 +121,29 @@ pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
 // ⍋ dyad: bins (ascending)
 // NOTE: 𝕨 and 𝕩 must be compatible sorted arrays. Elements must be comparable (numbers, chars, arrays).
-pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍋𝕩: 𝕨 must be an array".into()))?;
-    let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍋𝕩: 𝕩 must be an array".into()))?;
+    // Handle atom x: result is rank-0
+    if xa.is_none() {
+        let w_lead = if warr.rank() > 0 { warr.shape[0] } else { 1 };
+        let w_cell_size: usize = if warr.rank() > 1 { warr.shape[1..].iter().product() } else { 1 };
+        if w_cell_size != 1 {
+            return Err(BqnError::Rank("𝕨⍋𝕩: atom 𝕩 incompatible with non-scalar 𝕨 cells".into()));
+        }
+        let mut lo = 0usize;
+        let mut hi = w_lead;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let wv = warr.get(mid)?;
+            if compare::compare(wv, x) <= 0 { lo = mid + 1; } else { hi = mid; }
+        }
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: array::ArrData::I32(vec![lo as i32]),
+            fill: Some(B::m_i32(0)),
+        }));
+    }
+    let xarr = xa.unwrap();
 
     // Validate: elements must be comparable (not functions/modifiers)
     if warr.el_type() == ElType::B {
@@ -151,71 +175,161 @@ pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Res
         )));
     }
 
-    if warr.el_type().is_num() && xarr.el_type().is_num() {
-        let wvals = warr.f64_iter()?;
-        let xvals = xarr.f64_iter()?;
-        let mut result = Vec::with_capacity(xvals.len());
-        for &xv in &xvals {
-            let pos = wvals.partition_point(|&wv| wv <= xv);
-            result.push(pos as i32);
+    let w_lead = if wr > 0 { warr.shape[0] } else { 1 };
+    let w_cell_size: usize = w_cell_shape.iter().product::<usize>().max(1);
+    let x_lead_dims = xr - w_cell_rank;
+    let x_lead_shape = &xarr.shape[..x_lead_dims];
+    let x_lead_count: usize = x_lead_shape.iter().product::<usize>().max(1);
+
+    // Validate x elements are sortable
+    if xarr.el_type() == ElType::B {
+        for i in 0..xarr.ia() {
+            let v = xarr.get(i)?;
+            if !v.is_f64() && !v.is_c32() && !v.is_arr() {
+                return Err(BqnError::Type("𝕨⍋𝕩: 𝕩 elements must be numbers, characters, or arrays".into()));
+            }
         }
-        let mut out = BqnArr::new_vec_i32(result);
-        out.shape = xarr.shape.clone();
-        return Ok(PrimResult::Array(out));
     }
 
-    // Non-numeric bins: use compare::compare for ordering
-    let wia = warr.ia();
-    let xia = xarr.ia();
-    let mut wvals = Vec::with_capacity(wia);
-    for i in 0..wia {
-        wvals.push(warr.get(i)?);
+    // w_leq_x: returns true if w cell j <= x cell at offset (ascending bins condition)
+    let w_leq_x = |x_offset: usize, w_j: usize| -> bool {
+        for k in 0..w_cell_size {
+            let wv = warr.get(w_j * w_cell_size + k).unwrap_or(B::SENTINEL);
+            let xv = xarr.get(x_offset + k).unwrap_or(B::SENTINEL);
+            let c = compare::compare(wv, xv);
+            if c < 0 { return true; }   // w < x → w <= x
+            if c > 0 { return false; }  // w > x → not w <= x
+        }
+        true // equal → w <= x
+    };
+
+    let mut result = Vec::with_capacity(x_lead_count);
+    for i in 0..x_lead_count {
+        let x_off = i * w_cell_size;
+        // Binary search: find first w_j where w_cell[w_j] > x_cell
+        let mut lo = 0usize;
+        let mut hi = w_lead;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if w_leq_x(x_off, mid) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        result.push(lo as i32);
     }
-    let mut result = Vec::with_capacity(xia);
-    for i in 0..xia {
-        let xv = xarr.get(i)?;
-        // Binary search: find first position where wvals[pos] > xv
-        let pos = wvals.partition_point(|&wv| compare::compare(wv, xv) <= 0);
-        result.push(pos as i32);
+
+    if x_lead_dims == 0 {
+        // Result is rank-0
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: array::ArrData::I32(result),
+            fill: Some(B::m_i32(0)),
+        }));
     }
     let mut out = BqnArr::new_vec_i32(result);
-    out.shape = xarr.shape.clone();
+    out.shape = x_lead_shape.to_vec();
+    out.fill = Some(B::m_i32(0));
     Ok(PrimResult::Array(out))
 }
 
 // ⍒ dyad: bins (descending)
-pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍒𝕩: 𝕨 must be an array".into()))?;
-    let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍒𝕩: 𝕩 must be an array".into()))?;
-
-    if warr.el_type().is_num() && xarr.el_type().is_num() {
-        let wvals = warr.f64_iter()?;
-        let xvals = xarr.f64_iter()?;
-        let mut result = Vec::with_capacity(xvals.len());
-        for &xv in &xvals {
-            let pos = wvals.partition_point(|&wv| wv >= xv);
-            result.push(pos as i32);
+    // Handle atom x: result is rank-0
+    if xa.is_none() {
+        let w_lead = if warr.rank() > 0 { warr.shape[0] } else { 1 };
+        let w_cell_size: usize = if warr.rank() > 1 { warr.shape[1..].iter().product() } else { 1 };
+        if w_cell_size != 1 {
+            return Err(BqnError::Rank("𝕨⍒𝕩: atom 𝕩 incompatible with non-scalar 𝕨 cells".into()));
         }
-        let mut out = BqnArr::new_vec_i32(result);
-        out.shape = xarr.shape.clone();
-        return Ok(PrimResult::Array(out));
+        let mut lo = 0usize;
+        let mut hi = w_lead;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let wv = warr.get(mid)?;
+            if compare::compare(wv, x) >= 0 { lo = mid + 1; } else { hi = mid; }
+        }
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: array::ArrData::I32(vec![lo as i32]),
+            fill: Some(B::m_i32(0)),
+        }));
+    }
+    let xarr = xa.unwrap();
+
+    let wr = warr.rank() as usize;
+    let xr = xarr.rank() as usize;
+    let w_cell_shape = if wr > 0 { &warr.shape[1..] } else { &[] as &[usize] };
+    let w_cell_rank = w_cell_shape.len();
+    if xr < w_cell_rank {
+        return Err(BqnError::Rank(format!(
+            "𝕨⍒𝕩: 𝕩 rank {} too low for 𝕨 cell rank {}",
+            xr, w_cell_rank
+        )));
+    }
+    let x_tail = &xarr.shape[xr - w_cell_rank..];
+    if x_tail != w_cell_shape {
+        return Err(BqnError::Shape(format!(
+            "𝕨⍒𝕩: 𝕩 trailing shape {:?} doesn't match 𝕨 cell shape {:?}",
+            x_tail, w_cell_shape
+        )));
     }
 
-    // Non-numeric bins descending: use compare::compare for ordering
-    let wia = warr.ia();
-    let xia = xarr.ia();
-    let mut wvals = Vec::with_capacity(wia);
-    for i in 0..wia {
-        wvals.push(warr.get(i)?);
+    let w_lead = if wr > 0 { warr.shape[0] } else { 1 };
+    let w_cell_size: usize = w_cell_shape.iter().product::<usize>().max(1);
+    let x_lead_dims = xr - w_cell_rank;
+    let x_lead_shape = &xarr.shape[..x_lead_dims];
+    let x_lead_count: usize = x_lead_shape.iter().product::<usize>().max(1);
+
+    // Validate x elements are sortable
+    if xarr.el_type() == ElType::B {
+        for i in 0..xarr.ia() {
+            let v = xarr.get(i)?;
+            if !v.is_f64() && !v.is_c32() && !v.is_arr() {
+                return Err(BqnError::Type("𝕨⍒𝕩: 𝕩 elements must be numbers, characters, or arrays".into()));
+            }
+        }
     }
-    let mut result = Vec::with_capacity(xia);
-    for i in 0..xia {
-        let xv = xarr.get(i)?;
-        // Binary search: find first position where wvals[pos] < xv (descending)
-        let pos = wvals.partition_point(|&wv| compare::compare(wv, xv) >= 0);
-        result.push(pos as i32);
+
+    // Compare descending: w[j] >= x means "keep going"
+    let compare_cell_desc = |x_offset: usize, w_j: usize| -> bool {
+        for k in 0..w_cell_size {
+            let xv = xarr.get(x_offset + k).unwrap_or(B::SENTINEL);
+            let wv = warr.get(w_j * w_cell_size + k).unwrap_or(B::SENTINEL);
+            let c = compare::compare(wv, xv);
+            if c > 0 { return true; }   // w > x → w >= x, keep going
+            if c < 0 { return false; }  // w < x → stop
+        }
+        true // equal → w >= x
+    };
+
+    let mut result = Vec::with_capacity(x_lead_count);
+    for i in 0..x_lead_count {
+        let x_off = i * w_cell_size;
+        let mut lo = 0usize;
+        let mut hi = w_lead;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if compare_cell_desc(x_off, mid) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        result.push(lo as i32);
+    }
+
+    if x_lead_dims == 0 {
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: array::ArrData::I32(result),
+            fill: Some(B::m_i32(0)),
+        }));
     }
     let mut out = BqnArr::new_vec_i32(result);
-    out.shape = xarr.shape.clone();
+    out.shape = x_lead_shape.to_vec();
+    out.fill = Some(B::m_i32(0));
     Ok(PrimResult::Array(out))
 }

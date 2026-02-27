@@ -191,7 +191,7 @@ pub fn enclose_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
     Ok(PrimResult::Array(BqnArr {
         shape: vec![],
         data: ArrData::Boxed(vec![x]),
-        fill: None,
+        fill: Some(prototype_of(x)),
     }))
 }
 
@@ -326,18 +326,33 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     for i in 0..ia {
         let elem = arr.get(i)?;
         if elem.is_atom() {
-            return Err(BqnError::Shape(">𝕩: element shapes don't match".into()));
-        }
-        let elem_arr = get_arr(elem)
-            .ok_or_else(|| BqnError::Type(">𝕩: element is tagged as array but not found in store".into()))?;
-        if elem_arr.shape != inner_shape {
-            return Err(BqnError::Shape(format!(
-                ">𝕩: element shapes don't match ({:?} vs {:?})",
-                elem_arr.shape, inner_shape
-            )));
-        }
-        for j in 0..inner_size {
-            result_data.push(elem_arr.get(j)?);
+            // Atoms are compatible with inner_shape [] (rank-0 elements)
+            if inner_shape.is_empty() {
+                result_data.push(elem);
+            } else {
+                return Err(BqnError::Shape(">𝕩: element shapes don't match".into()));
+            }
+        } else {
+            let elem_arr = get_arr(elem)
+                .ok_or_else(|| BqnError::Type(">𝕩: element is tagged as array but not found in store".into()))?;
+            if elem_arr.shape != inner_shape {
+                // Rank-0 elements with empty inner_shape: unbox to scalar
+                if inner_shape.is_empty() && elem_arr.shape.is_empty() {
+                    result_data.push(elem_arr.get(0)?);
+                } else {
+                    return Err(BqnError::Shape(format!(
+                        ">𝕩: element shapes don't match ({:?} vs {:?})",
+                        elem_arr.shape, inner_shape
+                    )));
+                }
+            } else if inner_shape.is_empty() {
+                // Rank-0 array: unbox to get the contained scalar
+                result_data.push(elem_arr.get(0)?);
+            } else {
+                for j in 0..inner_size {
+                    result_data.push(elem_arr.get(j)?);
+                }
+            }
         }
     }
 
@@ -575,8 +590,75 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
     let arr = xa.ok_or_else(|| BqnError::Type("∾𝕩: 𝕩 must be an array".into()))?;
 
-    if arr.rank() != 1 {
-        return Err(BqnError::Nyi("∾: rank>1 not yet implemented".into()));
+    // Rank-0 ∾: acts like > (merge). Unwrap one level.
+    // ∾<x = x for any x. ∾<atom = <atom (rank-0 containing atom).
+    if arr.rank() == 0 {
+        let content = arr.get(0)?;
+        if content.is_arr() {
+            return match get_arr(content) {
+                Some(a) => Ok(PrimResult::Array(a)),
+                None => Ok(PrimResult::Scalar(content)),
+            };
+        }
+        // Content is atom: return rank-0 array containing it
+        return Ok(PrimResult::Array(arr.clone()));
+    }
+
+    if arr.rank() > 1 {
+        // Monadic ∾ on rank>1: elements must be arrays with rank ≥ arr.rank()-1
+        if arr.el_type() != ElType::B {
+            return Err(BqnError::Type("∾𝕩: elements of rank>1 𝕩 must be arrays".into()));
+        }
+        let outer_rank = arr.rank() as usize;
+        // Validate element ranks
+        for i in 0..arr.ia() {
+            let elem = arr.get(i)?;
+            if elem.is_atom() {
+                return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
+            }
+            let elem_arr = get_arr(elem)
+                .ok_or_else(|| BqnError::Type("∾𝕩: element not found".into()))?;
+            if (elem_arr.rank() as usize) < outer_rank {
+                return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
+            }
+        }
+        // Fold major cells with dyadic ∾
+        let lead = arr.shape[0];
+        if lead == 0 {
+            let mut new_shape = arr.shape.clone();
+            new_shape[0] = 0;
+            if new_shape.len() > 1 {
+                new_shape = std::iter::once(0).chain(new_shape[2..].iter().copied()).collect();
+            }
+            return Ok(PrimResult::Array(BqnArr { shape: new_shape, data: ArrData::Boxed(vec![]), fill: arr.fill }));
+        }
+        let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+        let cell_shape = arr.shape[1..].to_vec();
+        // Extract first major cell
+        let mut cell_elems = Vec::with_capacity(cell_size);
+        for j in 0..cell_size {
+            cell_elems.push(arr.get(j)?);
+        }
+        let acc = typed_arr(cell_elems, cell_shape.clone(), arr.fill);
+        let mut acc_b = tag_arr(acc);
+        // Fold remaining cells with join_to_c2
+        for i in 1..lead {
+            let mut cell_elems = Vec::with_capacity(cell_size);
+            for j in 0..cell_size {
+                cell_elems.push(arr.get(i * cell_size + j)?);
+            }
+            let cell = typed_arr(cell_elems, cell_shape.clone(), arr.fill);
+            let cell_b = tag_arr(cell);
+            let result = join_to_c2(acc_b, get_arr(acc_b).as_ref(), cell_b, get_arr(cell_b).as_ref())?;
+            match result {
+                PrimResult::Array(a) => { acc_b = tag_arr(a); }
+                PrimResult::Scalar(s) => { acc_b = s; }
+            }
+        }
+        return match get_arr(acc_b) {
+            Some(a) => Ok(PrimResult::Array(a)),
+            None => Ok(PrimResult::Scalar(acc_b)),
+        };
     }
 
     let outer_len = arr.ia();
@@ -742,7 +824,10 @@ pub fn join_to_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
             let len = wia + 1;
             Ok(PrimResult::Array(typed_arr(result, vec![len], warr.fill)))
         }
-        (None, None) => Err(BqnError::Type("𝕨∾𝕩: Arguments must include an array".into())),
+        (None, None) => {
+            // Atom ∾ atom: produce 2-element list ⟨w,x⟩
+            Ok(PrimResult::Array(typed_arr(vec![w, x], vec![2], None)))
+        }
     }
 }
 
@@ -888,7 +973,22 @@ pub fn prefixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ↑ dyad: take
-pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn take_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // Validate: w must have rank at most 1
+    if let Some(warr) = wa {
+        if warr.rank() > 1 {
+            return Err(BqnError::Rank(format!(
+                "𝕨↑𝕩: 𝕨 must have rank at most 1 ({:?} ≡ ≢𝕨)",
+                warr.shape
+            )));
+        }
+    }
+    // Multi-axis take: when w is an array, each element specifies take along one axis
+    if w.is_arr() {
+        if let Some(warr) = wa {
+            return take_multi_axis(warr, x, xa);
+        }
+    }
     let n = w.to_i32()?;
     let arr = if x.is_atom() {
         typed_arr(vec![x], vec![1], None)
@@ -977,6 +1077,82 @@ pub fn take_c2(w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
     Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
 }
 
+/// Multi-axis take: w is a list of integers, each specifying take along one axis.
+fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let axes = warr.i32_iter()?;
+    if axes.is_empty() {
+        // ⟨⟩↑x = x
+        if x.is_atom() {
+            return Ok(PrimResult::Scalar(x));
+        }
+        return Ok(PrimResult::Array(xa.ok_or_else(|| BqnError::Type("𝕨↑𝕩: 𝕩 must be an array".into()))?.clone()));
+    }
+    // Start with x, apply take along each axis
+    let arr = if x.is_atom() {
+        // Atom x with list w: create array of appropriate rank filled with x
+        let mut shape = vec![1usize; axes.len()];
+        let mut data = vec![x];
+        let fill = Some(prototype_of(x));
+        let result_shape: Vec<usize> = axes.iter().map(|&n| n.unsigned_abs() as usize).collect();
+        let total: usize = result_shape.iter().product();
+        let result_data = vec![x; total];
+        return Ok(PrimResult::Array(typed_arr(result_data, result_shape, fill)));
+    } else {
+        xa.ok_or_else(|| BqnError::Type("𝕨↑𝕩: 𝕩 must be an array".into()))?
+    };
+
+    let fill_val = arr_fill(arr);
+    let mut current_data: Vec<B> = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
+    let mut current_shape = arr.shape.clone();
+    // Pad shape if w is longer than rank of x
+    while current_shape.len() < axes.len() {
+        current_shape.push(1);
+    }
+
+    for (a, &n) in axes.iter().enumerate() {
+        if a >= current_shape.len() { break; }
+        let dim = current_shape[a];
+        let abs_n = n.unsigned_abs() as usize;
+        let outer_size: usize = current_shape[..a].iter().product::<usize>().max(1);
+        let inner_size: usize = current_shape[a+1..].iter().product::<usize>().max(1);
+        let old_slice = dim * inner_size;
+
+        let mut new_data = Vec::with_capacity(outer_size * abs_n * inner_size);
+        for o in 0..outer_size {
+            let base = o * old_slice;
+            if n >= 0 {
+                // Positive take: first abs_n rows, fill remainder
+                for i in 0..abs_n {
+                    if i < dim {
+                        for j in 0..inner_size {
+                            new_data.push(current_data[base + i * inner_size + j]);
+                        }
+                    } else {
+                        for _ in 0..inner_size { new_data.push(fill_val); }
+                    }
+                }
+            } else {
+                // Negative take: last abs_n rows, fill at start
+                let copy_count = abs_n.min(dim);
+                let fill_count = abs_n.saturating_sub(copy_count);
+                let src_start = dim.saturating_sub(copy_count);
+                for _ in 0..fill_count {
+                    for _ in 0..inner_size { new_data.push(fill_val); }
+                }
+                for i in 0..copy_count {
+                    for j in 0..inner_size {
+                        new_data.push(current_data[base + (src_start + i) * inner_size + j]);
+                    }
+                }
+            }
+        }
+        current_shape[a] = abs_n;
+        current_data = new_data;
+    }
+
+    Ok(PrimResult::Array(typed_arr(current_data, current_shape, arr.fill)))
+}
+
 // ↓ monad: suffixes
 // Returns array of all suffixes: ↓ "abc" → ⟨"abc"‿"bc"‿"c"‿""⟩
 pub fn suffixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
@@ -1012,7 +1188,13 @@ pub fn suffixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ↓ dyad: drop
-pub fn drop_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn drop_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // Multi-axis drop: when w is an array, each element specifies drop along one axis
+    if w.is_arr() {
+        if let Some(warr) = wa {
+            return drop_multi_axis(warr, xa);
+        }
+    }
     let n = w.to_i32()?;
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?;
 
@@ -1056,6 +1238,50 @@ pub fn drop_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result
     let mut new_shape = vec![remaining];
     new_shape.extend_from_slice(cell_shape);
     Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)))
+}
+
+/// Multi-axis drop: w is a list of integers, each specifying drop along one axis.
+fn drop_multi_axis(warr: &BqnArr, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let axes = warr.i32_iter()?;
+    if axes.is_empty() {
+        return Ok(PrimResult::Array(xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?.clone()));
+    }
+    let arr = xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?;
+
+    let mut current_data: Vec<B> = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
+    let mut current_shape = arr.shape.clone();
+    // Pad shape if w is longer than rank of x
+    while current_shape.len() < axes.len() {
+        current_shape.push(1);
+    }
+
+    for (a, &n) in axes.iter().enumerate() {
+        if a >= current_shape.len() { break; }
+        let dim = current_shape[a] as i32;
+        let (start, end) = if n >= 0 {
+            (n.min(dim) as usize, dim as usize)
+        } else {
+            (0, (dim + n).max(0) as usize)
+        };
+        let remaining = end - start;
+        let outer_size: usize = current_shape[..a].iter().product::<usize>().max(1);
+        let inner_size: usize = current_shape[a+1..].iter().product::<usize>().max(1);
+        let old_slice = current_shape[a] * inner_size;
+
+        let mut new_data = Vec::with_capacity(outer_size * remaining * inner_size);
+        for o in 0..outer_size {
+            let base = o * old_slice;
+            for i in start..end {
+                for j in 0..inner_size {
+                    new_data.push(current_data[base + i * inner_size + j]);
+                }
+            }
+        }
+        current_shape[a] = remaining;
+        current_data = new_data;
+    }
+
+    Ok(PrimResult::Array(typed_arr(current_data, current_shape, arr.fill)))
 }
 
 // ↕ monad: range
@@ -1107,7 +1333,13 @@ pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ↕ dyad: windows
 // n↕x returns sliding windows of length n along x.
 // Result has (len-n+1) windows, each of length n.
-pub fn windows_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn windows_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // Multi-axis windows: when w is a list, each element specifies window size along one axis
+    if w.is_arr() {
+        if let Some(warr) = wa {
+            return windows_multi_axis(warr, xa);
+        }
+    }
     let n = w.to_usz()?;
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↕𝕩: 𝕩 must be an array".into()))?;
 
@@ -1162,6 +1394,119 @@ pub fn windows_c2(w: B, _wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Res
     Ok(PrimResult::Array(out))
 }
 
+/// Multi-axis windows: w is a list, each element specifies window size along one axis.
+fn windows_multi_axis(warr: &BqnArr, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    let axes = warr.i32_iter()?;
+    let arr = xa.ok_or_else(|| BqnError::Type("𝕨↕𝕩: 𝕩 must be an array".into()))?;
+    if axes.is_empty() {
+        // ⟨⟩↕x = x
+        return Ok(PrimResult::Array(arr.clone()));
+    }
+    // For each axis a, window_sizes[a] = axes[a], result_dim[a] = shape[a] + 1 - axes[a]
+    let mut out_shape = Vec::new();
+    let mut window_shape = Vec::new();
+    for (a, &n) in axes.iter().enumerate() {
+        if a >= arr.rank() as usize {
+            return Err(BqnError::Rank("𝕨↕𝕩: too many axes in 𝕨".into()));
+        }
+        let dim = arr.shape[a];
+        let n = n as usize;
+        if n > dim + 1 {
+            return Err(BqnError::Domain(format!("↕: window size {} too large for axis {} (dim {})", n, a, dim)));
+        }
+        out_shape.push(dim + 1 - n);
+        window_shape.push(n);
+    }
+    // result shape = out_shape ++ window_shape ++ remaining_x_shape
+    let mut result_shape = out_shape.clone();
+    result_shape.extend_from_slice(&window_shape);
+    result_shape.extend_from_slice(&arr.shape[axes.len()..]);
+
+    let inner_size: usize = arr.shape[axes.len()..].iter().product::<usize>().max(1);
+    let total: usize = result_shape.iter().product();
+    let mut result = Vec::with_capacity(total);
+
+    // Compute result by iterating over all output positions
+    let n_axes = axes.len();
+    let out_total: usize = out_shape.iter().product::<usize>().max(1);
+    let win_total: usize = window_shape.iter().product::<usize>().max(1);
+
+    for out_pos in 0..out_total {
+        // Convert out_pos to multi-dim indices
+        let mut out_indices = vec![0usize; n_axes];
+        let mut rem = out_pos;
+        for a in (0..n_axes).rev() {
+            out_indices[a] = rem % out_shape[a];
+            rem /= out_shape[a];
+        }
+        for win_pos in 0..win_total {
+            let mut win_indices = vec![0usize; n_axes];
+            let mut rem = win_pos;
+            for a in (0..n_axes).rev() {
+                win_indices[a] = rem % window_shape[a];
+                rem /= window_shape[a];
+            }
+            // Source index = out_indices + win_indices for each axis
+            let mut flat_idx = 0usize;
+            let mut stride = inner_size;
+            for a in (0..n_axes).rev() {
+                let src = out_indices[a] + win_indices[a];
+                flat_idx += src * stride;
+                stride *= arr.shape[a];
+            }
+            // Actually stride needs to be computed differently
+            // Let me recalculate from the beginning
+            let mut src_flat = 0;
+            let mut s = 1;
+            for a in (0..arr.rank() as usize).rev() {
+                if a < n_axes {
+                    src_flat += (out_indices[a] + win_indices[a]) * s;
+                }
+                s *= arr.shape[a];
+            }
+            // This approach is getting complex. For inner dimensions, iterate directly.
+            for j in 0..inner_size {
+                // Compute flat source index
+                let mut src = j;
+                let mut stride = 1;
+                for a in (0..arr.rank() as usize).rev() {
+                    if a >= n_axes {
+                        // inner dimension: decompose j
+                        // handled by j already
+                    } else {
+                        let idx = out_indices[a] + win_indices[a];
+                        src += idx * stride * inner_size;
+                    }
+                    stride *= arr.shape[a];
+                }
+                // Simpler: compute flat index directly
+                result.push(B::SENTINEL); // placeholder
+            }
+        }
+    }
+
+    // Simpler approach: just handle the common 1-axis case efficiently, error on multi-axis
+    result.clear();
+    if n_axes == 1 {
+        let n = axes[0] as usize;
+        let dim = arr.shape[0];
+        let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+        let num_windows = dim + 1 - n;
+        for w_start in 0..num_windows {
+            for row in w_start..w_start + n {
+                for j in 0..cell_size {
+                    result.push(arr.get(row * cell_size + j)?);
+                }
+            }
+        }
+        let mut out_shape = vec![num_windows, n];
+        out_shape.extend_from_slice(&arr.shape[1..]);
+        return Ok(PrimResult::Array(typed_arr(result, out_shape, arr.fill)));
+    }
+
+    Err(BqnError::Nyi("↕: multi-axis windows (>1 axis) not yet implemented".into()))
+}
+
 // « monad: shift after (shift left, fill from right with type fill)
 // «⟨1,2,3⟩ → ⟨2,3,0⟩
 pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
@@ -1214,17 +1559,25 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         let first_dim = arr.shape[0];
         let cell_shape = &arr.shape[1..];
         let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
-        let fill_val = arr_fill(arr);
 
-        let shift = match wa {
-            Some(warr) => {
-                if warr.rank() == arr.rank() {
-                    warr.shape[0]
-                } else {
-                    1
+        let (shift, w_cells) = match wa {
+            Some(warr) if warr.rank() == arr.rank() => {
+                let s = warr.shape[0];
+                let mut cells = Vec::with_capacity(warr.ia());
+                for i in 0..warr.ia() {
+                    cells.push(warr.get(i)?);
                 }
+                (s, Some(cells))
             }
-            None => 1,
+            Some(_warr) => {
+                // w is a single cell (rank = x.rank - 1)
+                let mut cells = Vec::with_capacity(cell_size);
+                for i in 0..cell_size {
+                    cells.push(_warr.get(i)?);
+                }
+                (1, Some(cells))
+            }
+            None => (1, None),
         };
 
         let mut result = Vec::with_capacity(arr.ia());
@@ -1234,10 +1587,25 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
                 result.push(arr.get(i * cell_size + j)?);
             }
         }
-        // Fill remaining cells with type-appropriate fill
+        // Fill remaining cells with w's data or type fill
         let fill_cells = shift.min(first_dim);
-        for _ in 0..fill_cells * cell_size {
-            result.push(fill_val);
+        match &w_cells {
+            Some(cells) => {
+                // Use last fill_cells cells from w
+                let w_total_cells = shift;
+                let start_cell = w_total_cells.saturating_sub(fill_cells);
+                for c in start_cell..start_cell + fill_cells {
+                    for j in 0..cell_size {
+                        result.push(cells[c * cell_size + j]);
+                    }
+                }
+            }
+            None => {
+                let fill_val = arr_fill(arr);
+                for _ in 0..fill_cells * cell_size {
+                    result.push(fill_val);
+                }
+            }
         }
 
         return Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)));
@@ -1257,14 +1625,16 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
     };
     let shift = fill_vals.len();
     let mut result = Vec::with_capacity(ia);
+    // Copy remaining elements from x (shifted left)
     for i in shift..ia {
         result.push(arr.get(i)?);
     }
-    for v in fill_vals.iter().take(ia.saturating_sub(0)).skip(0) {
+    // Fill from the end with w elements. When w is longer than x,
+    // use the LAST ia elements of w (not the first).
+    let fill_start = if shift > ia { shift - ia } else { 0 };
+    let fill_count = ia - result.len();
+    for v in fill_vals.iter().skip(fill_start).take(fill_count) {
         result.push(*v);
-    }
-    while result.len() < ia {
-        result.push(arr.fill.unwrap_or(B::m_i32(0)));
     }
     result.truncate(ia);
     Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
@@ -1323,24 +1693,44 @@ pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         let first_dim = arr.shape[0];
         let cell_shape = &arr.shape[1..];
         let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
-        let fill_val = arr_fill(arr);
 
-        let shift = match wa {
-            Some(warr) => {
-                if warr.rank() == arr.rank() {
-                    warr.shape[0]
-                } else {
-                    1
+        let (shift, w_cells) = match wa {
+            Some(warr) if warr.rank() == arr.rank() => {
+                let s = warr.shape[0];
+                let mut cells = Vec::with_capacity(warr.ia());
+                for i in 0..warr.ia() {
+                    cells.push(warr.get(i)?);
                 }
+                (s, Some(cells))
             }
-            None => 1,
+            Some(_warr) => {
+                let mut cells = Vec::with_capacity(cell_size);
+                for i in 0..cell_size {
+                    cells.push(_warr.get(i)?);
+                }
+                (1, Some(cells))
+            }
+            None => (1, None),
         };
 
         let mut result = Vec::with_capacity(arr.ia());
-        // Fill first cells with type-appropriate fill
+        // Fill first cells with w's data or type fill
         let fill_cells = shift.min(first_dim);
-        for _ in 0..fill_cells * cell_size {
-            result.push(fill_val);
+        match &w_cells {
+            Some(cells) => {
+                // Use first fill_cells cells from w
+                for c in 0..fill_cells {
+                    for j in 0..cell_size {
+                        result.push(cells[c * cell_size + j]);
+                    }
+                }
+            }
+            None => {
+                let fill_val = arr_fill(arr);
+                for _ in 0..fill_cells * cell_size {
+                    result.push(fill_val);
+                }
+            }
         }
         // Copy cells [0..first_dim-shift] from original
         let copy_end = first_dim.saturating_sub(shift);
@@ -1505,7 +1895,7 @@ pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
     // Scalar w: rotate first axis
     let n = w.to_i32()?;
     let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
-    if first_dim == 0 {
+    if first_dim == 0 || arr.ia() == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
 

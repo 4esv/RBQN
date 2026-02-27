@@ -199,25 +199,33 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
 /// If all results are characters, produces a character array.
 /// Otherwise, keeps as Boxed.
 fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
+    results_to_arr_fill(results, shape, None)
+}
+
+fn results_to_arr_fill(results: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> B {
     if results.is_empty() {
         let mut out = BqnArr::new_vec_b(results);
         out.shape = shape;
+        out.fill = fill;
         return crate::vm::tag_arr(out);
     }
     if results.iter().all(|b| b.is_f64()) {
         let vals: Vec<f64> = results.iter().map(|b| b.o2f()).collect();
         let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
         out.shape = shape;
+        out.fill = fill;
         return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
     }
     if results.iter().all(|b| b.is_c32()) {
         let vals: Vec<u32> = results.iter().map(|b| b.0 as u32).collect();
         let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
         out.shape = shape;
+        out.fill = fill;
         return crate::vm::tag_arr(out);
     }
     let mut out = BqnArr::new_vec_b(results);
     out.shape = shape;
+    out.fill = fill;
     crate::vm::tag_arr(out)
 }
 
@@ -636,7 +644,7 @@ fn scan_c1(f: B, x: B) -> B {
             let prev = results[i - 1];
             results.push(c2(f, prev, get_elem(&arr, i)));
         }
-        return results_to_arr(results, arr.shape.clone());
+        return results_to_arr_fill(results, arr.shape.clone(), arr.fill);
     }
     // Rank > 1: scan operates on major cells (slices along axis 0)
     // Apply F between consecutive cells; result has same shape as input
@@ -674,7 +682,7 @@ fn scan_c2(f: B, w: B, x: B) -> B {
             acc = c2(f, acc, get_elem(&arr, i));
             results.push(acc);
         }
-        return results_to_arr(results, arr.shape.clone());
+        return results_to_arr_fill(results, arr.shape.clone(), arr.fill);
     }
     // Rank > 1: scan operates on major cells with initial cell w
     // w must have shape matching the cell shape of x
@@ -1213,6 +1221,9 @@ fn b_to_index(v: B) -> usize {
 /// Compute cell rank from array rank and k parameter.
 /// Negative k counts from the end, positive k is clamped to array rank.
 fn cell_rank(r: usize, k: f64) -> usize {
+    if k.is_finite() && k.fract() != 0.0 {
+        rbqn_core::error::throw("⎉: 𝕘 was a fractional number");
+    }
     if k < 0.0 {
         let v = k + r as f64;
         if v < 0.0 { 0 } else { v as usize }
@@ -1573,16 +1584,23 @@ fn repeat_c1_arr(f: B, counts: &rbqn_core::BqnArr, x: B) -> B {
 }
 
 fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
+    // Handle array g: apply w F⍟g(i) x for each element of g
+    if g.is_arr() {
+        let garr = arr_of(g);
+        return repeat_c2_arr(f, &garr, w, x);
+    }
     let n = if g.is_f64() {
         g.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
     } else {
+        // g is a function: compute count by calling g(w, x) or g(x)
         let n_b = c2(g, w, x);
+        if n_b.is_arr() {
+            let narr = arr_of(n_b);
+            return repeat_c2_arr(f, &narr, w, x);
+        }
         n_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
     };
     if n < 0 {
-        // NOTE: Negative repeat: w F⍟n x = apply w F⁼ n times
-        // w F⁼ x means find y: w F y = x, i.e., dyadic inverse with w fixed.
-        // Implemented as c2(inv_reg(F), w, x) — the runtime handles the dyadic inverse.
         let f_inv = crate::derive::inv_reg(f);
         let mut acc = x;
         for _ in 0..n.unsigned_abs() {
@@ -1595,6 +1613,26 @@ fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
         acc = c2(f, w, acc);
     }
     acc
+}
+
+fn repeat_c2_arr(f: B, counts: &rbqn_core::BqnArr, w: B, x: B) -> B {
+    let n = counts.ia();
+    let mut results = Vec::with_capacity(n);
+    for i in 0..n {
+        let count_b = get_elem(counts, i);
+        let count = count_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+        if count < 0 {
+            let f_inv = crate::derive::inv_reg(f);
+            let mut acc = x;
+            for _ in 0..count.unsigned_abs() { acc = c2(f_inv, w, acc); }
+            results.push(acc);
+        } else {
+            let mut acc = x;
+            for _ in 0..count { acc = c2(f, w, acc); }
+            results.push(acc);
+        }
+    }
+    results_to_arr(results, counts.shape.clone())
 }
 
 // ============================================================

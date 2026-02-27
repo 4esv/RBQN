@@ -242,10 +242,10 @@ use crate::derive::DERIVED_STORE;
 
 pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     let bc = &bl.bc;
-    let bc_offset = body.bc_offset;
-    let mut pc = bc_offset;
+    let mut pc = body.bc_offset;
     let mut stack: Vec<B> = Vec::with_capacity(body.max_stack as usize);
-    let pscs = build_pscs(&sc, body.max_psc);
+    let mut current_sc = sc.clone();
+    let mut pscs = build_pscs(&current_sc, body.max_psc);
 
     macro_rules! pop {
         () => {
@@ -454,7 +454,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let bl_idx = bl_data as usize;
                 if bl_idx < bl.blocks.len() {
                     let child_bl = bl.blocks[bl_idx].clone();
-                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { sc.clone() };
+                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() };
                     push!(eval_fun_block(child_bl, psc));
                 } else {
                     rbqn_core::error::throw("DFND0: block index out of bounds");
@@ -465,7 +465,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let bl_idx = bl_data as usize;
                 if bl_idx < bl.blocks.len() {
                     let child_bl = bl.blocks[bl_idx].clone();
-                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { sc.clone() };
+                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() };
                     push!(m_md1_block(child_bl, psc));
                 } else {
                     rbqn_core::error::throw("DFND1: block index out of bounds");
@@ -476,7 +476,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let bl_idx = bl_data as usize;
                 if bl_idx < bl.blocks.len() {
                     let child_bl = bl.blocks[bl_idx].clone();
-                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { sc.clone() };
+                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() };
                     push!(m_md2_block(child_bl, psc));
                 } else {
                     rbqn_core::error::throw("DFND2: block index out of bounds");
@@ -708,7 +708,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 pscs[d].var_set(p, r);
             }
 
-            // --- Header match ---
+            // --- Header match (iterative retry instead of recursive exec_block) ---
             Some(Op::SETH1) => {
                 let s = pop!();
                 let x = pop!();
@@ -718,8 +718,23 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     if !next_body.exists {
                         rbqn_core::error::throw("No matching header");
                     }
-                    let parent = pscs.last().cloned().unwrap_or(sc.clone());
-                    return exec_block(bl, next_body, parent);
+                    // NOTE: Preserve original args when retrying — needed for modifier blocks
+                    // where 𝕣 (var[0]) and 𝔽 (operand) must be available in the next body.
+                    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
+                    let args: Vec<B> = if arg_count > 0 {
+                        let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+                        (0..arg_count).map(|i| vars.get(i).copied().unwrap_or(B::SENTINEL)).collect()
+                    } else {
+                        vec![]
+                    };
+                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
+                    let var_am = next_body.var_am.max(args.len() as u16);
+                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
+                    current_sc = new_sc;
+                    pscs = build_pscs(&current_sc, next_body.max_psc);
+                    pc = next_body.bc_offset;
+                    stack.clear();
+                    continue;
                 }
             }
             Some(Op::SETH2) => {
@@ -728,7 +743,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
                 if !v_seth(&pscs, s, x) {
-                    let vars = sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+                    let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
                     let is_dyadic = vars.get(2).map_or(false, |b| !b.q_n());
                     let next_idx = if is_dyadic { dy_idx } else { mono_idx };
                     let next_body = bl.bodies[next_idx].clone();
@@ -740,30 +755,65 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                         vars.get(i).copied().unwrap_or(B::SENTINEL)
                     }).collect();
                     drop(vars);
-                    let parent = sc.psc.clone().unwrap_or(sc.clone());
-                    return exec_block_with_args(bl, next_body, parent, &args);
+                    // Iterative retry: reset VM state for the new body
+                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
+                    let var_am = next_body.var_am.max(args.len() as u16);
+                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
+                    current_sc = new_sc;
+                    pscs = build_pscs(&current_sc, next_body.max_psc);
+                    pc = next_body.bc_offset;
+                    stack.clear();
+                    continue;
                 }
             }
 
-            // --- Predicates ---
+            // --- Predicates (iterative retry instead of recursive exec_block) ---
             Some(Op::PRED1) => {
                 let x = pop!();
                 let next_body_idx = read_u64!() as usize;
+                // NOTE: BQN predicates require a boolean (0 or 1), not arbitrary numbers
+                if x.is_f64() {
+                    let v = x.o2f();
+                    if v != 0.0 && v != 1.0 {
+                        rbqn_core::error::throw("Expected boolean");
+                    }
+                }
                 if !x.o2b() {
                     let next_body = bl.bodies[next_body_idx].clone();
                     if !next_body.exists {
                         rbqn_core::error::throw("No matching predicate");
                     }
-                    let parent = pscs.last().cloned().unwrap_or(sc.clone());
-                    return exec_block(bl, next_body, parent);
+                    // Iterative retry: preserve original args for modifier blocks
+                    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
+                    let args: Vec<B> = if arg_count > 0 {
+                        let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+                        (0..arg_count).map(|i| vars.get(i).copied().unwrap_or(B::SENTINEL)).collect()
+                    } else {
+                        vec![]
+                    };
+                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
+                    let var_am = next_body.var_am.max(args.len() as u16);
+                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
+                    current_sc = new_sc;
+                    pscs = build_pscs(&current_sc, next_body.max_psc);
+                    pc = next_body.bc_offset;
+                    stack.clear();
+                    continue;
                 }
             }
             Some(Op::PRED2) => {
                 let x = pop!();
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
+                // NOTE: BQN predicates require a boolean (0 or 1), not arbitrary numbers
+                if x.is_f64() {
+                    let v = x.o2f();
+                    if v != 0.0 && v != 1.0 {
+                        rbqn_core::error::throw("Expected boolean");
+                    }
+                }
                 if !x.o2b() {
-                    let vars = sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+                    let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
                     let is_dyadic = vars.get(2).map_or(false, |b| !b.q_n());
                     let next_idx = if is_dyadic { dy_idx } else { mono_idx };
                     let next_body = bl.bodies[next_idx].clone();
@@ -775,8 +825,15 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                         vars.get(i).copied().unwrap_or(B::SENTINEL)
                     }).collect();
                     drop(vars);
-                    let parent = sc.psc.clone().unwrap_or(sc.clone());
-                    return exec_block_with_args(bl, next_body, parent, &args);
+                    // Iterative retry
+                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
+                    let var_am = next_body.var_am.max(args.len() as u16);
+                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
+                    current_sc = new_sc;
+                    pscs = build_pscs(&current_sc, next_body.max_psc);
+                    pc = next_body.bc_offset;
+                    stack.clear();
+                    continue;
                 }
             }
 
@@ -873,7 +930,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     }
                     return store_ns(NS {
                         desc: ns_desc.clone(),
-                        sc: if !pscs.is_empty() { pscs[0].clone() } else { sc.clone() },
+                        sc: if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() },
                     });
                 }
                 // No namespace descriptor: just return top of stack or SENTINEL

@@ -138,6 +138,18 @@ fn pervasive_dyad(
         }
         // array-array: leading axis agreement (prefix broadcasting)
         (Some(wa_arr), Some(xa_arr)) => {
+            // NOTE: rank-0 arrays act as scalars in BQN pervasion.
+            // When one side is rank-0 (shape=[]), extract its single element and use as scalar.
+            if wa_arr.rank() == 0 {
+                let scalar = wa_arr.get(0).unwrap_or(B::m_f64(0.0));
+                let scalar_arr = get_arr(scalar);
+                return pervasive_dyad(scalar, scalar_arr.as_ref(), x, Some(xa_arr), scalar_fn, name);
+            }
+            if xa_arr.rank() == 0 {
+                let scalar = xa_arr.get(0).unwrap_or(B::m_f64(0.0));
+                let scalar_arr = get_arr(scalar);
+                return pervasive_dyad(w, Some(wa_arr), scalar, scalar_arr.as_ref(), scalar_fn, name);
+            }
             // Try fast numeric path first
             if let (Ok(wvals), Ok(xvals)) = (wa_arr.f64_iter(), xa_arr.f64_iter()) {
                 if wa_arr.shape == xa_arr.shape {
@@ -249,6 +261,37 @@ fn pervasive_mixed_boxed(
 
     match (wa, xa) {
         (Some(wa_a), Some(xa_a)) => {
+            // NOTE: rank-0 arrays in arithmetic: the rank-0 side is "opened" and its content
+            // is broadcast against each element of the rank-n side.
+            // e.g. [0,1]+<[0,1] = ⟨0+[0,1], 1+[0,1]⟩ = ⟨[0,1],[1,2]⟩ (plain arrays, no re-boxing)
+            if wa_a.rank() == 0 {
+                // Extract the content of the rank-0 box and broadcast it
+                let inner = wa_a.get(0).unwrap_or(B::SENTINEL);
+                let inner_arr = get_arr(inner);
+                let n = xa_a.ia();
+                let mut results = Vec::with_capacity(n);
+                for i in 0..n {
+                    let xi = xa_a.get(i).unwrap_or(B::SENTINEL);
+                    let xi_a = get_arr(xi);
+                    results.push(to_b(op_fn(inner, inner_arr.as_ref(), xi, xi_a.as_ref())?));
+                }
+                let result_fill = results.first().copied().map(crate::structural::prototype_of);
+                return Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, xa_a.shape.clone(), result_fill)));
+            }
+            if xa_a.rank() == 0 {
+                // Extract the content of the rank-0 box and broadcast it against wa_a elements
+                let inner = xa_a.get(0).unwrap_or(B::SENTINEL);
+                let inner_arr = get_arr(inner);
+                let n = wa_a.ia();
+                let mut results = Vec::with_capacity(n);
+                for i in 0..n {
+                    let wi = wa_a.get(i).unwrap_or(B::SENTINEL);
+                    let wi_a = get_arr(wi);
+                    results.push(to_b(op_fn(wi, wi_a.as_ref(), inner, inner_arr.as_ref())?));
+                }
+                let result_fill = results.first().copied().map(crate::structural::prototype_of);
+                return Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)));
+            }
             if wa_a.shape != xa_a.shape {
                 return Err(BqnError::Shape(format!(
                     "shape mismatch ({:?} vs {:?})", wa_a.shape, xa_a.shape

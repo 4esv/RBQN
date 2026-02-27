@@ -32,6 +32,9 @@ fn main() {
     // NOTE: Register the global runtime state for •BQN re-evaluation after bootstrap.
     rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
 
+    // NOTE: Register derived function structural equality with rbqn-core (for ≡ and = on functions).
+    rbqn_vm::derive::register_derived_equality();
+
     // Set •args to empty for -e/-p mode (file args will override when executing a file)
     rbqn_vm::derive::set_sys_args(&[]);
     // Set •path and •name to empty for -e/-p mode
