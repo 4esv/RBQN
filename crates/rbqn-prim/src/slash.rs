@@ -1,6 +1,7 @@
 use rbqn_core::*;
 use rbqn_core::array::typed_arr_from_b_vec;
 use crate::dispatch::PrimResult;
+use crate::structural::prototype_of;
 
 // / monad: indices
 // NOTE: 𝕩 must be a rank-1 integer array of non-negative values. Rank-0 (atoms or enclosed) errors.
@@ -120,8 +121,12 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
             // Allow rank-0 (unit) or rank-1 length-1 𝕨
             let c = warr.i32_iter()?;
             if c.len() == 0 {
-                // empty 𝕨: return empty
-                return Ok(PrimResult::Array(BqnArr::new_vec_b(vec![])));
+                // empty 𝕨 on atom: return <x (rank-0 enclosure)
+                return Ok(PrimResult::Array(BqnArr {
+                    shape: vec![],
+                    data: ArrData::Boxed(vec![x]),
+                    fill: Some(prototype_of(x)),
+                }));
             }
             if c.len() != 1 {
                 return Err(BqnError::Shape(format!(
@@ -142,6 +147,25 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
     }
 
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕩 must be an array".into()))?;
+
+    // Multi-axis replicate: when 𝕨 is a boxed list, each element replicates along one axis.
+    if let Some(warr) = wa {
+        if warr.rank() == 1 {
+            if warr.ia() == 0 {
+                // ⟨⟩/x = x (no axes to replicate along = identity)
+                return Ok(PrimResult::Array(arr.clone()));
+            }
+            if warr.el_type() == ElType::B {
+                // Check if first element is an array (multi-axis) vs number (standard)
+                if let Ok(first) = warr.get(0) {
+                    if first.is_arr() {
+                        return replicate_multi_axis(warr, arr);
+                    }
+                }
+            }
+        }
+    }
+
     if arr.rank() != 1 {
         return Err(BqnError::Rank(format!(
             "𝕨/𝕩: 𝕩 must be rank-1, got rank {}",
@@ -207,4 +231,66 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
         arr.fill
     };
     Ok(PrimResult::Array(typed_arr_from_b_vec(result, vec![len], fill)))
+}
+
+/// Multi-axis replicate: w is a boxed list, each element replicates along one axis of x.
+fn replicate_multi_axis(warr: &BqnArr, xarr: &BqnArr) -> Result<PrimResult> {
+    let n_axes = warr.ia();
+
+    // Process axis-by-axis: start with x, replicate along each axis
+    let mut current_data: Vec<B> = (0..xarr.ia()).map(|i| xarr.get(i).unwrap_or(B::SENTINEL)).collect();
+    let mut current_shape = xarr.shape.clone();
+
+    for a in 0..n_axes {
+        if a >= current_shape.len() {
+            return Err(BqnError::Rank("𝕨/𝕩: too many axes in 𝕨".into()));
+        }
+        let idx_b = warr.get(a)?;
+        let counts = if idx_b.is_f64() {
+            // Scalar: replicate entire axis by this amount
+            let n = idx_b.o2i();
+            vec![n; current_shape[a]]
+        } else if idx_b.is_arr() {
+            let idx_arr = get_arr(idx_b)
+                .ok_or_else(|| BqnError::Type("𝕨/𝕩: axis element must be number or array".into()))?;
+            let c = idx_arr.i32_iter()?;
+            if c.len() != current_shape[a] {
+                return Err(BqnError::Shape(format!(
+                    "𝕨/𝕩: axis {} length {} doesn't match 𝕩 dimension {}",
+                    a, c.len(), current_shape[a]
+                )));
+            }
+            c
+        } else {
+            return Err(BqnError::Type("𝕨/𝕩: axis element must be number or array".into()));
+        };
+
+        // Replicate along axis a
+        let dim = current_shape[a];
+        let total: usize = counts.iter().map(|&c| c.max(0) as usize).sum();
+
+        // Compute strides
+        let outer_size: usize = current_shape[..a].iter().product::<usize>().max(1);
+        let inner_size: usize = current_shape[a+1..].iter().product::<usize>().max(1);
+        let slice_size = dim * inner_size;
+
+        let mut new_data = Vec::with_capacity(outer_size * total * inner_size);
+        for o in 0..outer_size {
+            let base = o * slice_size;
+            for (i, &c) in counts.iter().enumerate() {
+                if c < 0 {
+                    return Err(BqnError::Domain("𝕨/𝕩: counts must be non-negative".into()));
+                }
+                for _ in 0..c as usize {
+                    for j in 0..inner_size {
+                        new_data.push(current_data[base + i * inner_size + j]);
+                    }
+                }
+            }
+        }
+        current_shape[a] = total;
+        current_data = new_data;
+    }
+
+    Ok(PrimResult::Array(typed_arr_from_b_vec(current_data, current_shape, xarr.fill)))
 }

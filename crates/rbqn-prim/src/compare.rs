@@ -204,13 +204,8 @@ fn scalar_gt(w: B, x: B) -> i32 {
 }
 
 fn scalar_eq(w: B, x: B) -> i32 {
-    if w.is_f64() && x.is_f64() {
-        return (w.o2f() == x.o2f()) as i32;
-    }
-    if w.is_c32() && x.is_c32() {
-        return (w.0 as u32 == x.0 as u32) as i32;
-    }
-    w.atom_equal(x) as i32
+    // NOTE: use compare::atom_equal which includes structural equality for functions/modifiers
+    compare::atom_equal(w, x) as i32
 }
 
 fn scalar_ne(w: B, x: B) -> i32 {
@@ -253,7 +248,8 @@ pub fn feq_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
         (Some(wa_arr), Some(xa_arr)) => {
             compare::equal(w, x, Some(wa_arr), Some(xa_arr))
         }
-        (None, None) => w.atom_equal(x),
+        // NOTE: use compare::atom_equal which includes structural equality for functions/modifiers
+        (None, None) => compare::atom_equal(w, x),
         _ => false,
     };
     Ok(PrimResult::Scalar(B::m_i32(result as i32)))
@@ -265,7 +261,8 @@ pub fn fne_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
         (Some(wa_arr), Some(xa_arr)) => {
             !compare::equal(w, x, Some(wa_arr), Some(xa_arr))
         }
-        (None, None) => !w.atom_equal(x),
+        // NOTE: use compare::atom_equal for structural equality
+        (None, None) => !compare::atom_equal(w, x),
         _ => true,
     };
     Ok(PrimResult::Scalar(B::m_i32(result as i32)))

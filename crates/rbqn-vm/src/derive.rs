@@ -189,26 +189,23 @@ pub fn inv_reg(func: B) -> B {
                 let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                 let md = get_derived(mid);
 
-                // ˜ (prim 45): inv_reg(F˜) = inv_swap(F) — only when we have a known swap inverse.
-                // For unknown functions, fall through to the BQN runtime which handles the general case.
+                // ˜ (prim 45): inv_reg(F˜) = inv_swap(F).
+                // NOTE: Don't intercept natively — native_inverse_swap only handles monadic.
+                // For dyadic (w F˜⁼ x), the BQN runtime handles both cases correctly.
+                // Only intercept for block functions with explicit inverse bodies.
                 if md.kind == (DerivedKind::NativeMd1 { prim_idx: 45 }) {
-                    // Only intercept if F is a native primitive with a known swap inverse
-                    let has_known_swap = if d.f.is_fun() {
+                    if d.f.is_fun() {
                         let fid = (d.f.0 & 0xFFFFFFFFFFFF) >> 3;
                         let fd = get_derived(fid);
-                        if let DerivedKind::NativeFn { prim_idx } = fd.kind {
-                            native_inverse_swap(prim_idx).is_some()
-                        } else {
-                            // Block functions: use inv_swap which checks inv_w_body/inv_x_body
-                            fd.kind == DerivedKind::FunBlock
+                        if fd.kind == DerivedKind::FunBlock {
+                            if let Some(ref bl) = fd.bl {
+                                if bl.inv_w_body.is_some() || bl.inv_x_body.is_some() {
+                                    return inv_swap(d.f);
+                                }
+                            }
                         }
-                    } else {
-                        false
-                    };
-                    if has_known_swap {
-                        return inv_swap(d.f);
                     }
-                    // Fall through to BQN runtime for unknown F˜⁼
+                    // Fall through to BQN runtime for all native F˜⁼
                 }
 
                 // ` (prim 52): inv_reg(F`) = ScanInv(F) — native scan inverse
@@ -374,7 +371,7 @@ fn native_inverse_reg(prim_idx: usize) -> Option<B> {
         // NOTE: √⁼ (prim 5): √ x = x^0.5, so √⁼ x = x^2. Use sys_fn 203 (square).
         5 => Some(m_sys_fn(203)),    // √⁼ = x^2 (square)
         9 => Some(m_native_fn(9)),   // ¬⁼ = ¬ (not is its own inverse)
-        12 => Some(m_native_fn(13)), // <⁼ = > (unbox)
+        12 => Some(m_sys_fn(206)),    // <⁼ = unbox (extract from rank-0 array)
         13 => Some(m_native_fn(12)), // >⁼ = < (box)
         // NOTE: ⊣ monadic is identity (⊣ x = x), so ⊣⁼ x = x. But dyadic w⊣⁼x has no inverse
         // (⊣ always returns 𝕨, ignoring 𝕩, so there's no unique 𝕩). Let the BQN runtime error.
@@ -401,16 +398,17 @@ fn native_inverse_swap(prim_idx: usize) -> Option<B> {
         0 => Some(m_sys_fn(204)),    // +˜⁼ monadic = x÷2; dyadic handled by runtime
         // NOTE: -˜ dyadically: w-˜⁼x = x+w (add). Return +.
         1 => Some(m_native_fn(0)),   // -˜⁼ = + (w-˜⁼x means x+w)
-        // NOTE: ×˜⁼ dyadically: w×˜⁼x = x÷w. Monadic ×˜⁼x = √x.
-        2 => Some(m_native_fn(5)),   // ×˜⁼ = √ (monad: √x; dyad: x÷w via runtime)
+        // NOTE: ×˜⁼: monadic √x, dyadic x÷w. The BQN runtime handles both correctly.
+        // Don't intercept — let inv_swap_fn (BQN runtime) handle this.
+        // 2 => Some(m_native_fn(5)),  // REMOVED: runtime handles both cases correctly
         // NOTE: ÷˜⁼ dyadically: w÷˜⁼x = x×w (multiply).
         3 => Some(m_native_fn(2)),   // ÷˜⁼ = × (w÷˜⁼x = x×w)
         // NOTE: ⋆˜⁼ dyadically: w⋆˜⁼x = w√x (w-th root of x). Return √.
         4 => Some(m_native_fn(5)),   // ⋆˜⁼ = √ (w⋆˜⁼x = w√x)
-        // NOTE: √˜⁼: monadic √˜ x = x√x = x^(1/x), which has no simple closed-form inverse.
-        // Dyadic w(√˜)⁼x: solve w^(1/y) = x → y = ln(w)/ln(x) = log_x(w). Complex.
-        // Remove: let BQN runtime handle this (it will error if not supported).
-        // 5 => Some(m_native_fn(5)),  // REMOVED: √˜⁼ has no native implementation
+        // NOTE: √˜⁼ dyadic: w(√˜)⁼x — find y such that w(√˜)y = x, i.e., y√w = x, i.e., w^(1/y) = x.
+        // Solving: 1/y = log_w(x) = ln(x)/ln(w), so y = ln(w)/ln(x).
+        // Use sys_fn 207 for the dyadic case: w(√˜⁼)x = ln(w)/ln(x).
+        5 => Some(m_sys_fn(207)),   // √˜⁼ dyadic: ln(w)/ln(x)
         _ => None,
     }
 }
@@ -925,7 +923,12 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     if md.kind == DerivedKind::Md2Block {
                         let bl = md.bl.as_ref().unwrap().clone();
                         let psc = md.sc.as_ref().unwrap().clone();
-                        let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
+                        // NOTE: if no dyadic body exists, the derived function cannot be called dyadically
+                        let body = if let Some(ref dy) = bl.dy_body {
+                            dy.clone()
+                        } else {
+                            rbqn_core::error::throw("This block cannot be called dyadically");
+                        };
                         return crate::vm::exec_block_with_args(
                             &bl, body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand_f, operand_g],
@@ -1390,6 +1393,17 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
                 Err(e) => rbqn_core::error::throw(e.to_string()),
             }
         }
+        206 => { // <⁼ = unbox: extract content from rank-0 array
+            if let Some(ref arr) = x_arr {
+                if arr.rank() == 0 {
+                    arr.get(0).unwrap_or(x)
+                } else {
+                    rbqn_core::error::throw("<⁼𝕩: 𝕩 must be a rank-0 array")
+                }
+            } else {
+                rbqn_core::error::throw("<⁼𝕩: 𝕩 must be a rank-0 array")
+            }
+        }
         // NOTE: math sys functions — unique range 1100-1114 to avoid conflicts with sys 100
         1100 => math_sin_c1(x),
         1101 => math_cos_c1(x),
@@ -1675,6 +1689,15 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                 }
             }
             rbqn_core::error::throw("⍉⁼: cannot compute inverse for given permutation")
+        }
+        // NOTE: sys 207 = √˜⁼ dyadic: w(√˜)⁼x = ln(w)/ln(x)
+        207 => {
+            let wf = w.o2f();
+            let xf = x.o2f();
+            if xf == 1.0 {
+                rbqn_core::error::throw("√˜⁼: x=1 has no finite inverse (log(1)=0)");
+            }
+            B::m_f64(wf.ln() / xf.ln())
         }
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c2)")),
     }
@@ -3054,4 +3077,86 @@ fn sh_exec_c2(w: B, x: B) -> B {
     }
     // Fall back to monadic form with x as string command
     sh_exec_c1(x)
+}
+
+// ============================================================
+// Structural equality for derived functions (used by ≡ and =)
+// ============================================================
+
+/// Compare two B values structurally, up to a recursion depth limit.
+fn b_struct_equal(w: B, x: B, depth: u32) -> bool {
+    if depth > 16 { return false; }
+    if w.0 == x.0 { return true; }
+    if w.is_f64() && x.is_f64() { return w.o2f() == x.o2f(); }
+    if w.is_c32() && x.is_c32() { return w.0 as u32 == x.0 as u32; }
+    if w.is_arr() && x.is_arr() {
+        let wa = crate::vm::get_arr(w);
+        let xa = crate::vm::get_arr(x);
+        if let (Some(wa), Some(xa)) = (wa, xa) {
+            if wa.shape != xa.shape { return false; }
+            for i in 0..wa.ia() {
+                let wv = wa.get(i).unwrap_or(B::SENTINEL);
+                let xv = xa.get(i).unwrap_or(B::SENTINEL);
+                if !b_struct_equal(wv, xv, depth + 1) { return false; }
+            }
+            return true;
+        }
+        return false;
+    }
+    if (w.is_fun() && x.is_fun()) || (w.is_md1() && x.is_md1()) || (w.is_md2() && x.is_md2()) {
+        return derived_values_equal(w, x, depth + 1);
+    }
+    false
+}
+
+/// Compare two derived function/modifier values structurally.
+/// Two derived values are equal if they have the same kind and the same operands.
+pub fn derived_values_equal(w: B, x: B, depth: u32) -> bool {
+    if depth > 16 { return false; }
+    if w.0 == x.0 { return true; }
+
+    let wid = (w.0 & 0xFFFFFFFFFFFF) >> 3;
+    let xid = (x.0 & 0xFFFFFFFFFFFF) >> 3;
+    let wd = get_derived(wid);
+    let xd = get_derived(xid);
+
+    // Kinds must match
+    if wd.kind != xd.kind { return false; }
+
+    // Compare operands based on kind
+    match wd.kind {
+        DerivedKind::NativeFn { prim_idx: wp } => {
+            if let DerivedKind::NativeFn { prim_idx: xp } = xd.kind { wp == xp } else { false }
+        }
+        DerivedKind::NativeMd1 { prim_idx: wp } => {
+            if let DerivedKind::NativeMd1 { prim_idx: xp } = xd.kind { wp == xp } else { false }
+        }
+        DerivedKind::NativeMd2 { prim_idx: wp } => {
+            if let DerivedKind::NativeMd2 { prim_idx: xp } = xd.kind { wp == xp } else { false }
+        }
+        DerivedKind::SysFn { sys_idx: ws } => {
+            if let DerivedKind::SysFn { sys_idx: xs } = xd.kind { ws == xs } else { false }
+        }
+        DerivedKind::Fork | DerivedKind::Atop | DerivedKind::Md1D | DerivedKind::Md2D
+        | DerivedKind::Md2PartialL | DerivedKind::Md2PartialR => {
+            b_struct_equal(wd.f, xd.f, depth + 1)
+                && b_struct_equal(wd.g, xd.g, depth + 1)
+                && b_struct_equal(wd.h, xd.h, depth + 1)
+        }
+        // Block functions/modifiers: equal only if same block (same Arc pointer)
+        DerivedKind::FunBlock | DerivedKind::Md1Block | DerivedKind::Md2Block => {
+            // Compare block identity by pointer
+            let w_bl_ptr = wd.bl.as_ref().map(|bl| Arc::as_ptr(bl) as usize);
+            let x_bl_ptr = xd.bl.as_ref().map(|bl| Arc::as_ptr(bl) as usize);
+            w_bl_ptr == x_bl_ptr
+        }
+        _ => false, // Other derived kinds not compared structurally
+    }
+}
+
+/// Register derived equality with rbqn-core so that ≡ and = work for functions.
+pub fn register_derived_equality() {
+    rbqn_core::compare::register_derived_equal_fn(|w, x, depth| {
+        derived_values_equal(w, x, depth)
+    });
 }
