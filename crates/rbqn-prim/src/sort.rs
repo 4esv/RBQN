@@ -2,6 +2,23 @@ use rbqn_core::*;
 use rbqn_core::array;
 use crate::dispatch::PrimResult;
 
+/// Recursively check if a B value contains any non-data (function/modifier) values.
+/// Returns true if the value or any nested array element is a function/modifier.
+fn contains_non_data(v: B) -> bool {
+    if v.is_f64() || v.is_c32() { return false; }
+    if v.is_fun() || v.is_md1() || v.is_md2() { return true; }
+    if v.is_arr() {
+        if let Some(arr) = get_arr(v) {
+            for i in 0..arr.ia() {
+                if let Ok(elem) = arr.get(i) {
+                    if contains_non_data(elem) { return true; }
+                }
+            }
+        }
+    }
+    false
+}
+
 fn grade(arr: &BqnArr, ascending: bool) -> Result<Vec<i32>> {
     // NOTE: BQN grade operates on the first axis (rows for 2D arrays).
     // For rank-1 arrays, each element is a cell. For rank-N, each cell is a
@@ -145,12 +162,21 @@ pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
     }
     let xarr = xa.unwrap();
 
-    // Validate: elements must be comparable (not functions/modifiers)
+    // Validate: elements must be comparable (no functions/modifiers, even nested)
     if warr.el_type() == ElType::B {
         for i in 0..warr.ia() {
             let v = warr.get(i)?;
-            if !v.is_f64() && !v.is_c32() && !v.is_arr() {
+            if contains_non_data(v) {
                 return Err(BqnError::Type("𝕨⍋𝕩: elements must be numbers, characters, or arrays".into()));
+            }
+        }
+    }
+    // Validate x elements recursively
+    if xarr.el_type() == ElType::B {
+        for i in 0..xarr.ia() {
+            let v = xarr.get(i)?;
+            if contains_non_data(v) {
+                return Err(BqnError::Type("𝕨⍋𝕩: 𝕩 elements must be numbers, characters, or arrays".into()));
             }
         }
     }
@@ -180,16 +206,6 @@ pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
     let x_lead_dims = xr - w_cell_rank;
     let x_lead_shape = &xarr.shape[..x_lead_dims];
     let x_lead_count: usize = x_lead_shape.iter().product::<usize>().max(1);
-
-    // Validate x elements are sortable
-    if xarr.el_type() == ElType::B {
-        for i in 0..xarr.ia() {
-            let v = xarr.get(i)?;
-            if !v.is_f64() && !v.is_c32() && !v.is_arr() {
-                return Err(BqnError::Type("𝕨⍋𝕩: 𝕩 elements must be numbers, characters, or arrays".into()));
-            }
-        }
-    }
 
     // w_leq_x: returns true if w cell j <= x cell at offset (ascending bins condition)
     let w_leq_x = |x_offset: usize, w_j: usize| -> bool {
@@ -259,6 +275,16 @@ pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Re
     }
     let xarr = xa.unwrap();
 
+    // Validate x elements recursively for non-data values
+    if xarr.el_type() == ElType::B {
+        for i in 0..xarr.ia() {
+            let v = xarr.get(i)?;
+            if contains_non_data(v) {
+                return Err(BqnError::Type("𝕨⍒𝕩: 𝕩 elements must be numbers, characters, or arrays".into()));
+            }
+        }
+    }
+
     let wr = warr.rank() as usize;
     let xr = xarr.rank() as usize;
     let w_cell_shape = if wr > 0 { &warr.shape[1..] } else { &[] as &[usize] };
@@ -283,12 +309,12 @@ pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Re
     let x_lead_shape = &xarr.shape[..x_lead_dims];
     let x_lead_count: usize = x_lead_shape.iter().product::<usize>().max(1);
 
-    // Validate x elements are sortable
-    if xarr.el_type() == ElType::B {
-        for i in 0..xarr.ia() {
-            let v = xarr.get(i)?;
-            if !v.is_f64() && !v.is_c32() && !v.is_arr() {
-                return Err(BqnError::Type("𝕨⍒𝕩: 𝕩 elements must be numbers, characters, or arrays".into()));
+    // Validate w elements as well
+    if warr.el_type() == ElType::B {
+        for i in 0..warr.ia() {
+            let v = warr.get(i)?;
+            if contains_non_data(v) {
+                return Err(BqnError::Type("𝕨⍒𝕩: 𝕨 elements must be numbers, characters, or arrays".into()));
             }
         }
     }

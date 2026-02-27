@@ -426,15 +426,51 @@ fn each_c2(f: B, w: B, x: B) -> B {
         }
         return results_to_arr(results, warr.shape.clone());
     }
-    if warr.shape != xarr.shape {
-        rbqn_core::error::throw("¨: 𝕨 and 𝕩 must have the same shape");
+    if warr.shape == xarr.shape {
+        let n = warr.ia();
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            results.push(c2(f, get_elem(&warr, i), get_elem(&xarr, i)));
+        }
+        return results_to_arr(results, warr.shape.clone());
     }
-    let n = warr.ia();
-    let mut results = Vec::with_capacity(n);
-    for i in 0..n {
-        results.push(c2(f, get_elem(&warr, i), get_elem(&xarr, i)));
+
+    // NOTE: BQN ¨ leading-axis broadcast: if w.shape is a prefix of x.shape,
+    // iterate over major cells of x, pairing each with the corresponding element of w.
+    // Result shape = x.shape (the longer one). Vice versa for x.shape prefix of w.shape.
+    let ws = &warr.shape;
+    let xs = &xarr.shape;
+    if xs.starts_with(ws) && ws.len() < xs.len() {
+        // w.shape is a strict prefix of x.shape: w[i] applied to each major cell of x[i]
+        let lead = warr.ia(); // total elements of w = major cell count matched
+        let cell_size: usize = xs[ws.len()..].iter().product::<usize>().max(1);
+        let mut results = Vec::with_capacity(lead * cell_size);
+        for i in 0..lead {
+            let w_elem = get_elem(&warr, i);
+            for j in 0..cell_size {
+                results.push(c2(f, w_elem, get_elem(&xarr, i * cell_size + j)));
+            }
+        }
+        return results_to_arr(results, xs.clone());
     }
-    results_to_arr(results, warr.shape.clone())
+    if ws.starts_with(xs) && xs.len() < ws.len() {
+        // x.shape is a strict prefix of w.shape: x[i] applied to each major cell of w[i]
+        let lead = xarr.ia();
+        let cell_size: usize = ws[xs.len()..].iter().product::<usize>().max(1);
+        let mut results = Vec::with_capacity(lead * cell_size);
+        for i in 0..lead {
+            let x_elem = get_elem(&xarr, i);
+            for j in 0..cell_size {
+                results.push(c2(f, get_elem(&warr, i * cell_size + j), x_elem));
+            }
+        }
+        return results_to_arr(results, ws.clone());
+    }
+
+    rbqn_core::error::throw(format!(
+        "¨: 𝕨 and 𝕩 must have the same shape ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
+        warr.shape, xarr.shape
+    ))
 }
 
 // ============================================================

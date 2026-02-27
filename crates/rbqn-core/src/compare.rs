@@ -172,22 +172,28 @@ pub fn compare(w: B, x: B) -> i32 {
                 if c != 0 { return c; }
             }
         }
-        if w_elems < x_elems { return -1; }
-        if w_elems > x_elems { return 1; }
-        // Same ravel: lower rank is less
-        let w_rank = wa.as_ref().map_or(0u8, |a| a.rank());
-        let x_rank = xa.as_ref().map_or(0u8, |a| a.rank());
-        if w_rank != x_rank {
-            return if w_rank < x_rank { -1 } else { 1 };
+        // After equal elements (up to min length), compare shapes trailing-first (BQN ordering).
+        // NOTE: BQN does NOT compare ravel lengths directly — shapes determine the order.
+        // A scalar atom is treated as having no shape (below even rank-0 arrays).
+        // Compare reversed shape sequences; if one is a reversed-prefix of the other, shorter rank is less.
+        let w_is_arr = wa.is_some();
+        let x_is_arr = xa.is_some();
+        // Scalar atom < rank-0 array < rank-1 array < ...
+        // Atoms (not arrays) sort before arrays, even rank-0 arrays with same content.
+        if !w_is_arr && x_is_arr { return -1; }
+        if w_is_arr && !x_is_arr { return 1; }
+        let w_shape: &[usize] = wa.as_ref().map_or(&[], |a| a.shape.as_slice());
+        let x_shape: &[usize] = xa.as_ref().map_or(&[], |a| a.shape.as_slice());
+        let wn = w_shape.len();
+        let xn = x_shape.len();
+        let min_rank = wn.min(xn);
+        for i in 0..min_rank {
+            let ws = w_shape[wn - 1 - i];
+            let xs = x_shape[xn - 1 - i];
+            if ws != xs { return if ws < xs { -1 } else { 1 }; }
         }
-        // Same rank and ravel: compare shapes
-        if let (Some(wa), Some(xa)) = (&wa, &xa) {
-            for i in 0..wa.shape.len() {
-                if wa.shape[i] != xa.shape[i] {
-                    return if wa.shape[i] < xa.shape[i] { -1 } else { 1 };
-                }
-            }
-        }
+        // All trailing axes equal: lower rank (fewer axes) is less
+        if wn != xn { return if wn < xn { -1 } else { 1 }; }
         return 0;
     }
     0
