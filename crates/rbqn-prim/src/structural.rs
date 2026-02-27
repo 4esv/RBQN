@@ -416,6 +416,14 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     let new_ia: usize = new_shape.iter().product();
 
     if x.is_atom() {
+        if x.is_c32() {
+            // NOTE: reshape a char atom — fill with the char, not a numeric value
+            let codepoint = x.0 as u32;
+            let vals = vec![codepoint; new_ia];
+            let mut out = BqnArr::new_vec_c32(vals);
+            out.shape = new_shape;
+            return Ok(PrimResult::Array(out));
+        }
         let vals = vec![x.o2f(); new_ia];
         let mut out = BqnArr::new_vec_f64(vals);
         out.shape = new_shape;
@@ -1124,11 +1132,23 @@ pub fn take_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
 fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let axes = warr.i32_iter()?;
     if axes.is_empty() {
-        // ⟨⟩↑x = x
+        // NOTE: ⟨⟩↑x = <x (rank-0 enclosed, depth 1), regardless of x's type.
         if x.is_atom() {
-            return Ok(PrimResult::Scalar(x));
+            return Ok(PrimResult::Array(BqnArr {
+                shape: vec![],
+                data: ArrData::Boxed(vec![x]),
+                fill: Some(prototype_of(x)),
+            }));
         }
-        return Ok(PrimResult::Array(xa.ok_or_else(|| BqnError::Type("𝕨↑𝕩: 𝕩 must be an array".into()))?.clone()));
+        if let Some(arr) = xa {
+            return Ok(PrimResult::Array(arr.clone()));
+        }
+        // x is a function or other non-array: wrap in rank-0.
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: ArrData::Boxed(vec![x]),
+            fill: Some(prototype_of(x)),
+        }));
     }
     // Start with x, apply take along each axis
     let arr = if x.is_atom() {
@@ -1235,10 +1255,21 @@ pub fn drop_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
     // Multi-axis drop: when w is an array, each element specifies drop along one axis
     if w.is_arr() {
         if let Some(warr) = wa {
-            return drop_multi_axis(warr, xa);
+            return drop_multi_axis(warr, _x, xa);
         }
     }
     let n = w.to_i32()?;
+    // NOTE: BQN allows scalar x for drop: 0↓atom = <atom (rank-0 result).
+    if xa.is_none() {
+        // x is atom (scalar or function): treat as rank-0 enclosed.
+        // Any drop on rank-0 returns rank-0.
+        let enclosed = BqnArr {
+            shape: vec![],
+            data: ArrData::Boxed(vec![_x]),
+            fill: Some(prototype_of(_x)),
+        };
+        return Ok(PrimResult::Array(enclosed));
+    }
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?;
 
     let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
@@ -1284,10 +1315,19 @@ pub fn drop_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
 }
 
 /// Multi-axis drop: w is a list of integers, each specifying drop along one axis.
-fn drop_multi_axis(warr: &BqnArr, xa: Option<&BqnArr>) -> Result<PrimResult> {
+fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let axes = warr.i32_iter()?;
     if axes.is_empty() {
-        return Ok(PrimResult::Array(xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?.clone()));
+        // Empty drop: ⟨⟩↓x = <x (rank-0 enclosed).
+        if let Some(arr) = xa {
+            return Ok(PrimResult::Array(arr.clone()));
+        }
+        // x is atom: return rank-0 enclosed atom.
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: ArrData::Boxed(vec![x]),
+            fill: Some(prototype_of(x)),
+        }));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?;
 
