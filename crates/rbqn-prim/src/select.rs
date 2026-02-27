@@ -247,14 +247,16 @@ pub fn first_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⊑ dyad: pick
+// BQN pick semantics:
+// - w is scalar (f64): pick from rank-1 x by index
+// - w is rank-1 NUMERIC array: multi-axis index (length must match rank of x), returns scalar
+// - w is BOXED array (any rank): iterate elements, each picks from x independently, result shape = shape of w
+// - w is rank-0 boxed: unwrap and recurse
 pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
-    if x.is_atom() {
-        return Ok(PrimResult::Scalar(x));
-    }
-    let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
-
     if w.is_f64() {
-        // NOTE: BQN spec: scalar pick requires 𝕩 to be rank-1 (a list)
+        // Scalar pick: x must be rank-1
+        if x.is_atom() { return Ok(PrimResult::Scalar(x)); }
+        let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
         if arr.rank() != 1 {
             return Err(BqnError::Rank(format!(
                 "𝕨⊑𝕩: 𝕩 must be a list when 𝕨 is a number ({:?} ≡ ≢𝕩)", arr.shape
@@ -265,77 +267,211 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
         return Ok(PrimResult::Scalar(arr.get(idx)?));
     }
 
-    // NOTE: w must be an array (not another scalar type)
     if !w.is_arr() {
         return Err(BqnError::Type("𝕨⊑𝕩: 𝕨 must be a number or array".into()));
     }
 
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕨 must be a number or array".into()))?;
 
-    // NOTE: rank-0 w (enclosed index) is not valid for ⊑
+    // rank-0 boxed w: apply inner as index, then ENCLOSE result
+    // <1‿2⊑x = <(x[1,2]) -- enclose the picked element
+    // Constraint: inner must be a rank-1 array (not scalar, not rank-0)
     if warr.rank() == 0 {
-        return Err(BqnError::Rank("𝕨⊑𝕩: 𝕨 must be a number or rank≥1 array".into()));
+        if warr.el_type() == ElType::B && warr.ia() > 0 {
+            let inner = warr.get(0)?;
+            // Validate: inner must be a rank-1+ array (not scalar)
+            if inner.is_f64() || inner.is_c32() {
+                return Err(BqnError::Rank(format!(
+                    "𝕨⊑𝕩: Leaf arrays in 𝕨 must have rank 1 (element: {:?})", warr.shape
+                )));
+            }
+            // Pick using inner index, then enclose result
+            let picked = pick_elem(inner, x)?;
+            return Ok(PrimResult::Array(BqnArr {
+                shape: vec![],
+                data: ArrData::Boxed(vec![picked]),
+                fill: Some(crate::structural::prototype_of(picked)),
+            }));
+        }
+        // empty rank-0 boxed (<⟨⟩): must be applied to a unit (atom or rank-0 enclosed)
+        if warr.el_type() == ElType::B {
+            if x.is_atom() {
+                // Atom is a unit: enclose it
+                return Ok(PrimResult::Array(BqnArr {
+                    shape: vec![],
+                    data: ArrData::Boxed(vec![x]),
+                    fill: Some(crate::structural::prototype_of(x)),
+                }));
+            }
+            if let Some(xarr) = xa {
+                if xarr.rank() == 0 {
+                    // rank-0 enclosed is a unit: return as-is (the enclosure)
+                    return Ok(PrimResult::Array(xarr.clone()));
+                }
+            }
+            return Err(BqnError::Domain("𝕨⊑𝕩: 𝕩 must be a unit if 𝕨 is empty enclosed".into()));
+        }
+        return Err(BqnError::Rank("𝕨⊑𝕩: rank-0 𝕨 must be boxed".into()));
     }
 
-    // Multi-dimensional pick: w is a list of indices
-    if warr.rank() == 1 {
+    // rank-1+ NUMERIC: multi-axis index (single pick)
+    if warr.el_type() != ElType::B {
+        let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
         let indices = warr.i32_iter()?;
+        if warr.rank() == 1 {
+            if indices.len() != arr.rank() as usize {
+                return Err(BqnError::Rank(format!(
+                    "𝕨⊑𝕩: Picking item at wrong rank (index {:?} in array of shape {:?})",
+                    indices, arr.shape
+                )));
+            }
+            let mut flat_idx = 0usize;
+            let mut stride = 1usize;
+            for i in (0..indices.len()).rev() {
+                let idx = resolve_index(indices[i], arr.shape[i])?;
+                flat_idx += idx * stride;
+                stride *= arr.shape[i];
+            }
+            return Ok(PrimResult::Scalar(arr.get(flat_idx)?));
+        }
+        return Err(BqnError::Rank("𝕨⊑𝕩: numeric 𝕨 must be rank-1".into()));
+    }
+
+    // BOXED w: iterate elements, each independently picks from x
+    let wia = warr.ia();
+    if wia == 0 {
+        // Empty boxed w: ⟨⟩⊑x -- x must be a "unit" (atom or rank-0 enclosed)
+        if x.is_atom() {
+            return Ok(PrimResult::Scalar(x));
+        }
+        if let Some(xarr) = xa {
+            if xarr.rank() == 0 && xarr.ia() > 0 {
+                return Ok(PrimResult::Scalar(xarr.get(0)?));
+            }
+            if xarr.rank() == 0 {
+                return Ok(PrimResult::Scalar(x));
+            }
+        }
+        return Err(BqnError::Domain("𝕨⊑𝕩: 𝕩 must be a unit if 𝕨 contains an empty array".into()));
+    }
+    // Validate: all elements must be the same "kind" (no mixed numeric+boxed)
+    // (CBQN errors with "mixed-type elements" for lists with scalar ints and boxed arrays)
+    let mut result = Vec::with_capacity(wia);
+    for i in 0..wia {
+        let idx_b = warr.get(i)?;
+        result.push(pick_elem(idx_b, x)?);
+    }
+    let out = typed_arr_from_b_vec(result, warr.shape.clone(), None);
+    Ok(PrimResult::Array(out))
+}
+
+/// Pick an element using idx as the index value applied to x.
+/// Used by the boxed-w iteration in pick_c2.
+/// Rules:
+/// - idx is f64 scalar: pick from rank-1 x (index into first axis)
+/// - idx is numeric array: multi-axis pick (length = rank of x)
+/// - idx is rank-0 boxed: unwrap and apply inner to x (this accesses enclosed x)
+/// - idx is rank-1+ boxed: iterate elements, each picks from x, result is array
+fn pick_elem(idx: B, x: B) -> Result<B> {
+    if idx.is_f64() {
+        // Scalar: pick from rank-1 (or first axis of higher-rank)
+        if x.is_atom() {
+            // Any index into an atom = the atom itself (BQN: index into enclosed scalar)
+            return Ok(x);
+        }
+        let arr = get_arr(x)
+            .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
+        let i = idx.to_i32()?;
+        if arr.rank() != 1 {
+            return Err(BqnError::Rank(format!(
+                "𝕨⊑𝕩: Picking item at wrong rank (scalar index in array of shape {:?})",
+                arr.shape
+            )));
+        }
+        let pos = resolve_index(i, arr.ia())?;
+        return Ok(arr.get(pos)?);
+    }
+
+    if let Some(idx_arr) = get_arr(idx) {
+        if idx_arr.rank() == 0 {
+            // rank-0 boxed index: applies inner index to x, then ENCLOSES result
+            // Constraint: inner must be rank-1+ array (not plain scalar)
+            if idx_arr.ia() == 0 {
+                // <⟨⟩⊑x: empty enclosed, x must be unit
+                if x.is_atom() {
+                    return Ok(tag_arr(BqnArr {
+                        shape: vec![],
+                        data: ArrData::Boxed(vec![x]),
+                        fill: Some(crate::structural::prototype_of(x)),
+                    }));
+                }
+                let xarr = get_arr(x).ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
+                if xarr.rank() != 0 {
+                    return Err(BqnError::Domain("𝕨⊑𝕩: 𝕩 must be a unit if 𝕨 contains an empty array".into()));
+                }
+                return Ok(x);
+            }
+            // Non-empty rank-0 boxed: inner must be rank-1+ (not scalar)
+            let inner = idx_arr.get(0)?;
+            if inner.is_f64() || inner.is_c32() {
+                return Err(BqnError::Rank("𝕨⊑𝕩: Leaf arrays in 𝕨 must have rank 1".into()));
+            }
+            let picked = pick_elem(inner, x)?;
+            return Ok(tag_arr(BqnArr {
+                shape: vec![],
+                data: ArrData::Boxed(vec![picked]),
+                fill: Some(crate::structural::prototype_of(picked)),
+            }));
+        }
+
+        if idx_arr.el_type() == ElType::B {
+            // rank-1+ boxed: iterate elements, each picks from x independently
+            let ia = idx_arr.ia();
+            if ia == 0 {
+                // Empty boxed list ⟨⟩⊑x:
+                // - if x is atom: return x (identity)
+                // - if x is rank-0 enclosed: unwrap and return content
+                // - otherwise: error
+                if x.is_atom() { return Ok(x); }
+                let xarr = get_arr(x).ok_or_else(|| BqnError::Type("⊑: 𝕩 must be array".into()))?;
+                if xarr.rank() == 0 && xarr.ia() > 0 {
+                    return Ok(xarr.get(0)?);
+                }
+                if xarr.rank() == 0 && xarr.ia() == 0 {
+                    return Ok(x); // empty enclosed unit
+                }
+                return Err(BqnError::Domain("𝕨⊑𝕩: 𝕩 must be a unit if 𝕨 contains an empty array".into()));
+            }
+            let mut elems = Vec::with_capacity(ia);
+            for i in 0..ia {
+                let step = idx_arr.get(i)?;
+                elems.push(pick_elem(step, x)?);
+            }
+            let out = typed_arr_from_b_vec(elems, idx_arr.shape.clone(), None);
+            return Ok(tag_arr(out));
+        }
+
+        // Numeric array: multi-axis index
+        if x.is_atom() { return Ok(x); }
+        let arr = get_arr(x).ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be array".into()))?;
+        let indices = idx_arr.i32_iter()?;
         if indices.len() != arr.rank() as usize {
-            return Err(BqnError::Rank("𝕨⊑𝕩: 𝕨 must have length equal to rank of 𝕩".into()));
+            return Err(BqnError::Rank(format!(
+                "𝕨⊑𝕩: Picking item at wrong rank (index {:?} in array of shape {:?})",
+                indices, arr.shape
+            )));
         }
         let mut flat_idx = 0usize;
         let mut stride = 1usize;
-        for i in (0..indices.len()).rev() {
-            let idx = resolve_index(indices[i], arr.shape[i])?;
-            flat_idx += idx * stride;
-            stride *= arr.shape[i];
+        for j in (0..indices.len()).rev() {
+            let pos = resolve_index(indices[j], arr.shape[j])?;
+            flat_idx += pos * stride;
+            stride *= arr.shape[j];
         }
-        return Ok(PrimResult::Scalar(arr.get(flat_idx)?));
+        return Ok(arr.get(flat_idx)?);
     }
 
-    // Nested pick: w is a higher-rank array or contains boxed index lists.
-    // Each element of w (if boxed) is an index-list into x.
-    // The result has the outer shape of w, with each element being the picked value.
-    if warr.el_type() == ElType::B {
-        let wia = warr.ia();
-        let mut result = Vec::with_capacity(wia);
-        for i in 0..wia {
-            let idx_b = warr.get(i)?;
-            if idx_b.is_f64() {
-                // Simple integer index
-                let idx = resolve_index(idx_b.o2i(), arr.ia())?;
-                result.push(arr.get(idx)?);
-            } else if idx_b.is_arr() {
-                // Nested index list
-                let idx_arr = get_arr(idx_b)
-                    .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: index element not found".into()))?;
-                // NOTE: Enclosed (rank-0) array as index is not valid for ⊑
-                if idx_arr.rank() == 0 {
-                    return Err(BqnError::Rank("𝕨⊑𝕩: index element must not be rank-0 (enclosed)".into()));
-                }
-                let indices = idx_arr.i32_iter()?;
-                if indices.len() != arr.rank() as usize {
-                    return Err(BqnError::Rank(
-                        "𝕨⊑𝕩: index length must equal rank of 𝕩".into(),
-                    ));
-                }
-                let mut flat_idx = 0usize;
-                let mut stride = 1usize;
-                for j in (0..indices.len()).rev() {
-                    let idx = resolve_index(indices[j], arr.shape[j])?;
-                    flat_idx += idx * stride;
-                    stride *= arr.shape[j];
-                }
-                result.push(arr.get(flat_idx)?);
-            } else {
-                return Err(BqnError::Type("𝕨⊑𝕩: index must be number or array".into()));
-            }
-        }
-        let out = typed_arr_from_b_vec(result, warr.shape.clone(), None);
-        return Ok(PrimResult::Array(out));
-    }
-
-    Err(BqnError::Type("𝕨⊑𝕩: unsupported index type".into()))
+    Err(BqnError::Type("𝕨⊑𝕩: index must be a number or array".into()))
 }
 
 /// Deep pick helper: given an index value and a target, pick one element.
