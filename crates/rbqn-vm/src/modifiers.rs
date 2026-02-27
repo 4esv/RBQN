@@ -405,6 +405,27 @@ fn each_c2(f: B, w: B, x: B) -> B {
         let result = c2(f, get_elem(&warr, 0), get_elem(&xarr, 0));
         return results_to_arr(vec![result], vec![]);
     }
+    // NOTE: BQN ¨ rank-0 broadcast: when one arg is rank-0, it broadcasts to match the other.
+    // rank-0 w broadcasts over all elements of x (iterating x, w is constant).
+    if warr.shape.is_empty() {
+        let w_elem = get_elem(&warr, 0);
+        let n = xarr.ia();
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            results.push(c2(f, w_elem, get_elem(&xarr, i)));
+        }
+        return results_to_arr(results, xarr.shape.clone());
+    }
+    // rank-0 x broadcasts over all elements of w.
+    if xarr.shape.is_empty() {
+        let x_elem = get_elem(&xarr, 0);
+        let n = warr.ia();
+        let mut results = Vec::with_capacity(n);
+        for i in 0..n {
+            results.push(c2(f, get_elem(&warr, i), x_elem));
+        }
+        return results_to_arr(results, warr.shape.clone());
+    }
     if warr.shape != xarr.shape {
         rbqn_core::error::throw("¨: 𝕨 and 𝕩 must have the same shape");
     }
