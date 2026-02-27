@@ -1602,11 +1602,11 @@ pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ↕ dyad: windows
 // n↕x returns sliding windows of length n along x.
 // Result has (len-n+1) windows, each of length n.
-pub fn windows_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn windows_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     // Multi-axis windows: when w is a list, each element specifies window size along one axis
     if w.is_arr() {
         if let Some(warr) = wa {
-            return windows_multi_axis(warr, xa);
+            return windows_multi_axis(warr, x, xa);
         }
     }
     let n = w.to_usz()?;
@@ -1664,13 +1664,28 @@ pub fn windows_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resu
 }
 
 /// Multi-axis windows: w is a list, each element specifies window size along one axis.
-fn windows_multi_axis(warr: &BqnArr, xa: Option<&BqnArr>) -> Result<PrimResult> {
+fn windows_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let axes = warr.i32_iter()?;
-    let arr = xa.ok_or_else(|| BqnError::Type("𝕨↕𝕩: 𝕩 must be an array".into()))?;
     if axes.is_empty() {
-        // ⟨⟩↕x = x
-        return Ok(PrimResult::Array(arr.clone()));
+        // ⟨⟩↕x = rank-0 array containing x (same as <x for scalar, or x itself if already array)
+        if let Some(arr) = xa {
+            if arr.shape.is_empty() {
+                // x is already rank-0 array, return as-is
+                return Ok(PrimResult::Array(arr.clone()));
+            }
+            // x is a rank-n array: ⟨⟩↕x returns x unchanged (0-dim windows over all axes)
+            return Ok(PrimResult::Array(arr.clone()));
+        } else {
+            // x is a scalar (number, char, or function) — wrap in rank-0 boxed array
+            let out = BqnArr {
+                shape: vec![],
+                data: rbqn_core::array::ArrData::Boxed(vec![x]),
+                fill: None,
+            };
+            return Ok(PrimResult::Array(out));
+        }
     }
+    let arr = xa.ok_or_else(|| BqnError::Type("𝕨↕𝕩: 𝕩 must be an array".into()))?;
     // For each axis a, window_sizes[a] = axes[a], result_dim[a] = shape[a] + 1 - axes[a]
     let mut out_shape = Vec::new();
     let mut window_shape = Vec::new();
