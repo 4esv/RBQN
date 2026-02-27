@@ -1329,9 +1329,11 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
     let fill_val = arr_fill(arr);
     let mut current_data: Vec<B> = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
     let mut current_shape = arr.shape.clone();
-    // Pad shape if w is longer than rank of x
+    // NOTE: If w has more axes than rank of x, prepend 1s to x's shape.
+    // e.g. 2‿3↑"abcd" (rank-1): x is treated as having shape ⟨1,4⟩ then take ⟨2,3⟩.
+    // This matches CBQN behavior: extra leading axes of size 1 are added.
     while current_shape.len() < axes.len() {
-        current_shape.push(1);
+        current_shape.insert(0, 1);
     }
 
     for (a, &n) in axes.iter().enumerate() {
@@ -1495,9 +1497,13 @@ fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
 
     let mut current_data: Vec<B> = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
     let mut current_shape = arr.shape.clone();
-    // Pad shape if w is longer than rank of x
+    // NOTE: If w has more elements than rank of x, prepend leading dims of 1.
+    // e.g. (5⥊0)↓↕3‿2‿1: w has 5 elements, x has rank 3.
+    // Extra leading axes of size 1 are prepended, then dropped by 0 = no change.
     while current_shape.len() < axes.len() {
-        current_shape.push(1);
+        current_shape.insert(0, 1);
+        // Wrap current_data in a size-1 leading axis by doing nothing (data is unchanged,
+        // we just added a leading dim of 1).
     }
 
     for (a, &n) in axes.iter().enumerate() {
