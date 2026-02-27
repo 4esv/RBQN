@@ -621,8 +621,29 @@ fn insert_c1(f: B, x: B) -> B {
     if arr.rank() == 0 {
         rbqn_core::error::throw("˝: 𝕩 must have rank ≥ 1");
     }
-    if arr.rank() < 2 {
-        return fold_c1(f, x);
+    if arr.rank() == 1 {
+        // Insert on rank-1: fold between rank-0 cells (enclosed elements).
+        // BQN: F˝ = F´˘, so cells are rank-0 arrays, not bare atoms.
+        let n = arr.shape[0];
+        if n == 0 {
+            if let Some(id) = fold_identity(f) {
+                return id;
+            }
+            rbqn_core::error::throw("˝: empty array with no identity");
+        }
+        let enclose_elem = |e: B| -> B {
+            crate::vm::tag_arr(BqnArr {
+                shape: vec![],
+                data: ArrData::Boxed(vec![e]),
+                fill: None,
+            })
+        };
+        let mut acc = enclose_elem(get_elem(&arr, n - 1));
+        for i in (0..n - 1).rev() {
+            let cell = enclose_elem(get_elem(&arr, i));
+            acc = c2(f, cell, acc);
+        }
+        return acc;
     }
     let lead = arr.shape[0];
     if lead == 0 {
@@ -883,10 +904,10 @@ fn cells_c1(f: B, x: B) -> B {
         return results_to_arr(vec![result], vec![]);
     }
     let arr = arr_of(x);
-    // Rank-0 array: same as scalar
+    // Rank-0 array: apply F to the whole rank-0 array; frame is ⟨⟩, merge result properly
     if arr.shape.is_empty() {
-        let result = c1(f, get_elem(&arr, 0));
-        return results_to_arr(vec![result], vec![]);
+        let result = c1(f, x);
+        return merge_cells_result(vec![result], vec![]);
     }
     let lead = arr.shape[0];
     if arr.rank() == 1 {
@@ -917,6 +938,11 @@ fn cells_c2(f: B, w: B, x: B) -> B {
         return c2(f, w, x);
     }
     let xarr = arr_of(x);
+    // Rank-0 array: apply F to the whole rank-0 array; frame is ⟨⟩, merge result properly
+    if xarr.shape.is_empty() {
+        let result = c2(f, w, x);
+        return merge_cells_result(vec![result], vec![]);
+    }
     let lead = xarr.shape[0];
     if xarr.rank() == 1 {
         // Rank 1: cells are individual elements
