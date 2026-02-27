@@ -2,7 +2,7 @@
 // Modifier logic lives here rather than in rbqn-prim because modifiers need to call
 // derive::c1/c2 to apply operand functions, which creates a circular dep if in rbqn-prim.
 
-use rbqn_core::{B, BqnArr, ArrData};
+use rbqn_core::{B, BqnArr, ArrData, ElType};
 
 use crate::derive::{c1, c2};
 
@@ -954,10 +954,35 @@ pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
 
 fn cells_c1(f: B, x: B) -> B {
     if x.is_atom() {
-        // BQN runtime depends on f˘ atom returning the raw result (not wrapped in rank-0).
-        // This means `≡˘0` returns 0 (atom) instead of <0 (rank-0 array).
-        // TODO: Match CBQN behavior after bootstrap is independent of this.
-        return c1(f, x);
+        // BQN: F˘ on atom wraps result in rank-0 array
+        let result = c1(f, x);
+        if result.is_arr() {
+            // Already an array — wrap in rank-0
+            let inner = rbqn_core::get_arr(result);
+            if let Some(arr) = inner {
+                if arr.shape.is_empty() {
+                    // Already rank-0 — return as-is
+                    return result;
+                }
+            }
+            return crate::vm::tag_arr(BqnArr {
+                shape: vec![],
+                data: ArrData::Boxed(vec![result]),
+                fill: Some(rbqn_prim::structural::prototype_of(result)),
+            });
+        }
+        // Scalar result: wrap in rank-0 array
+        return crate::vm::tag_arr(BqnArr {
+            shape: vec![],
+            data: if result.is_f64() {
+                ArrData::F64(vec![result.o2f()])
+            } else if result.is_c32() {
+                ArrData::C32(vec![result.0 as u32])
+            } else {
+                ArrData::Boxed(vec![result])
+            },
+            fill: Some(rbqn_prim::structural::prototype_of(result)),
+        });
     }
     let arr = arr_of(x);
     // Rank-0 array: apply F to the whole rank-0 array; frame is ⟨⟩, merge result properly
@@ -967,11 +992,24 @@ fn cells_c1(f: B, x: B) -> B {
     }
     let lead = arr.shape[0];
     if arr.rank() == 1 {
-        // Rank 1: cells are individual elements (rank-0 atoms)
+        // Rank 1: major cells are rank-0 units.
+        // For numeric/char arrays, rank-0 cells are just scalar values.
+        // For boxed arrays, rank-0 cells are enclosed values (rank-0 arrays wrapping the inner value).
+        let is_boxed = arr.el_type() == ElType::B;
         let mut results = Vec::with_capacity(lead);
         for i in 0..lead {
             let elem = get_elem(&arr, i);
-            results.push(c1(f, elem));
+            if is_boxed && elem.is_arr() {
+                // Wrap array element in rank-0 enclosure (the major cell IS a rank-0 array)
+                let cell = crate::vm::tag_arr(BqnArr {
+                    shape: vec![],
+                    data: ArrData::Boxed(vec![elem]),
+                    fill: Some(rbqn_prim::structural::prototype_of(elem)),
+                });
+                results.push(c1(f, cell));
+            } else {
+                results.push(c1(f, elem));
+            }
         }
         return merge_cells_result(results, vec![lead]);
     }
@@ -1001,14 +1039,37 @@ fn cells_c2(f: B, w: B, x: B) -> B {
     }
     let lead = xarr.shape[0];
     if xarr.rank() == 1 {
-        // Rank 1: cells are individual elements
+        // Rank 1: major cells are rank-0 units.
+        // For boxed arrays, array elements are wrapped in rank-0 enclosures.
+        let x_is_boxed = xarr.el_type() == ElType::B;
+        let get_x_cell = |arr: &BqnArr, i: usize| -> B {
+            let elem = get_elem(arr, i);
+            if x_is_boxed && elem.is_arr() {
+                crate::vm::tag_arr(BqnArr {
+                    shape: vec![],
+                    data: ArrData::Boxed(vec![elem]),
+                    fill: Some(rbqn_prim::structural::prototype_of(elem)),
+                })
+            } else {
+                elem
+            }
+        };
         if w.is_arr() {
             let warr = arr_of(w);
             if warr.rank() == 1 && warr.shape[0] == lead {
                 // Both rank 1 with same length: pair up elements
+                let w_is_boxed = warr.el_type() == ElType::B;
                 let mut results = Vec::with_capacity(lead);
                 for i in 0..lead {
-                    results.push(c2(f, get_elem(&warr, i), get_elem(&xarr, i)));
+                    let we = get_elem(&warr, i);
+                    let wc = if w_is_boxed && we.is_arr() {
+                        crate::vm::tag_arr(BqnArr {
+                            shape: vec![],
+                            data: ArrData::Boxed(vec![we]),
+                            fill: Some(rbqn_prim::structural::prototype_of(we)),
+                        })
+                    } else { we };
+                    results.push(c2(f, wc, get_x_cell(&xarr, i)));
                 }
                 return merge_cells_result(results, vec![lead]);
             }
@@ -1019,7 +1080,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
                 let mut results = Vec::with_capacity(lead);
                 for i in 0..lead {
                     let wc = crate::vm::tag_arr(extract_cell(&warr, i, w_cell_size, &w_cell_shape));
-                    results.push(c2(f, wc, get_elem(&xarr, i)));
+                    results.push(c2(f, wc, get_x_cell(&xarr, i)));
                 }
                 return merge_cells_result(results, vec![lead]);
             }
@@ -1027,7 +1088,7 @@ fn cells_c2(f: B, w: B, x: B) -> B {
         // w is atom or doesn't match: broadcast w to each x element
         let mut results = Vec::with_capacity(lead);
         for i in 0..lead {
-            results.push(c2(f, w, get_elem(&xarr, i)));
+            results.push(c2(f, w, get_x_cell(&xarr, i)));
         }
         return merge_cells_result(results, vec![lead]);
     }

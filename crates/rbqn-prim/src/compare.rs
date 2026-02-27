@@ -60,7 +60,61 @@ fn cmp_pervasive_boxed(
     scalar_fn: fn(B, B) -> i32,
     name: &str,
 ) -> Result<PrimResult> {
+    // Leading axis agreement: rank-0 array agrees with anything
+    if wa_arr.shape.is_empty() {
+        // Broadcast rank-0 w against all elements of x
+        let w_val = wa_arr.get(0)?;
+        let n = xa_arr.ia();
+        let mut results: Vec<B> = Vec::with_capacity(n);
+        for i in 0..n {
+            let xv = xa_arr.get(i)?;
+            results.push(cmp_pervasive_b(w_val, xv, scalar_fn, name)?);
+        }
+        let result_fill = results.first().copied().map(crate::structural::prototype_of);
+        let out = rbqn_core::array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), result_fill);
+        return Ok(PrimResult::Array(out));
+    }
+    if xa_arr.shape.is_empty() {
+        // Broadcast rank-0 x against all elements of w
+        let x_val = xa_arr.get(0)?;
+        let n = wa_arr.ia();
+        let mut results: Vec<B> = Vec::with_capacity(n);
+        for i in 0..n {
+            let wv = wa_arr.get(i)?;
+            results.push(cmp_pervasive_b(wv, x_val, scalar_fn, name)?);
+        }
+        let result_fill = results.first().copied().map(crate::structural::prototype_of);
+        let out = rbqn_core::array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
+        return Ok(PrimResult::Array(out));
+    }
     if wa_arr.shape != xa_arr.shape {
+        // Leading axis prefix agreement
+        if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
+            let w_ia = wa_arr.ia().max(1);
+            let n = xa_arr.ia();
+            let mut results: Vec<B> = Vec::with_capacity(n);
+            for i in 0..n {
+                let wv = wa_arr.get(i % w_ia)?;
+                let xv = xa_arr.get(i)?;
+                results.push(cmp_pervasive_b(wv, xv, scalar_fn, name)?);
+            }
+            let result_fill = results.first().copied().map(crate::structural::prototype_of);
+            let out = rbqn_core::array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), result_fill);
+            return Ok(PrimResult::Array(out));
+        }
+        if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
+            let x_ia = xa_arr.ia().max(1);
+            let n = wa_arr.ia();
+            let mut results: Vec<B> = Vec::with_capacity(n);
+            for i in 0..n {
+                let wv = wa_arr.get(i)?;
+                let xv = xa_arr.get(i % x_ia)?;
+                results.push(cmp_pervasive_b(wv, xv, scalar_fn, name)?);
+            }
+            let result_fill = results.first().copied().map(crate::structural::prototype_of);
+            let out = rbqn_core::array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
+            return Ok(PrimResult::Array(out));
+        }
         return Err(BqnError::Shape(format!(
             "𝕨{name}𝕩: shape mismatch ({:?} vs {:?})", wa_arr.shape, xa_arr.shape
         )));

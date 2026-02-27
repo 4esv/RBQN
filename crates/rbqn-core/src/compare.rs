@@ -124,84 +124,169 @@ pub fn equal(w: B, x: B, warr: Option<&BqnArr>, xarr: Option<&BqnArr>) -> bool {
 }
 
 pub fn compare(w: B, x: B) -> i32 {
+    // BQN array ordering per spec:
+    // 1. Compare elements at corresponding indices (suffix correspondence) in ravel order
+    // 2. If one lacks a corresponding index, it is smaller
+    // 3. If all match, higher rank is larger, then compare shape from leading axis
+    // 4. Atoms: atom is promoted by enclosing; if enclosed atom matches array, atom is smaller
+
+    // Both atoms: direct comparison
     if w.is_f64() && x.is_f64() {
         let wf = w.o2f();
         let xf = x.o2f();
-        return if wf < xf {
-            -1
-        } else if wf > xf {
-            1
-        } else {
-            0
-        };
+        return if wf < xf { -1 } else if wf > xf { 1 } else { 0 };
     }
     if w.is_c32() && x.is_c32() {
         let wc = w.0 as u32;
         let xc = x.0 as u32;
-        return if wc < xc {
-            -1
-        } else if wc > xc {
-            1
-        } else {
-            0
-        };
+        return if wc < xc { -1 } else if wc > xc { 1 } else { 0 };
     }
     // numbers < characters
-    if w.is_f64() && x.is_c32() {
-        return -1;
-    }
-    if w.is_c32() && x.is_f64() {
-        return 1;
-    }
-    // BQN comparison: atoms promoted to 1-element arrays.
-    // Compare element-by-element in ravel order, shorter < longer if prefix matches.
-    // After ravel comparison, rank breaks ties, then shape dimensions.
+    if w.is_f64() && x.is_c32() { return -1; }
+    if w.is_c32() && x.is_f64() { return 1; }
+
     let w_is_sortable = w.is_f64() || w.is_c32() || w.is_arr();
     let x_is_sortable = x.is_f64() || x.is_c32() || x.is_arr();
     if w_is_sortable && x_is_sortable {
-        let wa = if w.is_arr() { crate::get_arr(w) } else { None };
-        let xa = if x.is_arr() { crate::get_arr(x) } else { None };
-        let w_elems: usize = wa.as_ref().map_or(1, |a| a.ia());
-        let x_elems: usize = xa.as_ref().map_or(1, |a| a.ia());
-        let n = w_elems.min(x_elems);
-        for i in 0..n {
-            let wv = wa.as_ref().map_or(Ok(w), |a| a.get(i));
-            let xv = xa.as_ref().map_or(Ok(x), |a| a.get(i));
-            if let (Ok(wv), Ok(xv)) = (wv, xv) {
-                let c = compare(wv, xv);
-                if c != 0 { return c; }
-            }
-        }
-        // After equal elements (up to min length), BQN total order is:
-        // 1. Compare by ravel length (shorter is less, regardless of rank/shape)
-        // 2. If same ravel length, compare by rank (lower rank is less)
-        // 3. If same rank, compare by shape (trailing dimensions first, last dim is most significant)
-        // NOTE: Scalars (atoms) have ravel length 1, so ↕0 (length 0) < scalar 0 (length 1).
-        if w_elems != x_elems {
-            return if w_elems < x_elems { -1 } else { 1 };
-        }
-        // Same ravel length: compare by rank
-        let w_is_arr = wa.is_some();
-        let x_is_arr = xa.is_some();
-        let w_shape: &[usize] = wa.as_ref().map_or(&[], |a| a.shape.as_slice());
-        let x_shape: &[usize] = xa.as_ref().map_or(&[], |a| a.shape.as_slice());
-        // Scalar atom: treated as rank 0 but with shape [] (vs rank-0 arr which also has shape [])
-        // For same-length comparison: scalar < rank-0 array (wrapped scalar > bare scalar)
-        let wn = w_shape.len();
-        let xn = x_shape.len();
-        if wn != xn {
-            return if wn < xn { -1 } else { 1 };
-        }
-        // Same rank: compare by shape (trailing dimensions first)
-        for i in 0..wn {
-            let ws = w_shape[wn - 1 - i];
-            let xs = x_shape[xn - 1 - i];
-            if ws != xs { return if ws < xs { -1 } else { 1 }; }
-        }
-        // Bare scalar vs rank-0 array with same content: scalar is less
-        if !w_is_arr && x_is_arr { return -1; }
-        if w_is_arr && !x_is_arr { return 1; }
-        return 0;
+        return compare_values(w, x);
     }
     0
+}
+
+/// Compare two sortable BQN values using the BQN spec array ordering.
+/// Atoms are promoted to rank-0 arrays (enclosed). If an enclosed atom matches
+/// an array, the atom is considered smaller.
+fn compare_values(w: B, x: B) -> i32 {
+    let w_is_atom = !w.is_arr();
+    let x_is_atom = !x.is_arr();
+
+    // Both atoms (different types, e.g. number vs array-as-atom shouldn't happen here
+    // since compare() handles same-type atoms above)
+    if w_is_atom && x_is_atom {
+        return 0; // same type handled above
+    }
+
+    // Get shapes: atoms get shape [] (rank 0, 1 element)
+    let w_shape: Vec<usize>;
+    let x_shape: Vec<usize>;
+    let w_rank: usize;
+    let x_rank: usize;
+
+    if w_is_atom {
+        w_shape = vec![];
+        w_rank = 0;
+    } else {
+        let wa = crate::get_arr(w).unwrap();
+        w_shape = wa.shape.clone();
+        w_rank = wa.rank() as usize;
+    }
+    if x_is_atom {
+        x_shape = vec![];
+        x_rank = 0;
+    } else {
+        let xa = crate::get_arr(x).unwrap();
+        x_shape = xa.shape.clone();
+        x_rank = xa.rank() as usize;
+    }
+
+    // Pad shapes to same rank with leading 1s
+    let max_rank = w_rank.max(x_rank);
+    let w_padded: Vec<usize> = {
+        let mut s = vec![1usize; max_rank.saturating_sub(w_rank)];
+        s.extend_from_slice(&w_shape);
+        s
+    };
+    let x_padded: Vec<usize> = {
+        let mut s = vec![1usize; max_rank.saturating_sub(x_rank)];
+        s.extend_from_slice(&x_shape);
+        s
+    };
+
+    // Combined shape for iteration: max of each axis
+    let combined: Vec<usize> = (0..max_rank)
+        .map(|i| w_padded[i].max(x_padded[i]))
+        .collect();
+
+    let total: usize = combined.iter().product::<usize>().max(1);
+
+    // Iterate in ravel order through the combined shape
+    // For rank 0, total is 1 and we just compare the single elements
+    if max_rank == 0 {
+        // Both effectively rank 0
+        let wv = if w_is_atom { w } else {
+            crate::get_arr(w).and_then(|a| a.get(0).ok()).unwrap_or(B::SENTINEL)
+        };
+        let xv = if x_is_atom { x } else {
+            crate::get_arr(x).and_then(|a| a.get(0).ok()).unwrap_or(B::SENTINEL)
+        };
+        let c = compare(wv, xv);
+        if c != 0 { return c; }
+        // Same content: atom < enclosed atom
+        if w_is_atom && !x_is_atom { return -1; }
+        if !w_is_atom && x_is_atom { return 1; }
+        return 0;
+    }
+
+    // Compute strides for padded shapes
+    let w_strides = compute_strides(&w_padded);
+    let x_strides = compute_strides(&x_padded);
+    let combined_strides = compute_strides(&combined);
+
+    for flat in 0..total {
+        // Decode multi-index from combined shape
+        let mut idx = vec![0usize; max_rank];
+        let mut rem = flat;
+        for k in 0..max_rank {
+            idx[k] = rem / combined_strides[k];
+            rem %= combined_strides[k];
+        }
+
+        // Check if this index is in range for w and x
+        let w_in = idx.iter().enumerate().all(|(k, &i)| i < w_padded[k]);
+        let x_in = idx.iter().enumerate().all(|(k, &i)| i < x_padded[k]);
+
+        if !w_in && !x_in { continue; } // shouldn't happen
+        if !w_in { return -1; } // w lacks this index, w is smaller
+        if !x_in { return 1; }  // x lacks this index, x is smaller
+
+        // Both in range: compute flat index for each and compare elements
+        let w_flat = idx.iter().enumerate().map(|(k, &i)| i * w_strides[k]).sum::<usize>();
+        let x_flat = idx.iter().enumerate().map(|(k, &i)| i * x_strides[k]).sum::<usize>();
+
+        let wv = if w_is_atom { w } else {
+            crate::get_arr(w).and_then(|a| a.get(w_flat).ok()).unwrap_or(B::SENTINEL)
+        };
+        let xv = if x_is_atom { x } else {
+            crate::get_arr(x).and_then(|a| a.get(x_flat).ok()).unwrap_or(B::SENTINEL)
+        };
+
+        let c = compare(wv, xv);
+        if c != 0 { return c; }
+    }
+
+    // All elements match. Compare by rank (higher rank = larger), then shape from leading axis.
+    if w_rank != x_rank {
+        return if w_rank < x_rank { -1 } else { 1 };
+    }
+    // Same rank: compare shape from leading axis
+    for k in 0..w_rank {
+        if w_shape[k] != x_shape[k] {
+            return if w_shape[k] < x_shape[k] { -1 } else { 1 };
+        }
+    }
+
+    // Identical shape and content: atom < array with same content
+    if w_is_atom && !x_is_atom { return -1; }
+    if !w_is_atom && x_is_atom { return 1; }
+    0
+}
+
+fn compute_strides(shape: &[usize]) -> Vec<usize> {
+    let n = shape.len();
+    if n == 0 { return vec![]; }
+    let mut s = vec![1usize; n];
+    for k in (0..n.saturating_sub(1)).rev() {
+        s[k] = s[k + 1] * shape[k + 1];
+    }
+    s
 }
