@@ -1177,6 +1177,44 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
         }
     }
 
+    // Pattern: F⌾(Fork(k, ⊏⎉r, ⊢)) x — rank-select-under.
+    // Handles 2‿1⊏⎉1⊢, 2‿1⊏⎉¯1⊢, 2‿1⊏⎉(-˜○=)⊢ etc.
+    // Fork structure: gd.f=k(value array), gd.g=⊏⎉r(Md2D), gd.h=⊢(identity).
+    if gd.kind == crate::derive::DerivedKind::Fork {
+        let fork_f = gd.f; // k value
+        let fork_g = gd.g; // center = ⊏⎉r
+        let fork_h = gd.h; // right = ⊢
+        // Check h = ⊢ (prim 21).
+        let h_is_id = fork_h.is_fun() && {
+            let hid = (fork_h.0 & 0xFFFFFFFFFFFF) >> 3;
+            matches!(crate::derive::get_derived(hid).kind,
+                     crate::derive::DerivedKind::NativeFn { prim_idx: 21 })
+        };
+        // Check g = Md2D with modifier=⎉ (prim 60) and left-op=⊏ (prim 36).
+        if h_is_id && fork_g.is_fun() && fork_f.is_arr() {
+            let gid2 = (fork_g.0 & 0xFFFFFFFFFFFF) >> 3;
+            let gd2 = crate::derive::get_derived(gid2);
+            if gd2.kind == crate::derive::DerivedKind::Md2D {
+                let g_mod = gd2.g;
+                let g_lop = gd2.f;
+                let g_rsp = gd2.h; // rank spec
+                if g_mod.is_md2() {
+                    let mid = (g_mod.0 & 0xFFFFFFFFFFFF) >> 3;
+                    let md = crate::derive::get_derived(mid);
+                    if let crate::derive::DerivedKind::NativeMd2 { prim_idx: 60 } = md.kind {
+                        if g_lop.is_fun() {
+                            let lid = (g_lop.0 & 0xFFFFFFFFFFFF) >> 3;
+                            let ld = crate::derive::get_derived(lid);
+                            if let crate::derive::DerivedKind::NativeFn { prim_idx: 36 } = ld.kind {
+                                return Some(rank_select_under(f, fork_f, g_rsp, x));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -1240,6 +1278,233 @@ fn structural_select_under(f: B, indices_b: B, x: B) -> B {
 
     let out = rbqn_core::array::typed_arr_from_b_vec(elems, xa.shape.clone(), xa.fill);
     crate::vm::tag_arr(out)
+}
+
+/// Take/drop under: F⌾(k⊸↑) x or F⌾(k⊸↓) x.
+/// drop=false → take under, drop=true → drop under.
+fn take_under(f: B, k: B, x: B, drop: bool) -> B {
+    if !x.is_arr() {
+        rbqn_core::error::throw("⌾(⊸↑/↓): 𝕩 must be an array");
+    }
+    let xa = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾(⊸↑/↓): 𝕩 array not found"));
+    let take_fn = crate::derive::m_native_fn(26); // ↑
+    let drop_fn = crate::derive::m_native_fn(27); // ↓
+    // Determine if k is multi-dimensional (vector with rank=1 and ≥2 elements).
+    let k_is_vector = if let Some(ka) = crate::vm::get_arr(k) {
+        ka.rank() == 1 && ka.ia() >= 2
+    } else { false };
+    if !k_is_vector {
+        // Scalar k: 1D join approach with fill check.
+        let k_val = if k.is_f64() { k.o2f() }
+        else if let Some(ka) = crate::vm::get_arr(k) {
+            if ka.ia() == 0 { 0.0 } else { ka.get(0).map(|b| b.o2f()).unwrap_or(0.0) }
+        } else { 0.0 };
+        let len = if xa.shape.is_empty() { 1 } else { xa.shape[0] };
+        let abs_k = k_val.abs() as usize;
+        if abs_k > len {
+            rbqn_core::error::throw(format!(
+                "𝔽⌾(n⊸{}): Cannot modify fill with Under ({} ≡ n, {:?} ≡ ≢𝕩)",
+                if drop { "↓" } else { "↑" }, abs_k, xa.shape
+            ));
+        }
+        let join_fn = crate::derive::m_native_fn(23); // ∾
+        if drop {
+            let prefix = c2(take_fn, k, x);
+            let selected = c2(drop_fn, k, x);
+            let modified = c1(f, selected);
+            c2(join_fn, prefix, modified)
+        } else {
+            let selected = c2(take_fn, k, x);
+            let modified = c1(f, selected);
+            let suffix = c2(drop_fn, k, x);
+            c2(join_fn, modified, suffix)
+        }
+    } else {
+        // Multi-dimensional vector k: scatter-back approach.
+        let ka = crate::vm::get_arr(k).unwrap();
+        let rank = xa.rank() as usize;
+        if ka.ia() != rank {
+            rbqn_core::error::throw(format!(
+                "⌾(⊸↑/↓): k has {} elements but 𝕩 has rank {}", ka.ia(), rank
+            ));
+        }
+        let mut take_starts: Vec<usize> = Vec::with_capacity(rank);
+        let mut take_lens: Vec<usize> = Vec::with_capacity(rank);
+        for i in 0..rank {
+            let ki = ka.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string())).o2f();
+            let si = xa.shape[i];
+            let abs_ki = ki.abs() as usize;
+            if abs_ki > si {
+                rbqn_core::error::throw(format!(
+                    "𝔽⌾(k⊸{}): Cannot modify fill with Under ({} > {} on axis {})",
+                    if drop { "↓" } else { "↑" }, abs_ki, si, i
+                ));
+            }
+            if drop {
+                if ki >= 0.0 { take_starts.push(abs_ki); take_lens.push(si - abs_ki); }
+                else { take_starts.push(0); take_lens.push(si - abs_ki); }
+            } else {
+                if ki >= 0.0 { take_starts.push(0); take_lens.push(abs_ki); }
+                else { take_starts.push(si - abs_ki); take_lens.push(abs_ki); }
+            }
+        }
+        let selected = if drop { c2(drop_fn, k, x) } else { c2(take_fn, k, x) };
+        let modified = c1(f, selected);
+        let mod_arr = crate::vm::get_arr(modified)
+            .unwrap_or_else(|| rbqn_core::error::throw("⌾(⊸↑/↓): F result must be an array"));
+        // Strides for x.
+        let mut x_strides: Vec<usize> = vec![1; rank];
+        for i in (0..rank.saturating_sub(1)).rev() { x_strides[i] = x_strides[i+1] * xa.shape[i+1]; }
+        // Strides for mod.
+        let mod_shape = &mod_arr.shape;
+        let mod_rank = mod_shape.len();
+        let mut mod_strides: Vec<usize> = vec![1; mod_rank];
+        for i in (0..mod_rank.saturating_sub(1)).rev() { mod_strides[i] = mod_strides[i+1] * mod_shape[i+1]; }
+        // Scatter.
+        let total = xa.ia();
+        let mut elems: Vec<B> = (0..total).map(|i| xa.get(i).unwrap_or(B::SENTINEL)).collect();
+        let mod_total = mod_arr.ia();
+        for flat_mod in 0..mod_total {
+            let mut rem = flat_mod;
+            let mut x_flat = 0usize;
+            let mut valid = true;
+            for dim in 0..rank.min(mod_rank) {
+                let mod_i = rem / mod_strides[dim];
+                rem %= mod_strides[dim];
+                let x_i = mod_i + take_starts[dim];
+                if x_i >= xa.shape[dim] { valid = false; break; }
+                x_flat += x_i * x_strides[dim];
+            }
+            if valid && x_flat < elems.len() {
+                elems[x_flat] = mod_arr.get(flat_mod).unwrap_or(B::SENTINEL);
+            }
+        }
+        let out = rbqn_core::array::typed_arr_from_b_vec(elems, xa.shape.clone(), xa.fill);
+        crate::vm::tag_arr(out)
+    }
+}
+
+/// Rank-select-under: F⌾(k⊏⎉r⊢) x where G is a Fork(k_val, ⊏⎉r, ⊢).
+fn rank_select_under(f: B, k: B, rank_spec: B, x: B) -> B {
+    if !x.is_arr() {
+        rbqn_core::error::throw("⌾(k⊏⎉r⊢): 𝕩 must be an array");
+    }
+    let xa = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾(k⊏⎉r⊢): 𝕩 array not found"));
+    let ka = crate::vm::get_arr(k)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾(k⊏⎉r⊢): k must be an array"));
+    let xr: usize = xa.rank() as usize;
+    let kr: usize = ka.rank() as usize;
+    // Compute rank pair (w_r, x_r) for dyadic rank spec called with (k, x).
+    let (w_r_val, x_r_val): (f64, f64) = {
+        if rank_spec.is_f64() { let v = rank_spec.o2f(); (v, v) }
+        else if rank_spec.is_arr() {
+            let ra = crate::vm::get_arr(rank_spec).unwrap();
+            let n = ra.ia();
+            if n == 0 { rbqn_core::error::throw("⌾(k⊏⎉r⊢): rank spec empty"); }
+            if n >= 2 { (ra.get(n-2).unwrap().o2f(), ra.get(n-1).unwrap().o2f()) }
+            else { let v = ra.get(0).unwrap().o2f(); (v, v) }
+        } else if rank_spec.is_fun() {
+            let r = c2(rank_spec, k, x);
+            if r.is_f64() { let v = r.o2f(); (v, v) }
+            else if r.is_arr() {
+                let ra = crate::vm::get_arr(r).unwrap();
+                let n = ra.ia();
+                if n == 0 { rbqn_core::error::throw("⌾(k⊏⎉r⊢): rank spec returned empty"); }
+                if n >= 2 { (ra.get(n-2).unwrap().o2f(), ra.get(n-1).unwrap().o2f()) }
+                else { let v = ra.get(0).unwrap().o2f(); (v, v) }
+            } else { rbqn_core::error::throw("⌾(k⊏⎉r⊢): rank spec must return number or array") }
+        } else { rbqn_core::error::throw("⌾(k⊏⎉r⊢): invalid rank spec") }
+    };
+    // Effective cell ranks.
+    let w_cr = if w_r_val < 0.0 { let v = w_r_val + kr as f64; if v < 0.0 { 0 } else { v as usize } }
+               else { let v = w_r_val as usize; if v > kr { kr } else { v } };
+    let x_cr = if x_r_val < 0.0 { let v = x_r_val + xr as f64; if v < 0.0 { 0 } else { v as usize } }
+               else { let v = x_r_val as usize; if v > xr { xr } else { v } };
+    // Frame and cell shapes.
+    let x_frame_rank = xr - x_cr;
+    let x_frame_shape = xa.shape[..x_frame_rank].to_vec();
+    let x_cell_shape = xa.shape[x_frame_rank..].to_vec();
+    let x_cell_size: usize = x_cell_shape.iter().product::<usize>().max(1);
+    let n_x_cells: usize = x_frame_shape.iter().product::<usize>().max(1);
+    let k_frame_rank = kr - w_cr;
+    let n_k_cells: usize = ka.shape[..k_frame_rank].iter().product::<usize>().max(1);
+    if w_cr == kr {
+        // Full k used for each x-cell (⎉1 style).
+        let indices = ka.i32_iter()
+            .unwrap_or_else(|_| rbqn_core::error::throw("⌾(k⊏⎉r⊢): k must be integer indices"));
+        {
+            let mut seen = std::collections::HashSet::new();
+            for &idx in &indices {
+                if !seen.insert(idx) {
+                    rbqn_core::error::throw("⌾(k⊏⎉r⊢): k contains duplicate indices");
+                }
+            }
+        }
+        let select_fn = crate::derive::m_native_fn(36);
+        let n_k = ka.ia();
+        let mut selected_cells: Vec<B> = Vec::with_capacity(n_x_cells);
+        for i in 0..n_x_cells {
+            let cell = crate::vm::tag_arr(extract_cell(&xa, i, x_cell_size, &x_cell_shape));
+            selected_cells.push(c2(select_fn, k, cell));
+        }
+        let gx = merge_cells_result(selected_cells, x_frame_shape.clone());
+        let modified = c1(f, gx);
+        let mod_arr = crate::vm::get_arr(modified)
+            .unwrap_or_else(|| rbqn_core::error::throw("⌾(k⊏⎉r⊢): F must return an array"));
+        let total = xa.ia();
+        let mut elems: Vec<B> = (0..total).map(|i| xa.get(i).unwrap_or(B::SENTINEL)).collect();
+        for cell_i in 0..n_x_cells {
+            let cell_start = cell_i * x_cell_size;
+            let mod_cell_start = cell_i * n_k;
+            for (j, &idx) in indices.iter().enumerate() {
+                let pos = if idx < 0 { (idx + x_cell_shape[0] as i32) as usize } else { idx as usize };
+                let x_pos = cell_start + pos;
+                let mod_pos = mod_cell_start + j;
+                if x_pos < elems.len() && mod_pos < mod_arr.ia() {
+                    elems[x_pos] = mod_arr.get(mod_pos).unwrap_or(B::SENTINEL);
+                }
+            }
+        }
+        let out = rbqn_core::array::typed_arr_from_b_vec(elems, xa.shape.clone(), xa.fill);
+        crate::vm::tag_arr(out)
+    } else {
+        // Scalar k cells (⎉¯1 style): ka[i] selects from x_cell[i].
+        if n_k_cells != n_x_cells {
+            rbqn_core::error::throw(format!(
+                "⌾(k⊏⎉r⊢): k frame count {} != x frame count {}", n_k_cells, n_x_cells
+            ));
+        }
+        let mut selected_vals: Vec<B> = Vec::with_capacity(n_x_cells);
+        for i in 0..n_x_cells {
+            let ki_val = ka.get(i).unwrap_or(B::SENTINEL).o2f() as i64;
+            let pos = if ki_val < 0 { (ki_val + x_cell_size as i64) as usize } else { ki_val as usize };
+            let x_pos = i * x_cell_size + pos;
+            if x_pos < xa.ia() {
+                selected_vals.push(xa.get(x_pos).unwrap_or(B::SENTINEL));
+            } else {
+                rbqn_core::error::throw(format!(
+                    "⌾(k⊏⎉r⊢): index {} out of bounds", ki_val
+                ));
+            }
+        }
+        let gx = results_to_arr(selected_vals, x_frame_shape.clone());
+        let modified = c1(f, gx);
+        let mod_arr = crate::vm::get_arr(modified)
+            .unwrap_or_else(|| rbqn_core::error::throw("⌾(k⊏⎉r⊢): F must return an array"));
+        let total = xa.ia();
+        let mut elems: Vec<B> = (0..total).map(|i| xa.get(i).unwrap_or(B::SENTINEL)).collect();
+        for i in 0..n_x_cells {
+            let ki_val = ka.get(i).unwrap_or(B::SENTINEL).o2f() as i64;
+            let pos = if ki_val < 0 { (ki_val + x_cell_size as i64) as usize } else { ki_val as usize };
+            let x_pos = i * x_cell_size + pos;
+            let mod_val = mod_arr.get(i).unwrap_or(B::SENTINEL);
+            if x_pos < elems.len() { elems[x_pos] = mod_val; }
+        }
+        let out = rbqn_core::array::typed_arr_from_b_vec(elems, xa.shape.clone(), xa.fill);
+        crate::vm::tag_arr(out)
+    }
 }
 
 fn under_c1(f: B, g: B, x: B) -> B {
@@ -1715,25 +1980,58 @@ fn repeat_c1(f: B, g: B, x: B) -> B {
 }
 
 fn repeat_c1_arr(f: B, counts: &rbqn_core::BqnArr, x: B) -> B {
-    // Apply repeat for each count value when g is an array
-    // Result shape = g shape, each element is f⍟count(i) x
+    // Apply repeat for each count value when g is an array.
+    // NOTE: BQN evaluates f⍟counts x using the "sorted unique" approach:
+    // 1. Sort unique count values
+    // 2. Evaluate incrementally from x (minimizes total f calls)
+    // 3. Map results back to the original order
+    // This matches CBQN: f⍟⟨3,1,2⟩ x makes max(counts)=3 total calls.
     let n = counts.ia();
-    let mut results = Vec::with_capacity(n);
+    if n == 0 {
+        return results_to_arr(vec![], counts.shape.clone());
+    }
+    // Collect all count values
+    let mut count_vals: Vec<i32> = Vec::with_capacity(n);
     for i in 0..n {
         let count_b = get_elem(counts, i);
         let count = count_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-        if count < 0 {
-            let f_inv = crate::derive::inv_reg(f);
-            let mut acc = x;
-            for _ in 0..count.unsigned_abs() { acc = c1(f_inv, acc); }
-            results.push(acc);
-        } else {
-            let mut acc = x;
-            for _ in 0..count { acc = c1(f, acc); }
-            results.push(acc);
-        }
+        count_vals.push(count);
     }
-    results_to_arr(results, counts.shape.clone())
+    // If all counts are negative, or mixed, fall back to independent evaluation
+    let all_nonneg = count_vals.iter().all(|&c| c >= 0);
+    if !all_nonneg {
+        // General case with negatives: apply independently using inverse for negative counts
+        let mut results = Vec::with_capacity(n);
+        for &count in &count_vals {
+            if count < 0 {
+                let f_inv = crate::derive::inv_reg(f);
+                let mut acc = x;
+                for _ in 0..count.unsigned_abs() { acc = c1(f_inv, acc); }
+                results.push(acc);
+            } else {
+                let mut acc = x;
+                for _ in 0..count { acc = c1(f, acc); }
+                results.push(acc);
+            }
+        }
+        return results_to_arr(results, counts.shape.clone());
+    }
+    // All non-negative: use sorted-unique incremental approach
+    // Sort indices by count value
+    let mut sorted_indices: Vec<usize> = (0..n).collect();
+    sorted_indices.sort_by_key(|&i| count_vals[i]);
+    // Evaluate incrementally
+    let mut results_by_index: Vec<B> = vec![x; n]; // placeholder
+    let mut acc = x;
+    let mut prev_count = 0i32;
+    for &idx in &sorted_indices {
+        let count = count_vals[idx];
+        let delta = count - prev_count;
+        for _ in 0..delta { acc = c1(f, acc); }
+        results_by_index[idx] = acc;
+        prev_count = count;
+    }
+    results_to_arr(results_by_index, counts.shape.clone())
 }
 
 fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
@@ -1769,23 +2067,47 @@ fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
 }
 
 fn repeat_c2_arr(f: B, counts: &rbqn_core::BqnArr, w: B, x: B) -> B {
+    // Same sorted-unique incremental approach as repeat_c1_arr.
     let n = counts.ia();
-    let mut results = Vec::with_capacity(n);
+    if n == 0 {
+        return results_to_arr(vec![], counts.shape.clone());
+    }
+    let mut count_vals: Vec<i32> = Vec::with_capacity(n);
     for i in 0..n {
         let count_b = get_elem(counts, i);
         let count = count_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-        if count < 0 {
-            let f_inv = crate::derive::inv_reg(f);
-            let mut acc = x;
-            for _ in 0..count.unsigned_abs() { acc = c2(f_inv, w, acc); }
-            results.push(acc);
-        } else {
-            let mut acc = x;
-            for _ in 0..count { acc = c2(f, w, acc); }
-            results.push(acc);
-        }
+        count_vals.push(count);
     }
-    results_to_arr(results, counts.shape.clone())
+    let all_nonneg = count_vals.iter().all(|&c| c >= 0);
+    if !all_nonneg {
+        let mut results = Vec::with_capacity(n);
+        for &count in &count_vals {
+            if count < 0 {
+                let f_inv = crate::derive::inv_reg(f);
+                let mut acc = x;
+                for _ in 0..count.unsigned_abs() { acc = c2(f_inv, w, acc); }
+                results.push(acc);
+            } else {
+                let mut acc = x;
+                for _ in 0..count { acc = c2(f, w, acc); }
+                results.push(acc);
+            }
+        }
+        return results_to_arr(results, counts.shape.clone());
+    }
+    let mut sorted_indices: Vec<usize> = (0..n).collect();
+    sorted_indices.sort_by_key(|&i| count_vals[i]);
+    let mut results_by_index: Vec<B> = vec![x; n];
+    let mut acc = x;
+    let mut prev_count = 0i32;
+    for &idx in &sorted_indices {
+        let count = count_vals[idx];
+        let delta = count - prev_count;
+        for _ in 0..delta { acc = c2(f, w, acc); }
+        results_by_index[idx] = acc;
+        prev_count = count;
+    }
+    results_to_arr(results_by_index, counts.shape.clone())
 }
 
 // ============================================================
