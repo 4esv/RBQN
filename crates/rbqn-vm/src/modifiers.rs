@@ -300,6 +300,48 @@ fn arr_of(x: B) -> BqnArr {
         .unwrap_or_else(|| rbqn_core::error::throw("Expected array argument"))
 }
 
+/// Normalize a scan cell result to match the expected cell_shape.
+/// BQN scan always produces an array with the same shape as the input.
+/// When F returns a scalar for a cell operation, replicate it cell_size times.
+/// When F returns an array matching cell_shape, leave it as-is.
+/// Otherwise leave as-is (will be boxed by merge_cells_result).
+fn normalize_cell_result(result: B, cell_shape: &[usize], cell_size: usize) -> B {
+    if cell_size <= 1 {
+        return result;
+    }
+    // If result matches expected cell shape, nothing to do
+    if result.is_arr() {
+        let rarr = crate::vm::get_arr(result);
+        if let Some(a) = rarr {
+            if a.shape == cell_shape {
+                return result;
+            }
+        }
+        return result;
+    }
+    // Result is a scalar — replicate it to fill cell_shape
+    if result.is_f64() || result.is_c32() || result.is_atom() {
+        let vals: Vec<B> = std::iter::repeat(result).take(cell_size).collect();
+        if result.is_f64() {
+            let fvals: Vec<f64> = vals.iter().map(|b| b.o2f()).collect();
+            let mut out = rbqn_core::array::BqnArr::new_vec_f64(fvals);
+            out.shape = cell_shape.to_vec();
+            return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
+        }
+        if result.is_c32() {
+            let cvals: Vec<u32> = vals.iter().map(|b| b.0 as u32).collect();
+            let mut out = rbqn_core::array::BqnArr::new_vec_c32(cvals);
+            out.shape = cell_shape.to_vec();
+            return crate::vm::tag_arr(out);
+        }
+        // Generic boxed scalar
+        let mut out = BqnArr::new_vec_b(vals);
+        out.shape = cell_shape.to_vec();
+        return crate::vm::tag_arr(out);
+    }
+    result
+}
+
 fn get_elem(arr: &BqnArr, i: usize) -> B {
     arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
 }
@@ -728,6 +770,10 @@ fn scan_c1(f: B, x: B) -> B {
     // Apply F between consecutive cells; result has same shape as input
     let cell_size: usize = arr.shape[1..].iter().product();
     let cell_shape = arr.shape[1..].to_vec();
+    // NOTE: when cell_size=0, F is never called (no elements to process), return input as-is
+    if cell_size == 0 {
+        return x;
+    }
     let mut cell_results: Vec<B> = Vec::with_capacity(lead);
     // First cell is copied as-is
     let first_cell = crate::vm::tag_arr(extract_cell(&arr, 0, cell_size, &cell_shape));
@@ -735,7 +781,9 @@ fn scan_c1(f: B, x: B) -> B {
     for i in 1..lead {
         let prev_cell = cell_results[i - 1];
         let curr_cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
-        cell_results.push(c2(f, prev_cell, curr_cell));
+        // NOTE: normalize result to cell_shape so merge_cells_result can build correct shape
+        let result = c2(f, prev_cell, curr_cell);
+        cell_results.push(normalize_cell_result(result, &cell_shape, cell_size));
     }
     // Merge cell results back into shape of x
     merge_cells_result(cell_results, vec![lead])
@@ -766,6 +814,10 @@ fn scan_c2(f: B, w: B, x: B) -> B {
     // w must have shape matching the cell shape of x
     let cell_size: usize = arr.shape[1..].iter().product();
     let cell_shape = arr.shape[1..].to_vec();
+    // NOTE: when cell_size=0, F is never called (no elements to process), return input as-is
+    if cell_size == 0 {
+        return x;
+    }
     // Validate that w has the right shape
     if w.is_arr() {
         let warr = arr_of(w);
@@ -781,6 +833,9 @@ fn scan_c2(f: B, w: B, x: B) -> B {
     for i in 0..lead {
         let curr_cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
         acc = c2(f, acc, curr_cell);
+        // NOTE: normalize result to cell_shape so merge_cells_result can build correct shape
+        let norm = normalize_cell_result(acc, &cell_shape, cell_size);
+        acc = norm;
         cell_results.push(acc);
     }
     merge_cells_result(cell_results, vec![lead])
@@ -1032,13 +1087,15 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
         return Some(c1(g, ftrans));
     }
 
-    // Pattern: F⌾< x — enclose under (enclose, apply F, unbox result)
+    // Pattern: F⌾< x — enclose under (enclose, apply F, unbox via <⁼)
     if let crate::derive::DerivedKind::NativeFn { prim_idx: 12 } = gd.kind {
-        // F⌾< x: enclose x, apply F, then > (merge) to unbox
-        let enclosed = c1(g, x);  // < x
+        // F⌾< x: enclose x → rank-0 array, apply F, then <⁼ (sys 206) to extract
+        // <⁻¹ extracts the single element from a rank-0 array (returns the atom).
+        // Using > (merge, prim 13) is wrong — it wraps non-boxed rank-0 arrays.
+        let enclosed = c1(g, x);  // < x  (rank-0 boxed array)
         let f_enclosed = c1(f, enclosed);
-        let merge_fn = crate::derive::m_native_fn(13); // >
-        return Some(c1(merge_fn, f_enclosed));
+        let unbox_fn = crate::derive::m_sys_fn(206); // <⁼ = extract rank-0 element
+        return Some(c1(unbox_fn, f_enclosed));
     }
 
     // Pattern: F⌾(k⊸↑) x or F⌾(k⊸↓) x — take/drop under via ⊸ modifier
@@ -1146,6 +1203,19 @@ fn structural_select_under(f: B, indices_b: B, x: B) -> B {
         .unwrap_or_else(|| rbqn_core::error::throw("⌾(⊸⊏): indices must be an array"));
     let indices = idx_arr.i32_iter()
         .unwrap_or_else(|_| rbqn_core::error::throw("⌾(⊸⊏): indices must be integers"));
+
+    // NOTE: BQN requires indices to be injective (no duplicates) for structural under.
+    // Duplicate indices mean the same position is written twice → ambiguous result → error.
+    {
+        let n = xa.ia() as i32;
+        let mut seen = std::collections::HashSet::new();
+        for &idx in &indices {
+            let norm = if idx < 0 { idx + n } else { idx };
+            if !seen.insert(norm) {
+                rbqn_core::error::throw("⌾(⊸⊏): 𝕨 contains duplicate indices");
+            }
+        }
+    }
 
     // Build result: copy of x with modifications at index positions
     let mut elems: Vec<B> = (0..xa.ia()).map(|i| xa.get(i).unwrap_or(B::SENTINEL)).collect();
