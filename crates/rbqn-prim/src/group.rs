@@ -280,27 +280,26 @@ pub fn group_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
     group_rank1_w(warr, x, xa)
 }
 
-/// Scalar w=n: all elements of x go to group n.
-/// Groups 0..n-1 are empty with shape ⟨0, trailing_shape...⟩.
+/// Scalar w=n: the entire array x is placed as one unit into group n.
+/// Groups 0..n-1 are empty with shape ⟨0, ≢x...⟩.
+/// Group n has shape ⟨1, ≢x...⟩ containing x.
+/// This matches CBQN: `n⊔x` treats x as a single "major cell".
 fn group_scalar_w(n: usize, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
-    let (xarr, x_rank, trailing_shape, xia) = if let Some(a) = xa {
-        let trailing = if a.rank() > 0 { a.shape[1..].to_vec() } else { vec![] };
-        let ia = a.ia();
-        (Some(a), a.rank() as usize, trailing, ia)
+    // x_shape = shape of x (empty vec for scalar x)
+    let (x_shape, x_fill, xia): (Vec<usize>, Option<B>, usize) = if let Some(a) = xa {
+        (a.shape.clone(), a.fill, a.ia())
     } else {
-        // Scalar x: treat as rank-0. x goes to group n as a single element.
-        (None, 0usize, vec![], 1usize)
+        // Scalar x: shape is empty, treat as rank-0
+        (vec![], None, 1)
     };
-
-    let x_fill = xa.and_then(|a| a.fill);
 
     let n_groups = n + 1;
     let mut result: Vec<B> = Vec::with_capacity(n_groups);
 
-    // Empty groups 0..n-1
+    // Empty groups 0..n-1: shape = ⟨0, x_shape...⟩
     let empty_shape = {
         let mut s = vec![0usize];
-        s.extend_from_slice(&trailing_shape);
+        s.extend_from_slice(&x_shape);
         s
     };
     for _ in 0..n {
@@ -308,27 +307,21 @@ fn group_scalar_w(n: usize, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         result.push(tag_arr(empty));
     }
 
-    // Group n: all elements of x
-    let group_n = if let Some(arr) = xarr {
-        // Collect all elements
+    // Group n: shape = ⟨1, x_shape...⟩, containing all elements of x
+    let group_n_shape = {
+        let mut s = vec![1usize];
+        s.extend_from_slice(&x_shape);
+        s
+    };
+    let group_n = if let Some(arr) = xa {
         let mut elems: Vec<B> = Vec::with_capacity(xia);
         for i in 0..xia {
             elems.push(arr.get(i)?);
         }
-        let mut shape = vec![xia / trailing_shape.iter().product::<usize>().max(1)];
-        if x_rank > 1 {
-            shape = vec![arr.shape[0]]; // major cells: first dim
-            // Actually for scalar w, put all major cells into group n
-            // shape of group n = ⟨≠x, trailing...⟩
-            shape = vec![arr.shape[0]];
-            shape.extend_from_slice(&trailing_shape);
-        } else {
-            shape = vec![xia];
-        }
-        array::typed_arr_from_b_vec(elems, shape, x_fill)
+        array::typed_arr_from_b_vec(elems, group_n_shape, x_fill)
     } else {
-        // Scalar x: group n contains the single element x
-        array::typed_arr_from_b_vec(vec![x], vec![1], x_fill)
+        // Scalar x: 1-element array containing x
+        array::typed_arr_from_b_vec(vec![x], group_n_shape, x_fill)
     };
     result.push(tag_arr(group_n));
 

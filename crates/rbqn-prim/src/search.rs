@@ -57,137 +57,93 @@ pub fn self_indexOf_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⊐ dyad: index of
-// NOTE: 𝕨 must be rank-1 OR rank-N where cells (rank-N-1 sub-arrays) match 𝕩 element shape.
-// For rank-1 𝕨: each element of 𝕩 (or 𝕩 itself if atom) is searched for.
+// BQN semantics: cell shape = w.shape[1..]. Each "query" is a cell of x with x.shape[1..].
+// w.shape[1..] must equal x.shape[x.rank - (w.rank-1)..] (trailing x shape = w cell shape).
+// Result shape = x.shape[..(x.rank - (w.rank-1))] (leading x axes).
 #[allow(non_snake_case)]
 pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊐𝕩: 𝕨 must be an array".into()))?;
 
-    // Validate: rank-0 w is not valid for ⊐
     if warr.rank() == 0 {
-        return Err(BqnError::Rank("𝕨⊐𝕩: 𝕨 must be rank-1 or higher".into()));
+        return Err(BqnError::Rank("𝕨⊐𝕩: 𝕨 must have rank ≥ 1".into()));
     }
-
-    // Validate: w must be rank-1 (for simple indexOf) or rank-N with matching cell shapes
-    if warr.rank() > 1 {
-        // Higher-rank w: cell shape must match x's shape
-        let w_cell_shape = &warr.shape[1..];
-        let x_shape: &[usize] = if x.is_atom() {
-            &[]
-        } else if let Some(xarr) = xa {
-            &xarr.shape
-        } else {
-            &[]
-        };
-        if w_cell_shape != x_shape {
-            return Err(BqnError::Rank(format!(
-                "𝕨⊐𝕩: 𝕨 cell shape {:?} doesn't match 𝕩 shape {:?}",
-                w_cell_shape, x_shape
-            )));
-        }
-    }
-
-    let wia = warr.ia();
 
     // Trace: detect glyph lookups during compilation
     if std::env::var("RBQN_COMP_TRACE").is_ok() && x.is_c32() {
         let ch = char::from_u32(x.0 as u32).unwrap_or('?');
-        eprintln!("[⊐ TRACE] atom char '{}' (u32={}) in array of {} elems", ch, x.0 as u32, wia);
+        eprintln!("[⊐ TRACE] atom char '{}' (u32={}) in array of {} elems", ch, x.0 as u32, warr.ia());
     }
 
-    // Handle atom x: w⊐atom returns rank-0 enclosed index
-    if x.is_atom() {
-        let mut found = wia as i32;
-        for j in 0..wia {
-            if rbqn_core::compare::deep_equal(x, warr.get(j)?) {
-                found = j as i32;
-                break;
-            }
-        }
-        return Ok(PrimResult::Array(BqnArr {
-            shape: vec![],
-            data: rbqn_core::array::ArrData::I32(vec![found]),
-            fill: Some(B::m_i32(0)),
-        }));
-    }
-
-    let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊐𝕩: 𝕩 must be an array".into()))?;
+    let w_rank = warr.rank() as usize;
+    let w_cell_rank = w_rank - 1;
+    let w_cell_shape = &warr.shape[1..];
+    let w_cell_size: usize = w_cell_shape.iter().product::<usize>().max(1);
     let w_lead = warr.shape[0];
-    let w_cell_size: usize = if warr.rank() > 1 { warr.shape[1..].iter().product() } else { 1 };
 
-    // High-rank: x.rank+1 == w.rank — x as a whole is searched in w's major cells, result is rank-0
-    if warr.rank() > 1 && (xarr.rank() as usize) + 1 == warr.rank() as usize {
-        if xarr.shape.as_slice() != &warr.shape[1..] {
+    // Determine x's rank and shape
+    let (x_rank, x_shape_owned) = if x.is_atom() {
+        (0usize, vec![])
+    } else if let Some(xarr) = xa {
+        (xarr.rank() as usize, xarr.shape.clone())
+    } else {
+        (0usize, vec![])
+    };
+
+    // x.rank must be >= w_cell_rank
+    if x_rank < w_cell_rank {
+        return Err(BqnError::Rank(format!(
+            "𝕨⊐𝕩: 𝕩 rank {} too low for 𝕨 cell rank {}", x_rank, w_cell_rank
+        )));
+    }
+
+    // x's trailing shape must match w's cell shape
+    if x_rank >= w_cell_rank {
+        let x_tail = &x_shape_owned[x_rank - w_cell_rank..];
+        if x_tail != w_cell_shape {
             return Err(BqnError::Rank(format!(
-                "𝕨⊐𝕩: 𝕩 shape {:?} doesn't match 𝕨 cell shape {:?}",
-                xarr.shape, &warr.shape[1..]
+                "𝕨⊐𝕩: 𝕩 trailing shape {:?} doesn't match 𝕨 cell shape {:?}",
+                x_tail, w_cell_shape
             )));
         }
+    }
+
+    // Result shape = x's leading axes (x.shape[..x.rank - w_cell_rank])
+    let result_lead_dims = x_rank - w_cell_rank;
+    let result_shape: Vec<usize> = x_shape_owned[..result_lead_dims].to_vec();
+    let result_ia: usize = result_shape.iter().product::<usize>().max(if result_lead_dims == 0 { 1 } else { 0 });
+
+    // For each query cell in x, search in w's major cells
+    let mut result = Vec::with_capacity(result_ia);
+    for i in 0..result_ia {
+        let x_cell_offset = i * w_cell_size;
         let mut found = w_lead as i32;
         for j in 0..w_lead {
             let mut eq = true;
             for k in 0..w_cell_size {
-                if !rbqn_core::compare::deep_equal(xarr.get(k)?, warr.get(j * w_cell_size + k)?) {
-                    eq = false; break;
-                }
+                let wv = warr.get(j * w_cell_size + k)?;
+                let xv = if let Some(xarr) = xa {
+                    xarr.get(x_cell_offset + k)?
+                } else {
+                    // atom x: single query element
+                    x
+                };
+                if !rbqn_core::compare::deep_equal(xv, wv) { eq = false; break; }
             }
             if eq { found = j as i32; break; }
-        }
-        return Ok(PrimResult::Array(BqnArr {
-            shape: vec![],
-            data: rbqn_core::array::ArrData::I32(vec![found]),
-            fill: Some(B::m_i32(0)),
-        }));
-    }
-
-    // Same rank, rank>1: compare major cells of x against major cells of w
-    if warr.rank() > 1 && warr.rank() == xarr.rank() {
-        if warr.shape[1..] != xarr.shape[1..] {
-            return Err(BqnError::Rank(format!(
-                "𝕨⊐𝕩: cell shapes {:?} and {:?} don't match",
-                &warr.shape[1..], &xarr.shape[1..]
-            )));
-        }
-        let x_lead = xarr.shape[0];
-        let cell_size = w_cell_size;
-        let mut result = Vec::with_capacity(x_lead);
-        for i in 0..x_lead {
-            let mut found = w_lead as i32;
-            for j in 0..w_lead {
-                let mut eq = true;
-                for k in 0..cell_size {
-                    if !rbqn_core::compare::deep_equal(
-                        xarr.get(i * cell_size + k)?,
-                        warr.get(j * cell_size + k)?
-                    ) { eq = false; break; }
-                }
-                if eq { found = j as i32; break; }
-            }
-            result.push(found);
-        }
-        let mut out = BqnArr::new_vec_i32(result);
-        out.shape = vec![x_lead];
-        out.fill = Some(B::m_i32(0));
-        return Ok(PrimResult::Array(out));
-    }
-
-    // Rank-1 or simple: element-by-element
-    let xia = xarr.ia();
-    let mut result = Vec::with_capacity(xia);
-    for i in 0..xia {
-        let xv = xarr.get(i)?;
-        let mut found = wia as i32;
-        for j in 0..wia {
-            if rbqn_core::compare::deep_equal(xv, warr.get(j)?) {
-                found = j as i32;
-                break;
-            }
         }
         result.push(found);
     }
 
+    if result_shape.is_empty() {
+        // rank-0 result
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: rbqn_core::array::ArrData::I32(result),
+            fill: Some(B::m_i32(0)),
+        }));
+    }
     let mut out = BqnArr::new_vec_i32(result);
-    out.shape = xarr.shape.clone();
+    out.shape = result_shape;
     out.fill = Some(B::m_i32(0));
     Ok(PrimResult::Array(out))
 }
@@ -223,122 +179,84 @@ pub fn self_count_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     Ok(PrimResult::Array(out))
 }
 
-// ⊒ dyad: progressive index of (count)
-// NOTE: Like ⊐, 𝕨 and 𝕩 must have compatible shapes.
-// 𝕨 must be rank-1 for simple element search, or rank-N with cell shape matching 𝕩 elements.
+// ⊒ dyad: progressive index of
+// Same cell semantics as ⊐, but each matched w cell is "used up" (can only match once).
+// Result shape = x's leading axes (same formula as ⊐).
 pub fn count_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊒𝕩: 𝕨 must be an array".into()))?;
 
-    // Validate rank compatibility
-    if warr.rank() > 1 {
-        let w_cell_shape = &warr.shape[1..];
-        let x_shape: &[usize] = if x.is_atom() {
-            &[]
-        } else if let Some(xarr) = xa {
-            &xarr.shape
-        } else {
-            &[]
-        };
-        if w_cell_shape != x_shape {
-            return Err(BqnError::Rank(format!(
-                "𝕨⊒𝕩: 𝕨 cell shape {:?} doesn't match 𝕩 shape {:?}",
-                w_cell_shape, x_shape
-            )));
-        }
+    if warr.rank() == 0 {
+        return Err(BqnError::Rank("𝕨⊒𝕩: 𝕨 must have rank ≥ 1".into()));
     }
 
-    let wia = warr.ia();
-
-    // Handle atom x: w⊒atom returns rank-0 enclosed index
-    if x.is_atom() {
-        let mut used = vec![false; wia];
-        let mut found = wia as i32;
-        for j in 0..wia {
-            if !used[j] && rbqn_core::compare::deep_equal(x, warr.get(j)?) {
-                found = j as i32;
-                used[j] = true;
-                break;
-            }
-        }
-        return Ok(PrimResult::Array(BqnArr {
-            shape: vec![],
-            data: rbqn_core::array::ArrData::I32(vec![found]),
-            fill: Some(B::m_i32(0)),
-        }));
-    }
-
-    let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊒𝕩: 𝕩 must be an array".into()))?;
+    let w_rank = warr.rank() as usize;
+    let w_cell_rank = w_rank - 1;
+    let w_cell_shape = &warr.shape[1..];
+    let w_cell_size: usize = w_cell_shape.iter().product::<usize>().max(1);
     let w_lead = warr.shape[0];
-    let w_cell_size: usize = if warr.rank() > 1 { warr.shape[1..].iter().product() } else { 1 };
 
-    // High-rank: x.rank+1 == w.rank — x as whole searched in w cells, result is rank-0
-    if warr.rank() > 1 && (xarr.rank() as usize) + 1 == warr.rank() as usize {
-        let mut used = vec![false; w_lead];
+    // Determine x's rank and shape
+    let (x_rank, x_shape_owned) = if x.is_atom() {
+        (0usize, vec![])
+    } else if let Some(xarr) = xa {
+        (xarr.rank() as usize, xarr.shape.clone())
+    } else {
+        (0usize, vec![])
+    };
+
+    // x.rank must be >= w_cell_rank
+    if x_rank < w_cell_rank {
+        return Err(BqnError::Rank(format!(
+            "𝕨⊒𝕩: 𝕩 rank {} too low for 𝕨 cell rank {}", x_rank, w_cell_rank
+        )));
+    }
+
+    // x's trailing shape must match w's cell shape
+    let x_tail = &x_shape_owned[x_rank - w_cell_rank..];
+    if x_tail != w_cell_shape {
+        return Err(BqnError::Rank(format!(
+            "𝕨⊒𝕩: 𝕩 trailing shape {:?} doesn't match 𝕨 cell shape {:?}",
+            x_tail, w_cell_shape
+        )));
+    }
+
+    // Result shape = x's leading axes
+    let result_lead_dims = x_rank - w_cell_rank;
+    let result_shape: Vec<usize> = x_shape_owned[..result_lead_dims].to_vec();
+    let result_ia: usize = result_shape.iter().product::<usize>().max(if result_lead_dims == 0 { 1 } else { 0 });
+
+    // Progressive search: each w cell can only match once
+    let mut used = vec![false; w_lead];
+    let mut result = Vec::with_capacity(result_ia);
+    for i in 0..result_ia {
+        let x_cell_offset = i * w_cell_size;
         let mut found = w_lead as i32;
         for j in 0..w_lead {
-            if !used[j] {
-                let mut eq = true;
-                for k in 0..w_cell_size {
-                    if !rbqn_core::compare::deep_equal(xarr.get(k)?, warr.get(j * w_cell_size + k)?) {
-                        eq = false; break;
-                    }
-                }
-                if eq { found = j as i32; used[j] = true; break; }
+            if used[j] { continue; }
+            let mut eq = true;
+            for k in 0..w_cell_size {
+                let wv = warr.get(j * w_cell_size + k)?;
+                let xv = if let Some(xarr) = xa {
+                    xarr.get(x_cell_offset + k)?
+                } else {
+                    x
+                };
+                if !rbqn_core::compare::deep_equal(xv, wv) { eq = false; break; }
             }
-        }
-        return Ok(PrimResult::Array(BqnArr {
-            shape: vec![],
-            data: rbqn_core::array::ArrData::I32(vec![found]),
-            fill: Some(B::m_i32(0)),
-        }));
-    }
-
-    // Same rank, rank>1: compare major cells
-    if warr.rank() > 1 && warr.rank() == xarr.rank() {
-        let x_lead = xarr.shape[0];
-        let cell_size = w_cell_size;
-        let mut used = vec![false; w_lead];
-        let mut result = Vec::with_capacity(x_lead);
-        for i in 0..x_lead {
-            let mut found = w_lead as i32;
-            for j in 0..w_lead {
-                if !used[j] {
-                    let mut eq = true;
-                    for k in 0..cell_size {
-                        if !rbqn_core::compare::deep_equal(
-                            xarr.get(i * cell_size + k)?,
-                            warr.get(j * cell_size + k)?
-                        ) { eq = false; break; }
-                    }
-                    if eq { found = j as i32; used[j] = true; break; }
-                }
-            }
-            result.push(found);
-        }
-        let mut out = BqnArr::new_vec_i32(result);
-        out.shape = vec![x_lead];
-        out.fill = Some(B::m_i32(0));
-        return Ok(PrimResult::Array(out));
-    }
-
-    // Rank-1: element-by-element with progressive marking
-    let xia = xarr.ia();
-    let mut used = vec![false; wia];
-    let mut result = Vec::with_capacity(xia);
-    for i in 0..xia {
-        let xv = xarr.get(i)?;
-        let mut found = wia as i32;
-        for j in 0..wia {
-            if !used[j] && rbqn_core::compare::deep_equal(xv, warr.get(j)?) {
-                found = j as i32;
-                used[j] = true;
-                break;
-            }
+            if eq { found = j as i32; used[j] = true; break; }
         }
         result.push(found);
     }
+
+    if result_shape.is_empty() {
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: rbqn_core::array::ArrData::I32(result),
+            fill: Some(B::m_i32(0)),
+        }));
+    }
     let mut out = BqnArr::new_vec_i32(result);
-    out.shape = xarr.shape.clone();
+    out.shape = result_shape;
     out.fill = Some(B::m_i32(0));
     Ok(PrimResult::Array(out))
 }
@@ -375,53 +293,31 @@ pub fn mark_firsts_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ∊ dyad: member of
-// NOTE: Compares major cells. If w and x have same rank, compare element-by-element.
-// If w.rank+1 == x.rank, w as a whole is compared against major cells of x (result is rank-0).
-// If w.rank == x.rank and rank>1, major cells of w are compared against major cells of x.
+// BQN semantics: cell shape = x.shape[1..]. Each "query" is a cell of w with w.shape[1..].
+// x.shape[1..] must match w.shape[w.rank - (x.rank-1)..] (w's trailing shape = x's cell shape).
+// Result shape = w's leading axes (all of w's shape except the matching trailing axes).
+// NOTE: When x.rank==1, cell shape is [] (scalars), so we check elements of w against elements of x.
 pub fn member_of_c2(_w: B, wa: Option<&BqnArr>, w_raw: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨∊𝕩: 𝕩 must be an array".into()))?;
+    let x_rank = xarr.rank() as usize;
 
-    // Handle atom w: w as whole compared against cells of x
+    // Cell shape of x (what each query must match)
+    let x_cell_rank = if x_rank > 0 { x_rank - 1 } else { 0 };
+    let x_cell_shape: &[usize] = if x_rank > 0 { &xarr.shape[1..] } else { &[] };
+    let x_cell_size: usize = x_cell_shape.iter().product::<usize>().max(1);
+    let x_lead = if x_rank > 0 { xarr.shape[0] } else { 1 };
+
+    // Handle atom w: rank-0 query
     if w_raw.is_atom() {
-        let x_lead = xarr.shape.get(0).copied().unwrap_or(0);
-        let x_cell_size: usize = if xarr.rank() > 1 { xarr.shape[1..].iter().product() } else { 1 };
-        // atom w only matches if x cells are also atoms (x_cell_size == 1 and x.rank == 1)
-        if xarr.rank() == 1 {
-            let mut found = false;
-            for j in 0..x_lead {
-                if rbqn_core::compare::deep_equal(w_raw, xarr.get(j)?) { found = true; break; }
-            }
-            return Ok(PrimResult::Array(BqnArr {
-                shape: vec![],
-                data: rbqn_core::array::ArrData::I32(vec![found as i32]),
-                fill: Some(B::m_i32(0)),
-            }));
-        }
-        return Err(BqnError::Rank("𝕨∊𝕩: incompatible cell ranks".into()));
-    }
-
-    let warr = wa.ok_or_else(|| BqnError::Type("𝕨∊𝕩: 𝕨 must be an array".into()))?;
-
-    // High-rank: w.rank+1 == x.rank — compare w as whole against major cells of x
-    if (warr.rank() as usize) + 1 == xarr.rank() as usize {
-        let x_lead = xarr.shape[0];
-        let x_cell_size: usize = xarr.shape[1..].iter().product::<usize>().max(1);
-        // w shape must match x cell shape
-        if warr.shape.as_slice() != &xarr.shape[1..] {
+        if x_cell_rank != 0 {
             return Err(BqnError::Rank(format!(
-                "𝕨∊𝕩: 𝕨 shape {:?} doesn't match 𝕩 cell shape {:?}",
-                warr.shape, &xarr.shape[1..]
+                "𝕨∊𝕩: atom 𝕨 can only be compared to rank-1 𝕩, but 𝕩 has rank {}", x_rank
             )));
         }
+        // Search for w_raw in elements of x
         let mut found = false;
         for j in 0..x_lead {
-            let mut eq = true;
-            for k in 0..x_cell_size {
-                if !rbqn_core::compare::deep_equal(warr.get(k)?, xarr.get(j * x_cell_size + k)?) {
-                    eq = false; break;
-                }
-            }
-            if eq { found = true; break; }
+            if rbqn_core::compare::deep_equal(w_raw, xarr.get(j * x_cell_size)?) { found = true; break; }
         }
         return Ok(PrimResult::Array(BqnArr {
             shape: vec![],
@@ -430,61 +326,53 @@ pub fn member_of_c2(_w: B, wa: Option<&BqnArr>, w_raw: B, xa: Option<&BqnArr>) -
         }));
     }
 
-    // Same rank: compare major cells of w against major cells of x
-    if warr.rank() != xarr.rank() {
+    let warr = wa.ok_or_else(|| BqnError::Type("𝕨∊𝕩: 𝕨 must be an array".into()))?;
+    let w_rank = warr.rank() as usize;
+
+    // w's trailing shape must match x's cell shape
+    if w_rank < x_cell_rank {
         return Err(BqnError::Rank(format!(
-            "𝕨∊𝕩: ranks {} and {} are incompatible",
-            warr.rank(), xarr.rank()
+            "𝕨∊𝕩: 𝕨 rank {} too low for 𝕩 cell rank {}", w_rank, x_cell_rank
+        )));
+    }
+    let w_tail = &warr.shape[w_rank - x_cell_rank..];
+    if w_tail != x_cell_shape {
+        return Err(BqnError::Rank(format!(
+            "𝕨∊𝕩: 𝕨 trailing shape {:?} doesn't match 𝕩 cell shape {:?}",
+            w_tail, x_cell_shape
         )));
     }
 
-    if warr.rank() <= 1 {
-        // Rank-1: element-by-element
-        let wia = warr.ia();
-        let xia = xarr.ia();
-        let mut result = Vec::with_capacity(wia);
-        for i in 0..wia {
-            let wv = warr.get(i)?;
-            let mut found = false;
-            for j in 0..xia {
-                if rbqn_core::compare::deep_equal(wv, xarr.get(j)?) { found = true; break; }
-            }
-            result.push(found as i32);
-        }
-        let mut out = BqnArr::new_vec_i32(result);
-        out.shape = warr.shape.clone();
-        out.fill = Some(B::m_i32(0));
-        return Ok(PrimResult::Array(out));
-    }
+    // Result shape = w's leading axes
+    let result_lead_dims = w_rank - x_cell_rank;
+    let result_shape: Vec<usize> = warr.shape[..result_lead_dims].to_vec();
+    let result_ia: usize = result_shape.iter().product::<usize>().max(if result_lead_dims == 0 { 1 } else { 0 });
 
-    // Rank>1: compare major cells
-    let w_lead = warr.shape[0];
-    let x_lead = xarr.shape[0];
-    let cell_size: usize = warr.shape[1..].iter().product::<usize>().max(1);
-    // Validate cell shapes match
-    if warr.shape[1..] != xarr.shape[1..] {
-        return Err(BqnError::Rank(format!(
-            "𝕨∊𝕩: cell shapes {:?} and {:?} don't match",
-            &warr.shape[1..], &xarr.shape[1..]
-        )));
-    }
-    let mut result = Vec::with_capacity(w_lead);
-    for i in 0..w_lead {
+    let mut result = Vec::with_capacity(result_ia);
+    for i in 0..result_ia {
+        let w_cell_offset = i * x_cell_size;
         let mut found = false;
         for j in 0..x_lead {
             let mut eq = true;
-            for k in 0..cell_size {
-                if !rbqn_core::compare::deep_equal(
-                    warr.get(i * cell_size + k)?,
-                    xarr.get(j * cell_size + k)?
-                ) { eq = false; break; }
+            for k in 0..x_cell_size {
+                let wv = warr.get(w_cell_offset + k)?;
+                let xv = xarr.get(j * x_cell_size + k)?;
+                if !rbqn_core::compare::deep_equal(wv, xv) { eq = false; break; }
             }
             if eq { found = true; break; }
         }
         result.push(found as i32);
     }
+
+    if result_shape.is_empty() {
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: rbqn_core::array::ArrData::I32(result),
+            fill: Some(B::m_i32(0)),
+        }));
+    }
     let mut out = BqnArr::new_vec_i32(result);
-    out.shape = vec![w_lead];
+    out.shape = result_shape;
     out.fill = Some(B::m_i32(0));
     Ok(PrimResult::Array(out))
 }
@@ -512,57 +400,39 @@ pub fn deduplicate_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 // ⍷ dyad: find
-// w⍷x marks positions where w occurs as contiguous subsequence in x.
-// For vectors: substring search. Returns boolean array same length as x.
-// NOTE: w and x must have the same rank (or w.rank == x.rank), and trailing shapes match.
+// w⍷x: result shape = (1 + ≢x) - ≢w (after rank-promoting w to x's rank).
+// If w has lower rank than x, w's shape is left-padded with 1s to match x's rank.
+// NOTE: Result shape per axis = (1 + x_dim) - w_dim, clamped to 0.
 pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍷𝕩: 𝕩 must be an array".into()))?;
+    let x_rank = xarr.rank() as usize;
 
-    // Handle atom w: compare w against each element of x
-    if w.is_atom() || (wa.is_some() && wa.unwrap().rank() + 1 == xarr.rank()) {
-        // w is a cell of x: check each position
-        let x_lead = xarr.shape.get(0).copied().unwrap_or(1);
-        let cell_size: usize = if xarr.rank() > 1 { xarr.shape[1..].iter().product() } else { 1 };
-        let mut result = Vec::with_capacity(x_lead);
-        if w.is_atom() && xarr.rank() == 1 {
-            for i in 0..x_lead {
-                result.push(if rbqn_core::compare::deep_equal(w, xarr.get(i)?) { 1i32 } else { 0 });
-            }
-        } else if let Some(warr) = wa {
-            for i in 0..x_lead {
-                let mut eq = true;
-                for k in 0..cell_size {
-                    if !rbqn_core::compare::deep_equal(warr.get(k)?, xarr.get(i * cell_size + k)?) {
-                        eq = false; break;
-                    }
-                }
-                result.push(if eq { 1 } else { 0 });
-            }
-        } else {
-            for _ in 0..x_lead { result.push(0); }
+    // Build w_shape: atom or array, left-padded with 1s to match x_rank
+    let (w_shape, w_data_shape) = if w.is_atom() {
+        // atom w: treat as rank-x_rank with shape [1,1,...,1]
+        let ws: Vec<usize> = vec![1; x_rank];
+        (ws.clone(), ws)
+    } else if let Some(warr) = wa {
+        let wr = warr.rank() as usize;
+        if wr > x_rank {
+            return Err(BqnError::Rank(format!(
+                "𝕨⍷𝕩: 𝕨 rank {} > 𝕩 rank {}", wr, x_rank
+            )));
         }
-        let mut out = BqnArr::new_vec_i32(result);
-        out.shape = vec![x_lead];
-        out.fill = Some(B::m_i32(0));
-        return Ok(PrimResult::Array(out));
-    }
+        // Left-pad w's shape with 1s to match x's rank
+        let mut padded = vec![1usize; x_rank - wr];
+        padded.extend_from_slice(&warr.shape);
+        (padded, warr.shape.clone())
+    } else {
+        (vec![1; x_rank], vec![1; x_rank])
+    };
 
-    let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍷𝕩: 𝕨 must be an array".into()))?;
+    let rank = x_rank;
 
-    // NOTE: w and x must have the same rank for find to make sense
-    if warr.rank() != xarr.rank() {
-        return Err(BqnError::Rank(format!(
-            "𝕨⍷𝕩: 𝕨 and 𝕩 must have the same rank ({} vs {})",
-            warr.rank(), xarr.rank()
-        )));
-    }
-
-    let rank = warr.rank() as usize;
-
-    // Result shape: 1+≢x-≢w per axis (clamped to 0)
+    // Result shape: 1+x_dim - w_dim per axis (clamped to 0), using padded w_shape
     let mut result_shape = Vec::with_capacity(rank);
     for r in 0..rank {
-        let d = 1isize + xarr.shape[r] as isize - warr.shape[r] as isize;
+        let d = 1isize + xarr.shape[r] as isize - w_shape[r] as isize;
         result_shape.push(if d < 0 { 0 } else { d as usize });
     }
     let result_ia: usize = result_shape.iter().product();
@@ -571,14 +441,24 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
         return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(vec![]), fill: None }));
     }
 
-    // For rank-1: sliding window match
-    if rank <= 1 {
-        let wlen = warr.ia();
+    // w's actual data shape (before padding) and ia
+    let wia: usize = w_data_shape.iter().product::<usize>().max(if w.is_atom() { 1 } else { 0 });
+
+    // Compute x strides
+    let x_shape = &xarr.shape;
+    let mut x_strides = vec![1usize; rank];
+    for r in (0..rank - 1).rev() {
+        x_strides[r] = x_strides[r + 1] * x_shape[r + 1];
+    }
+
+    // For rank-1 (no padding needed): simple sliding window
+    if rank <= 1 && w_shape == w_data_shape {
         let mut result = Vec::with_capacity(result_ia);
         for i in 0..result_ia {
             let mut matches = true;
-            for j in 0..wlen {
-                if !rbqn_core::compare::deep_equal(warr.get(j)?, xarr.get(i + j)?) {
+            for j in 0..wia {
+                let wv = if w.is_atom() { w } else if let Some(warr) = wa { warr.get(j)? } else { w };
+                if !rbqn_core::compare::deep_equal(wv, xarr.get(i + j)?) {
                     matches = false;
                     break;
                 }
@@ -588,43 +468,54 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
         return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(result), fill: None }));
     }
 
-    // For rank>1: multi-dimensional sliding window match
-    let w_shape = &warr.shape;
-    let x_shape = &xarr.shape;
-    let wia = warr.ia();
-
-    // Compute x strides
-    let mut x_strides = vec![1usize; rank];
-    for r in (0..rank - 1).rev() {
-        x_strides[r] = x_strides[r + 1] * x_shape[r + 1];
-    }
-
+    // Multi-dimensional sliding window match (handles rank promotion via padded w_shape)
+    // w_shape is the padded shape (for iteration), w_data_shape is the actual data shape
     let mut result = Vec::with_capacity(result_ia);
     for flat_pos in 0..result_ia {
-        // Convert flat position to multi-dim result index
+        // Convert flat result position to multi-dim index
         let mut rem = flat_pos;
         let mut result_idx = vec![0usize; rank];
         for r in (0..rank).rev() {
             result_idx[r] = rem % result_shape[r];
             rem /= result_shape[r];
         }
-        // Check if w matches x at this offset
+        // Check if w matches x starting at result_idx
         let mut matches = true;
-        for w_flat in 0..wia {
+        // Iterate over w's padded shape (total wia_padded elements in padded window)
+        let wia_padded: usize = w_shape.iter().product::<usize>().max(1);
+        'outer: for w_flat in 0..wia_padded {
+            // Convert w_flat to multi-dim index in padded w_shape
             let mut w_idx = vec![0usize; rank];
             let mut w_rem = w_flat;
             for r in (0..rank).rev() {
                 w_idx[r] = w_rem % w_shape[r];
                 w_rem /= w_shape[r];
             }
-            // x position = result_idx + w_idx per axis
+            // Map w_idx to actual w data index (offset by padding: leading 1s are always index 0)
+            let padding = rank - w_data_shape.len();
+            let mut w_data_flat = 0usize;
+            if !w_data_shape.is_empty() {
+                for r in padding..rank {
+                    let stride: usize = w_data_shape[r-padding+1..].iter().product::<usize>().max(1);
+                    w_data_flat += w_idx[r] * stride;
+                }
+            }
+            // Get w value: atom or from warr
+            let wv = if w.is_atom() {
+                w
+            } else if let Some(warr) = wa {
+                if w_data_flat < warr.ia() { warr.get(w_data_flat)? } else { continue }
+            } else {
+                continue
+            };
+            // Compute x position
             let mut x_flat = 0;
             for r in 0..rank {
                 x_flat += (result_idx[r] + w_idx[r]) * x_strides[r];
             }
-            if !rbqn_core::compare::deep_equal(warr.get(w_flat)?, xarr.get(x_flat)?) {
+            if !rbqn_core::compare::deep_equal(wv, xarr.get(x_flat)?) {
                 matches = false;
-                break;
+                break 'outer;
             }
         }
         result.push(matches as i32);
