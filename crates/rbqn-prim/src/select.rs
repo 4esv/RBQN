@@ -163,45 +163,161 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         )));
     }
 
-    // BQN select with non-numeric indices: recurse per-element for boxed arrays
+    // NOTE: BQN multi-axis select: when 𝕨 is a boxed rank-1 list, each element is a
+    // numeric index array selecting along one axis of 𝕩.
+    // Result shape = concat of each element's shape, plus trailing axes of 𝕩.
+    // Special case: empty list ⟨⟩ means "select 0 rows along axis 0" = shape [0]∾(≢𝕩)[1..]
     if warr.el_type() == ElType::B {
         let wia = warr.ia();
-        let mut result = Vec::with_capacity(wia * cell_size.max(1));
+
+        if wia == 0 {
+            // Empty boxed list: select 0 rows along axis 0
+            let mut out_shape = vec![0usize];
+            if arr.rank() > 1 {
+                out_shape.extend_from_slice(&arr.shape[1..]);
+            }
+            let out = typed_arr_from_b_vec(vec![], out_shape, arr.fill);
+            return Ok(PrimResult::Array(out));
+        }
+
+        // Check for mixed type: having both scalar numbers and arrays is invalid
+        {
+            let has_num = (0..wia).any(|i| warr.get(i).map(|v| v.is_f64() || v.is_c32()).unwrap_or(false));
+            let has_arr = (0..wia).any(|i| warr.get(i).map(|v| {
+                if v.is_arr() {
+                    get_arr(v).map(|a| a.rank() >= 1).unwrap_or(false)
+                } else { false }
+            }).unwrap_or(false));
+            if has_num && has_arr {
+                return Err(BqnError::Type(
+                    "𝕨⊏𝕩: 𝕨 must be an array of numbers or list of such (𝕨 contained both an array and number)".into()
+                ));
+            }
+        }
+
+        // Gather per-axis index arrays and validate
+        let mut axis_indices: Vec<Vec<i32>> = Vec::with_capacity(wia);
+        let mut axis_shapes: Vec<Vec<usize>> = Vec::with_capacity(wia);
         for i in 0..wia {
             let idx_b = warr.get(i)?;
             if idx_b.is_f64() {
-                let idx = resolve_index(idx_b.o2i(), first_dim)?;
-                if cell_shape.is_empty() && arr.rank() <= 1 {
-                    result.push(arr.get(idx)?);
-                } else {
-                    for j in 0..cell_size {
-                        result.push(arr.get(idx * cell_size + j)?);
-                    }
-                }
+                // Scalar index: treated as rank-1 length-1 array
+                let iv = validate_integer_index(idx_b, "𝕨⊏𝕩")?;
+                axis_indices.push(vec![iv]);
+                axis_shapes.push(vec![1]);
             } else if idx_b.is_arr() {
                 let sub_arr = get_arr(idx_b)
                     .ok_or_else(|| BqnError::Type("𝕨⊏𝕩: index element not found".into()))?;
-                // NOTE: Enclosed (rank-0) array as index is not valid for ⊏
+                // rank-0 enclosed: error
                 if sub_arr.rank() == 0 {
                     return Err(BqnError::Rank("𝕨⊏𝕩: index element must not be rank-0 (enclosed)".into()));
                 }
                 let sub_indices = sub_arr.i32_iter()?;
-                for &si in &sub_indices {
-                    let idx = resolve_index(si, first_dim)?;
-                    if cell_shape.is_empty() && arr.rank() <= 1 {
-                        result.push(arr.get(idx)?);
-                    } else {
-                        for j in 0..cell_size {
-                            result.push(arr.get(idx * cell_size + j)?);
-                        }
-                    }
-                }
+                axis_shapes.push(sub_arr.shape.clone());
+                axis_indices.push(sub_indices);
             } else {
                 return Err(BqnError::Type("𝕨⊏𝕩: index must be number or array".into()));
             }
         }
-        let mut out_shape = warr.shape.clone();
-        out_shape.extend_from_slice(cell_shape);
+
+        // Build result shape: concat of all axis index shapes, plus trailing axes of x
+        let arr_rank = arr.rank() as usize;
+        let n_axes = wia.min(arr_rank);
+        let mut out_shape: Vec<usize> = Vec::new();
+        for sh in &axis_shapes {
+            out_shape.extend_from_slice(sh);
+        }
+        // Trailing axes of x (beyond what w covers)
+        for k in n_axes..arr_rank {
+            out_shape.push(arr.shape[k]);
+        }
+
+        // Validate: each axis index fits within x's axis
+        for (a, indices) in axis_indices.iter().enumerate() {
+            let axis_len = if a < arr_rank { arr.shape[a] } else { 1 };
+            for &idx in indices {
+                let _ = resolve_index(idx, axis_len)?;
+            }
+        }
+
+        // Resolve all negative indices
+        let resolved: Vec<Vec<usize>> = axis_indices.iter().enumerate().map(|(a, idxs)| {
+            let axis_len = if a < arr_rank { arr.shape[a] } else { 1 };
+            idxs.iter().map(|&idx| {
+                resolve_index(idx, axis_len).unwrap()
+            }).collect()
+        }).collect();
+
+        // Compute element counts per axis index group
+        let per_axis_counts: Vec<usize> = resolved.iter().map(|v| v.len()).collect();
+
+        let total: usize = out_shape.iter().product();
+        let mut result = vec![arr.fill.unwrap_or(B::SENTINEL); total];
+
+        // Trailing cell size (axes of x not covered by w)
+        let trailing_size: usize = if n_axes < arr_rank {
+            arr.shape[n_axes..].iter().product()
+        } else {
+            1
+        };
+
+        // Compute x strides (for all axes of x)
+        let x_strides: Vec<usize> = {
+            let n = arr_rank;
+            let mut s = vec![1usize; n];
+            for k in (0..n.saturating_sub(1)).rev() {
+                s[k] = s[k+1] * arr.shape[k+1];
+            }
+            s
+        };
+
+        // Check if any axis has 0 indices → empty result
+        let combined_count: usize = per_axis_counts.iter().product();
+        if combined_count == 0 || total == 0 {
+            let out = typed_arr_from_b_vec(result, out_shape, arr.fill);
+            return Ok(PrimResult::Array(out));
+        }
+
+        // Iterate over all combinations of axis indices (row-major) × trailing cells
+        let mut combo: Vec<usize> = vec![0; n_axes];
+        loop {
+            // Compute x flat base from current combo
+            let mut x_base = 0usize;
+            for a in 0..n_axes {
+                x_base += resolved[a][combo[a]] * x_strides[a];
+            }
+            // Compute result flat base from current combo
+            let mut r_base = 0usize;
+            {
+                let mut mul = trailing_size;
+                for a in (0..n_axes).rev() {
+                    r_base += combo[a] * mul;
+                    mul *= per_axis_counts[a];
+                }
+            }
+            // Copy trailing cell
+            for trail in 0..trailing_size {
+                let x_flat = x_base + trail;
+                let r_flat = r_base + trail;
+                if r_flat < result.len() && x_flat < arr.ia() {
+                    result[r_flat] = arr.get(x_flat)?;
+                }
+            }
+            // Advance combo (big-endian / row-major)
+            let mut carry = true;
+            for a in (0..n_axes).rev() {
+                if carry {
+                    combo[a] += 1;
+                    if combo[a] < per_axis_counts[a] {
+                        carry = false;
+                    } else {
+                        combo[a] = 0;
+                    }
+                }
+            }
+            if carry { break; }
+        }
+
         let out = typed_arr_from_b_vec(result, out_shape, arr.fill);
         return Ok(PrimResult::Array(out));
     }
