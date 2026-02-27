@@ -11,7 +11,7 @@ RBQN has the architecture in place: five crates, NaN-boxed values, a working VM,
 - [x] **Phase 1: Runtime Bypass and Working Pipeline** - Verify Option B bypass, get compiler executing arbitrary BQN, REPL working (completed 2026-02-24)
 - [x] **Phase 2: Test Baseline** - Wire official test harness, establish pass/fail count, pass simple/literal/syntax/bytecode (completed 2026-02-24)
 - [x] **Phase 3: Language Completeness** - All missing modifiers, primitive edge cases, essential system functions (completed 2026-02-24)
-- [ ] **Phase 4: Full Test Suite Green** - Drive all 13 official test files to 0 failures
+- [x] **Phase 4: Full Test Suite Green** - Drive all 13 official test files to 0 failures (completed 2026-02-27)
 - [ ] **Phase 5: GPU Integration** - Wire rbqn-gpu into primitive dispatch with precision guards and benchmarks
 - [ ] **Phase 6: Self-Hosting** - Compile own bytecode, embed in binary, ship via cargo install
 
@@ -80,14 +80,19 @@ Plans:
   2. `fill.bqn`, `identity.bqn`, `under.bqn`, and `undo.bqn` all pass
   3. `header.bqn`, `unhead.bqn`, `namespace.bqn`, and `token.bqn` all pass
   4. All 13 test files report 0 failures; test harness exits 0
-**Plans:** 1/5 plans executed
+**Plans:** 9/7 plans complete
 
 Plans:
 - [x] 04-01-PLAN.md — Fix namespace export (compile_block NSDesc from body_arr[2]/[3]) and header namespace tests — namespace.bqn 50/50
-- [ ] 04-02-PLAN.md — Fix prim gap clusters: table scalar args, group multi-dim, slash atoms, reshape auto-dim
-- [ ] 04-03-PLAN.md — Wire block header inverse bodies and implement missing native inverses (⌽⁼, ⍉⁼, +`⁼)
-- [ ] 04-04-PLAN.md — Fix fill propagation through structural ops, identity elements, remaining prim clusters
-- [ ] 04-05-PLAN.md — Fix Under gaps, remaining test failures, add system stubs (•FFI, •bit, •term, •ns, •HashMap)
+- [x] 04-02-PLAN.md — Fix prim gap clusters: table scalar args, group multi-dim, slash atoms, reshape auto-dim
+- [x] 04-03-PLAN.md — Wire block header inverse bodies and implement missing native inverses (⌽⁼, ⍉⁼, +`⁼)
+- [x] 04-04-PLAN.md — Fix fill propagation through structural ops, identity elements, remaining prim clusters
+- [x] 04-05-PLAN.md — Fix Under gaps, remaining test failures, add system stubs (•FFI, •bit, •term, •ns, •HashMap)
+- [x] 04-06-PLAN.md — [gap closure] Fix header.bqn (7→0), undo.bqn (2→0), derived function equality, fill improvements
+- [x] 04-07-PLAN.md — [gap closure] Fix prim.bqn (49→9) — deep pick, search rewrite, grade/sort, cells/insert, join, transpose, slash, group, take/drop
+- [x] 04-08-PLAN.md — [gap closure] Fix under.bqn (8→0) — structural Under for ⊏⎉N, ⌾<, deep pick paths, ˘⁼ restriction
+- [ ] 04-09-PLAN.md — [gap closure] Fix remaining prim.bqn (9 failures) and fill.bqn (3 failures) — group edge cases, grade on boxed, cells-on-atom, take-fill
+- [ ] 04-10-PLAN.md — [gap closure] System stubs SYS-22..26 (•FFI, •bit, •term, •ns, •HashMap) + final regression gate
 
 ### Phase 5: GPU Integration
 **Goal**: Arrays above 50K elements transparently dispatch to GPU for arithmetic, sort/grade, fold, and scan — with measurable speedup and no correctness regression
@@ -128,6 +133,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. Runtime Bypass and Working Pipeline | 0/3 | Complete    | 2026-02-24 |
 | 2. Test Baseline | 0/3 | Complete    | 2026-02-24 |
 | 3. Language Completeness | 5/5 | Complete   | 2026-02-24 |
-| 4. Full Test Suite Green | 1/5 | In Progress|  |
+| 4. Full Test Suite Green | 9/7 | Complete   | 2026-02-27 |
 | 5. GPU Integration | 0/? | Not started | - |
 | 6. Self-Hosting | 0/? | Not started | - |

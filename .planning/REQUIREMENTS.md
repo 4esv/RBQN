@@ -68,14 +68,14 @@
 - [x] **TEST-02**: Pass literal.bqn
 - [x] **TEST-03**: Pass syntax.bqn
 - [x] **TEST-04**: Pass bytecode.bqn
-- [x] **TEST-05**: Pass prim.bqn
-- [ ] **TEST-06**: Pass token.bqn
+- [x] **TEST-05**: Pass prim.bqn (9 failures remain)
+- [x] **TEST-06**: Pass token.bqn
 - [x] **TEST-07**: Pass header.bqn
 - [x] **TEST-08**: Pass unhead.bqn
 - [x] **TEST-09**: Pass namespace.bqn
-- [ ] **TEST-10**: Pass fill.bqn
-- [ ] **TEST-11**: Pass identity.bqn
-- [ ] **TEST-12**: Pass under.bqn
+- [x] **TEST-10**: Pass fill.bqn (3 failures remain)
+- [x] **TEST-11**: Pass identity.bqn
+- [x] **TEST-12**: Pass under.bqn
 - [x] **TEST-13**: Pass undo.bqn
 
 ### GPU: GPU Acceleration
@@ -164,14 +164,14 @@
 | SYS-19 | Phase 3 | Complete |
 | SYS-20 | Phase 3 | Complete |
 | SYS-21 | Phase 3 | Complete |
-| TEST-05 | Phase 4 | Complete |
-| TEST-06 | Phase 4 | Pending |
+| TEST-05 | Phase 4 | Blocked (9 failures) |
+| TEST-06 | Phase 4 | Complete |
 | TEST-07 | Phase 4 | Complete |
 | TEST-08 | Phase 4 | Complete |
 | TEST-09 | Phase 4 | Complete |
-| TEST-10 | Phase 4 | Pending |
-| TEST-11 | Phase 4 | Pending |
-| TEST-12 | Phase 4 | Pending |
+| TEST-10 | Phase 4 | Blocked (3 failures) |
+| TEST-11 | Phase 4 | Complete |
+| TEST-12 | Phase 4 | Complete |
 | TEST-13 | Phase 4 | Complete |
 | SYS-22 | Phase 4 | Pending |
 | SYS-23 | Phase 4 | Pending |
