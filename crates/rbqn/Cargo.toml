@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# gen-tools: enables the rbqn-gen binary for regenerating embedded .bin files.
+# NOT in default features — not compiled during normal cargo build or cargo install.
+gen-tools = []
+
 [dependencies]
 rbqn-core.workspace = true
 rbqn-vm.workspace = true
@@ -16,6 +21,11 @@ pollster = "0.4"
 criterion.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
+
+[[bin]]
+name = "rbqn-gen"
+path = "src/bin/rbqn_gen.rs"
+required-features = ["gen-tools"]
 
 [[bench]]
 name = "gpu_bench"
