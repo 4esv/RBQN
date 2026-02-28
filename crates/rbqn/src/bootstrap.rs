@@ -10,7 +10,7 @@ use rbqn_vm::derive::{c1, c2, m_native_md2, m_sys_fn, prim_to_b};
 use rbqn_vm::scope::Scope;
 use rbqn_vm::vm::{get_arr, tag_arr};
 
-use crate::embedded::{self, BlockEntry, EmbeddedBytecode, ObjectEntry};
+use crate::embedded::{self, BlockEntry, ObjectEntry, OwnedBytecode};
 
 const RT_LEN: usize = 64;
 
@@ -206,29 +206,30 @@ fn build_provide(fruntime: &[B]) -> Vec<B> {
 /// Char(c) → B::m_c32(c), IArr(n) → tag_arr(iarrs[n]), Str(s) → tag_arr(string),
 /// Runtime(n) / RuntimePrev(n) → runtime_ref[n]
 fn build_objs(
-    emb: &EmbeddedBytecode,
+    emb: &OwnedBytecode,
     provide: &[B],
     runtime_prev: Option<&[B]>,
     runtime_ref: Option<&[B]>,
 ) -> Vec<B> {
     emb.objs.iter().map(|entry| {
-        match *entry {
-            ObjectEntry::Provide(n) => provide[n],
-            ObjectEntry::Float(v) => B::m_f64(v),
-            ObjectEntry::Char(c) => B::m_c32(c),
+        match entry {
+            ObjectEntry::Provide(n) => provide[*n],
+            ObjectEntry::Float(v) => B::m_f64(*v),
+            ObjectEntry::Char(c) => B::m_c32(*c),
             ObjectEntry::IArr(n) => {
-                let data: Vec<i32> = emb.iarrs[n].to_vec();
+                let data: Vec<i32> = emb.iarrs[*n].to_vec();
                 tag_arr(BqnArr::new_vec_i32(data))
             }
             ObjectEntry::Str(s) => {
+                // s is &Vec<u32>, auto-derefs to &[u32]
                 let chars: Vec<u32> = s.to_vec();
                 tag_arr(BqnArr::new_vec_c32(chars))
             }
             ObjectEntry::RuntimePrev(n) => {
-                runtime_prev.map_or(B::SENTINEL, |rt| rt[n])
+                runtime_prev.map_or(B::SENTINEL, |rt| rt[*n])
             }
             ObjectEntry::Runtime(n) => {
-                runtime_ref.map_or(B::SENTINEL, |rt| rt[n])
+                runtime_ref.map_or(B::SENTINEL, |rt| rt[*n])
             }
         }
     }).collect()
@@ -239,7 +240,7 @@ fn build_objs(
 ///   - A simple `[type, imm, bodyIndex]` integer array
 ///   - A `m_blockinfo(info, monadicBodies, dyadicBodies)` = `⟨type, imm, ⟨monadics, dyadics⟩⟩`
 /// We convert them all to boxed B arrays for compile_all.
-fn build_blocks(emb: &EmbeddedBytecode) -> Vec<B> {
+fn build_blocks(emb: &OwnedBytecode) -> Vec<B> {
     let mut result = Vec::with_capacity(emb.blocks.len());
     let mut i = 0;
     while i < emb.blocks.len() {
@@ -280,7 +281,7 @@ fn build_blocks(emb: &EmbeddedBytecode) -> Vec<B> {
 /// Reconstruct the bodies array (a2) from embedded data.
 /// Each body is `iarrs[n]` = `[bcOffset, varCount, ...]`
 /// Convert to boxed B arrays for compile_all.
-fn build_bodies(emb: &EmbeddedBytecode) -> Vec<B> {
+fn build_bodies(emb: &OwnedBytecode) -> Vec<B> {
     emb.bodies.iter().map(|&iarrs_idx| {
         let data: Vec<i32> = emb.iarrs[iarrs_idx].to_vec();
         let elems: Vec<B> = data.iter().map(|&v| B::m_f64(v as f64)).collect();
@@ -291,14 +292,14 @@ fn build_bodies(emb: &EmbeddedBytecode) -> Vec<B> {
 /// Execute an embedded bytecode stage (runtime0, runtime1, or compiler).
 /// Returns the result B value from evaluating the top-level block.
 fn exec_stage(
-    emb: &EmbeddedBytecode,
+    emb: &OwnedBytecode,
     objs: Vec<B>,
     blocks: Vec<B>,
     bodies: Vec<B>,
     _name: &str,
 ) -> Result<B, BqnError> {
     let block = compile_all(
-        emb.bc,
+        &emb.bc,
         objs,
         &blocks,
         &bodies,
@@ -334,7 +335,13 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     // Build provide array (40 entries) mapping names to callable B values.
     let provide = build_provide(&fruntime);
 
-    if embedded::RUNTIME0.is_empty() {
+    // Decode embedded bytecode from .bin files (committed to repo)
+    let rt0_bin = embedded::decode_bytecode(embedded::RUNTIME0_BIN);
+    let rt1_bin = embedded::decode_bytecode(embedded::RUNTIME1_BIN);
+    let cc_bin = embedded::decode_bytecode(embedded::COMPILER_BIN);
+    let fmt_bin = embedded::decode_bytecode(embedded::FORMATTER_BIN);
+
+    if rt0_bin.is_empty() {
         return Ok(Runtime {
             prims,
             fruntime: fruntime.clone(),
@@ -387,11 +394,11 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
         fruntime[59], // 22: ◶ (choose)
         fruntime[62], // 23: ⍟ (repeat)
     ];
-    // NOTE: runtime0 bytecode is available (embedded::RUNTIME0) but we do NOT execute it
+    // NOTE: runtime0 bytecode is available (rt0_bin) but we do NOT execute it
     // because the bytecodeSubmodule build expects native primitives as runtime_0, not BQN
     // derived functions. Running runtime0 bytecode would produce BQN FunBlocks that fail
     // in runtime1 context (confirmed: causes fork→add on function arrays crash).
-    let _ = &embedded::RUNTIME0; // suppress unused warning
+    let _ = &rt0_bin; // suppress unused warning
 
     // Register primitive B values so reshape_computed can identify reshape modes.
     // fruntime[6] = ⌊ (floor, mode 1), fruntime[26] = ↑ (take, mode 3 = ceil+pad).
@@ -400,12 +407,12 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
 
     // --- Stage 2: Execute runtime1 (graceful fallback if it panics) ---
     // runtime1's objects reference runtime_0 results via RuntimePrev(n)
-    let r1_objs = build_objs(&embedded::RUNTIME1, &provide, Some(&runtime_0), None);
-    let r1_blocks = build_blocks(&embedded::RUNTIME1);
-    let r1_bodies = build_bodies(&embedded::RUNTIME1);
+    let r1_objs = build_objs(&rt1_bin, &provide, Some(&runtime_0), None);
+    let r1_blocks = build_blocks(&rt1_bin);
+    let r1_bodies = build_bodies(&rt1_bin);
 
     let r1_stage_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        exec_stage(&embedded::RUNTIME1, r1_objs, r1_blocks, r1_bodies, "runtime1")
+        exec_stage(&rt1_bin, r1_objs, r1_blocks, r1_bodies, "runtime1")
     }));
 
     let r1_result = match r1_stage_result {
@@ -521,12 +528,12 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
 
     // --- Stage 3: Execute compiler (graceful fallback if it panics) ---
     // Swap in bi_casrt for assert during compilation (CBQN does this)
-    let c_objs = build_objs(&embedded::COMPILER, &provide, Some(&runtime_0), Some(&runtime));
-    let c_blocks = build_blocks(&embedded::COMPILER);
-    let c_bodies = build_bodies(&embedded::COMPILER);
+    let c_objs = build_objs(&cc_bin, &provide, Some(&runtime_0), Some(&runtime));
+    let c_blocks = build_blocks(&cc_bin);
+    let c_bodies = build_bodies(&cc_bin);
 
     let compiler = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        exec_stage(&embedded::COMPILER, c_objs, c_blocks, c_bodies, "compiler")
+        exec_stage(&cc_bin, c_objs, c_blocks, c_bodies, "compiler")
     })) {
         Ok(Ok(compgen)) => {
             // compgen is a function: call it with glyphs to get the actual compiler
@@ -566,12 +573,12 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     let compiler = compiler;
 
     // --- Stage 4: Execute formatter (optional) ---
-    let formatter = if !embedded::FORMATTER.is_empty() {
-        let f_objs = build_objs(&embedded::FORMATTER, &provide, Some(&runtime_0), Some(&runtime));
-        let f_blocks = build_blocks(&embedded::FORMATTER);
-        let f_bodies = build_bodies(&embedded::FORMATTER);
+    let formatter = if !fmt_bin.is_empty() {
+        let f_objs = build_objs(&fmt_bin, &provide, Some(&runtime_0), Some(&runtime));
+        let f_blocks = build_blocks(&fmt_bin);
+        let f_bodies = build_bodies(&fmt_bin);
 
-        match exec_stage(&embedded::FORMATTER, f_objs, f_blocks, f_bodies, "formatter") {
+        match exec_stage(&fmt_bin, f_objs, f_blocks, f_bodies, "formatter") {
             Ok(fmt_mod) => {
                 // Formatter module: call with ⟨•Type, •Decompose, •Glyph, •Repr⟩
                 let type_fn = m_sys_fn(0);
