@@ -141,17 +141,31 @@ pub fn sort_i32(
     cache: &mut PipelineCache,
     input: &GpuBuffer,
 ) -> GpuBuffer {
-    // Convert i32 to sortable u32 by flipping sign bit
     let n = input.len();
-    let u32_buf = GpuBuffer::storage(device, ElementKind::U32, n);
 
-    {
-        let mut encoder = device.create_command_encoder(&Default::default());
-        encoder.copy_buffer_to_buffer(input.inner(), 0, u32_buf.inner(), 0, input.size());
-        queue.submit(std::iter::once(encoder.finish()));
-    }
+    // Download i32 data from GPU.
+    let i32_data = pollster::block_on(
+        crate::buffer::download_i32(device, queue, input)
+    );
 
-    // For a proper implementation, we'd flip sign bits before sorting and flip back after.
-    // For now, treat as unsigned sort (correct for non-negative values).
-    radix_sort_u32(device, queue, cache, &u32_buf)
+    // XOR sign bit to map i32 ordering to u32 ordering.
+    // NOTE: This maps i32::MIN (0x80000000) to u32 0, i32::MAX (0x7FFFFFFF) to u32::MAX.
+    let u32_data: Vec<u32> = i32_data.iter().map(|&v| (v as u32) ^ 0x8000_0000u32).collect();
+
+    // Upload converted u32 data.
+    let u32_buf = crate::buffer::upload_u32(device, queue, &u32_data);
+
+    // Radix sort the u32 values.
+    let sorted_u32_buf = radix_sort_u32(device, queue, cache, &u32_buf);
+
+    // Download sorted u32 result.
+    let sorted_u32 = pollster::block_on(
+        crate::buffer::download_u32(device, queue, &sorted_u32_buf)
+    );
+
+    // XOR sign bit back to recover correctly ordered i32 values.
+    let sorted_i32: Vec<i32> = sorted_u32.iter().map(|&v| (v ^ 0x8000_0000u32) as i32).collect();
+
+    // Upload final i32 result.
+    crate::buffer::upload_i32(device, queue, &sorted_i32)
 }
