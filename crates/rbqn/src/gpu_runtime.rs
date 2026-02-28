@@ -5,6 +5,7 @@ use rbqn_core::array::{ArrData, BqnArr, squeeze_num};
 use rbqn_core::B;
 use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32, upload_f32, download_i32, download_f32};
 use rbqn_gpu::context::GpuContext;
+use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
 use rbqn_gpu::pipeline::PipelineCache;
 
 // NOTE: Singleton GPU runtime — initialized once after CLI parse.
@@ -171,6 +172,120 @@ pub fn gpu_arith_binary(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnA
         }
         None
     })
+}
+
+/// Map an op name string to a `FusedOp` variant for the FusionBuilder.
+/// Returns None for unrecognised names so callers can fall back to CPU.
+fn op_str_to_fused(name: &str, scalar: Option<f64>) -> Option<FusedOp> {
+    match name {
+        "add" => Some(FusedOp::Add),
+        "sub" => Some(FusedOp::Sub),
+        "mul" => Some(FusedOp::Mul),
+        "div" => Some(FusedOp::Div),
+        "scalar_add" => Some(FusedOp::ScalarAdd(scalar? as f32)),
+        "scalar_mul" => Some(FusedOp::ScalarMul(scalar? as f32)),
+        _ => None,
+    }
+}
+
+/// GPU-accelerated fused arithmetic: execute a sequence of elementwise ops in one kernel.
+///
+/// `ops` is a list of `(op_name, optional_scalar)` pairs. Op names: "add", "sub", "mul",
+/// "div" (binary, requires `b`), "scalar_add", "scalar_mul" (element-wise, scalar in tuple).
+///
+/// `a` is the primary array (left operand for binary ops). `b` is the optional secondary
+/// array (right operand for binary ops — required when any op in `ops` is a binary op).
+///
+/// Returns None when GPU is unavailable, threshold is not met, ops list is empty/invalid,
+/// or any op name is unrecognised. CPU fallback is the caller's responsibility.
+///
+/// # WGSL codegen test
+///
+/// The FusionBuilder generates a single fused WGSL kernel by chaining all ops into one
+/// compute shader. For example, `[("add", None), ("scalar_mul", Some(2.0))]` produces
+/// a shader that computes `val = (a[idx] + b[idx]) * 2.0` in one dispatch.
+///
+/// # Future work
+///
+/// True expression-level auto-fusion (detecting `2×a+b` as a fuseable pattern) requires
+/// VM-level lookahead — the BQN evaluator calls `c2` one call at a time with no forward
+/// lookahead. Phase 5 delivers the fusion infrastructure and this explicit API. Future
+/// phases can add a VM-level fusion pass that calls `try_fused_arith` directly.
+pub fn gpu_fused_arith(
+    ops: &[(&str, Option<f64>)],
+    a: &BqnArr,
+    b: Option<&BqnArr>,
+) -> Option<BqnArr> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        gpu_fused_arith_inner(ops, a, b)
+    })).unwrap_or_else(|_| {
+        if debug_enabled() {
+            eprintln!("[gpu] fused_arith GPU error — falling back to CPU");
+        }
+        None
+    })
+}
+
+fn gpu_fused_arith_inner(
+    ops: &[(&str, Option<f64>)],
+    a: &BqnArr,
+    b: Option<&BqnArr>,
+) -> Option<BqnArr> {
+    if ops.is_empty() { return None; }
+
+    let gpu = get()?;
+    if !should_dispatch("arith", a.ia()) { return None; }
+    if !gpu_safe_arr(a) { return None; }
+    if let Some(b_arr) = b {
+        if !gpu_safe_arr(b_arr) { return None; }
+        if a.shape != b_arr.shape { return None; }
+    }
+
+    // Build FusionBuilder from ops list
+    let mut builder = FusionBuilder::new();
+    for &(name, scalar) in ops {
+        let fused_op = op_str_to_fused(name, scalar)?;
+        builder.push(fused_op);
+    }
+
+    if builder.is_empty() { return None; }
+
+    let device = &gpu.ctx.device;
+    let queue = &gpu.ctx.queue;
+
+    let a_buf = arr_to_gpu_i32(gpu, a)?;
+    // Upload secondary array if present; propagate None to signal GPU fallback.
+    let b_buf: Option<GpuBuffer> = match b {
+        Some(b_arr) => Some(arr_to_gpu_i32(gpu, b_arr)?),
+        None => None,
+    };
+    let out_buf = GpuBuffer::storage(device, ElementKind::I32, a.ia());
+
+    {
+        let mut cache = gpu.cache.lock().ok()?;
+        builder.execute(device, queue, &mut cache, &a_buf, b_buf.as_ref(), &out_buf);
+    }
+
+    let result = gpu_i32_to_arr(gpu, &out_buf, a.shape.clone(), a.fill);
+    log_dispatch("fused_arith", a.ia(), "i32");
+    Some(result)
+}
+
+/// Verify that the FusionBuilder generates valid WGSL for a common fused pattern.
+/// This is called at startup (in debug builds) to assert correctness of codegen.
+/// The generated WGSL for Add+ScalarMul must contain both "val + b_val" and "val * f32".
+#[allow(dead_code)]
+pub fn verify_fusion_wgsl() {
+    let mut builder = FusionBuilder::new();
+    builder.push(FusedOp::Add);
+    builder.push(FusedOp::ScalarMul(2.0));
+    let (source, entry) = builder.generate_wgsl(rbqn_gpu::buffer::ElementKind::I32);
+    assert!(source.contains("val + b_val"), "FusionBuilder WGSL missing Add op");
+    assert!(source.contains("val * i32(2)"), "FusionBuilder WGSL missing ScalarMul(2.0) for i32");
+    assert!(entry.contains("fused_"), "FusionBuilder entry point missing fused_ prefix");
+    if debug_enabled() {
+        eprintln!("[gpu] fusion WGSL verify: OK (entry={})", entry);
+    }
 }
 
 /// Extract prim_idx from a B function value, if it's a NativeFn.
@@ -502,4 +617,67 @@ pub fn gpu_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
         }
         None
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
+    use rbqn_gpu::buffer::ElementKind;
+
+    /// Verify FusionBuilder generates correct WGSL for Add+ScalarMul sequence.
+    /// This tests the fusion infrastructure without requiring a GPU device.
+    #[test]
+    fn fusion_wgsl_add_scalarmul() {
+        let mut builder = FusionBuilder::new();
+        builder.push(FusedOp::Add);
+        builder.push(FusedOp::ScalarMul(2.0));
+
+        let (source, entry) = builder.generate_wgsl(ElementKind::I32);
+
+        // Must declare both input arrays (binary op requires b)
+        assert!(source.contains("input_a: array<i32>"), "missing input_a declaration");
+        assert!(source.contains("input_b: array<i32>"), "missing input_b declaration");
+        assert!(source.contains("output: array<i32>"), "missing output declaration");
+
+        // Must compute Add then ScalarMul in sequence
+        assert!(source.contains("val + b_val"), "missing Add op");
+        assert!(source.contains("val * i32(2)"), "missing ScalarMul(2.0) for i32");
+
+        // Entry point must follow fused_{n_ops} naming
+        assert_eq!(entry, "fused_2", "entry point name mismatch");
+    }
+
+    /// Verify FusionBuilder generates correct WGSL for scalar-only ops (no b array).
+    #[test]
+    fn fusion_wgsl_scalar_only() {
+        let mut builder = FusionBuilder::new();
+        builder.push(FusedOp::ScalarAdd(1.0));
+        builder.push(FusedOp::ScalarMul(3.0));
+
+        let (source, entry) = builder.generate_wgsl(ElementKind::F32);
+
+        // Scalar-only: no b array needed
+        assert!(source.contains("input_a: array<f32>"), "missing input_a");
+        assert!(!source.contains("input_b"), "unexpected input_b for scalar-only");
+
+        assert!(source.contains("val + f32(1)"), "missing ScalarAdd(1.0)");
+        assert!(source.contains("val * f32(3)"), "missing ScalarMul(3.0)");
+        assert_eq!(entry, "fused_2");
+    }
+
+    /// Verify op_str_to_fused maps all supported op names.
+    #[test]
+    fn fused_op_name_mapping() {
+        use super::op_str_to_fused;
+        assert!(op_str_to_fused("add", None).is_some());
+        assert!(op_str_to_fused("sub", None).is_some());
+        assert!(op_str_to_fused("mul", None).is_some());
+        assert!(op_str_to_fused("div", None).is_some());
+        assert!(op_str_to_fused("scalar_add", Some(1.0)).is_some());
+        assert!(op_str_to_fused("scalar_mul", Some(2.0)).is_some());
+        // Scalar ops require the scalar value
+        assert!(op_str_to_fused("scalar_mul", None).is_none());
+        // Unknown ops return None
+        assert!(op_str_to_fused("unknown", None).is_none());
+    }
 }

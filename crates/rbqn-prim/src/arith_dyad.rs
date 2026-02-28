@@ -11,6 +11,38 @@ pub fn register_gpu_arith(f: GpuArithFn) {
     let _ = GPU_ARITH_HOOK.set(f);
 }
 
+// NOTE: GPU fused dispatch hook — set by rbqn crate at startup via register_gpu_fused.
+// Allows callers to submit a sequence of elementwise ops as a single GPU kernel dispatch.
+// True expression-level fusion (auto-detecting `2×a+b`) requires VM-level lookahead and
+// is a future optimization. This hook provides the explicit API for that future work.
+type GpuFusedFn = fn(ops: &[(&str, Option<f64>)], a: &BqnArr, b: Option<&BqnArr>) -> Option<BqnArr>;
+static GPU_FUSED_HOOK: OnceLock<GpuFusedFn> = OnceLock::new();
+
+pub fn register_gpu_fused(f: GpuFusedFn) {
+    let _ = GPU_FUSED_HOOK.set(f);
+}
+
+/// Explicit fused arithmetic dispatch: apply a sequence of elementwise ops as one GPU kernel.
+///
+/// `ops` is a slice of `(op_name, optional_scalar)` tuples. Supported op names:
+/// - "add", "sub", "mul", "div" — binary ops applied to `a` and `b`
+/// - "scalar_add", "scalar_mul" — scalar ops applied element-wise (scalar in `Option<f64>`)
+///
+/// Returns None if GPU is unavailable, threshold not met, or the FusionBuilder fails.
+/// Falls back to CPU arithmetic in that case. This is intentional — the caller must still
+/// handle the None case via the normal CPU path.
+///
+/// # Future work
+/// VM-level expression analysis can detect fuseable patterns like `2×a+b` and call this
+/// directly, amortizing upload/download overhead across multiple ops.
+pub fn try_fused_arith(
+    ops: &[(&str, Option<f64>)],
+    a: &BqnArr,
+    b: Option<&BqnArr>,
+) -> Option<BqnArr> {
+    GPU_FUSED_HOOK.get().and_then(|f| f(ops, a, b))
+}
+
 /// Map BQN operator names to GPU kernel names (only for supported numeric ops).
 fn gpu_op_name(name: &str) -> Option<&'static str> {
     match name {
