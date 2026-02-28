@@ -61,7 +61,7 @@ fn main() {
         let src_path = gen_dir.join(src_file);
         if !src_path.is_file() {
             eprintln!("rbqn-gen: Warning: {} not found, writing empty .bin", src_path.display());
-            let empty = encode_empty(src_file);
+            let empty = encode_empty("cbqn");
             let out = embedded_dir.join(bin_name);
             fs::write(&out, &empty).unwrap_or_else(|e| {
                 eprintln!("rbqn-gen: Failed to write {}: {e}", out.display());
@@ -76,7 +76,9 @@ fn main() {
         });
 
         let parsed = parse_cbqn_gen(&src);
-        let bytes = encode_bytecode(&parsed, src_file);
+        // NOTE: Tag all CBQN-generated .bin files as "cbqn" (not the gen/ filename).
+        // Self-compiled bytecode uses "rbqn-self" (written by --verify mode).
+        let bytes = encode_bytecode(&parsed, "cbqn");
 
         let out = embedded_dir.join(bin_name);
         fs::write(&out, &bytes).unwrap_or_else(|e| {

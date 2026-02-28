@@ -50,6 +50,7 @@ pub fn parse_args() -> Args {
 
         if arg == "--version" {
             println!("rbqn {}", env!("CARGO_PKG_VERSION"));
+            println!("bytecode: {}", rbqn::embedded::bytecode_source_tag());
             process::exit(0);
         }
 
