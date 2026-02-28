@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-23)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 5 complete — ready for Phase 6
+**Current focus:** Phase 6 in progress — 06-01 complete
 
 ## Current Position
 
-Phase: 5 of 6 (GPU Integration) — COMPLETE
-Plan: 5 of 5 in Phase 5 complete (05-01, 05-02, 05-03, 05-04, 05-05 complete)
-Status: Phase 5 complete — All GPU plans executed, 13/13 BQN tests green, benchmarks recorded
-Last activity: 2026-02-28 - Completed 05-05: Criterion benchmarks, dispatch threshold update from Apple Silicon benchmark data, regression gate 13/13 green
+Phase: 6 of 6 (Self-Hosting) — IN PROGRESS
+Plan: 1 of 1 in Phase 6 complete (06-01 complete)
+Status: 06-01 complete — embedded .bin bytecode, rbqn-gen tool, zero-dependency build
+Last activity: 2026-02-28 - Completed 06-01: CBQN build dependency eliminated, 4 .bin files committed, 13/13 tests green
 
-Progress: [█████████░] 90%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -41,6 +41,7 @@ Progress: [█████████░] 90%
 | Phase 05-gpu-integration P06 | 7 | 1 tasks | 3 files |
 | Phase 05 P04 | 3min | 1 tasks | 3 files |
 | Phase 05 P05 | 59min | 2 tasks | 4 files |
+| Phase 06 P01 | 6min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -103,6 +104,9 @@ Progress: [█████████░] 90%
 - [05-04]: try_fused_arith uses string op names (add/sub/mul/div/scalar_add/scalar_mul) matching existing gpu_op_name convention in arith_dyad.rs
 - [05-05]: Metal dispatch overhead on Apple Silicon is ~1.5ms constant — GPU slower than CPU at all tested sizes (50K-500K); crossover requires ~5-40M elements depending on op
 - [05-05]: Updated dispatch thresholds to benchmark-validated crossover × 2: arith 30M, reduce 80M, scan 10M, sort 100M
+- [06-01]: ObjectEntry::Str changed from &'static [u32] to Vec<u32> — required for OwnedBytecode decode path
+- [06-01]: gen-tools feature NOT in defaults — cargo install rbqn only installs rbqn binary, not rbqn-gen
+- [06-01]: bootstrap.rs updated alongside embedded/mod.rs in Task 1 (plan said Task 2) due to type change requiring immediate rebuild
 
 ### Pending Todos
 
@@ -124,5 +128,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: Completed 05-05-PLAN.md (Criterion benchmarks, dispatch threshold tuning, regression gate — Phase 5 complete)
+Stopped at: Completed 06-01-PLAN.md (embedded .bin bytecode, rbqn-gen tool, zero-dependency build — Phase 6 Plan 01 complete)
 Resume file: None
