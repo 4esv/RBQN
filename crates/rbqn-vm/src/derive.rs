@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use rbqn_core::{B, FUN_TAG, MD1_TAG, MD2_TAG, tagu64};
 
@@ -79,6 +79,17 @@ pub fn set_sys_path(path: &str) {
 // NOTE: BQN primitive glyphs in fruntime order (0-63).
 // Used for human-readable trace output when RBQN_PRIM_TRACE is set.
 const PRIM_GLYPHS: &str = "+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥≡≢⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/⍋⍒⊏⊑⊐⊒∊⍷⊔!˙˜˘¨⌜⁼´˝`∘○⊸⟜⌾⊘◶⎉⚇⍟⎊";
+
+// GPU dispatch hooks — set from main.rs after gpu_runtime::init().
+// Using OnceLock so they can be set once and read from multiple threads without locking.
+type GpuMatMulFn = fn(w: B, x: B) -> Option<B>;
+type GpuSoftmaxFn = fn(x: B) -> Option<B>;
+
+static GPU_MATMUL_HOOK: OnceLock<GpuMatMulFn> = OnceLock::new();
+static GPU_SOFTMAX_HOOK: OnceLock<GpuSoftmaxFn> = OnceLock::new();
+
+pub fn register_gpu_matmul(f: GpuMatMulFn) { let _ = GPU_MATMUL_HOOK.set(f); }
+pub fn register_gpu_softmax(f: GpuSoftmaxFn) { let _ = GPU_SOFTMAX_HOOK.set(f); }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedKind {
@@ -1434,6 +1445,17 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         1111 => math_fact_c1(x),
         1112 => math_gcd_c1(x),   // monadic: not well-defined, return x
         1113 => math_lcm_c1(x),   // monadic: not well-defined, return x
+        // NOTE: •math.MatMul — monadic: error (requires left argument)
+        1114 => rbqn_core::error::throw("•math.MatMul requires left argument (w •math.MatMul x)"),
+        // NOTE: •math.Softmax — monadic: compute softmax of rank-1 numeric array
+        1115 => {
+            if let Some(hook) = GPU_SOFTMAX_HOOK.get() {
+                if let Some(result) = hook(x) {
+                    return result;
+                }
+            }
+            math_softmax_cpu(x)
+        }
         // NOTE: •rand sys functions — range 1120-1123
         1121 => rand_range_c1(x),
         1122 => rand_deal_c1(x),
@@ -1616,6 +1638,17 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         1113 => { // lcm: w •math.LCM x
             math_lcm_c2(w, x)
         }
+        // NOTE: •math.MatMul — dyadic: w •math.MatMul x = matrix multiply
+        1114 => {
+            if let Some(hook) = GPU_MATMUL_HOOK.get() {
+                if let Some(result) = hook(w, x) {
+                    return result;
+                }
+            }
+            math_matmul_cpu(w, x)
+        }
+        // NOTE: •math.Softmax — dyadic: not standard, throw error
+        1115 => rbqn_core::error::throw("•math.Softmax takes one argument (•math.Softmax x)"),
         // NOTE: rand dyadic: shape •rand.Range n
         1121 => rand_range_c2(w, x),
         1123 => rand_subset_c2(w, x),
@@ -2676,23 +2709,25 @@ fn make_math_namespace() -> B {
 
     use crate::namespace::{str2gid, NSDesc, NS};
 
-    // Fields: sin, cos, tan, asin, acos, atan, log, cbrt, hypot, erf, comb, fact, gcd, lcm, pi
+    // Fields: sin, cos, tan, asin, acos, atan, log, cbrt, hypot, erf, comb, fact, gcd, lcm, pi, matmul, softmax
     let gids = vec![
-        str2gid("sin"),   // 0
-        str2gid("cos"),   // 1
-        str2gid("tan"),   // 2
-        str2gid("asin"),  // 3
-        str2gid("acos"),  // 4
-        str2gid("atan"),  // 5
-        str2gid("log"),   // 6
-        str2gid("cbrt"),  // 7
-        str2gid("hypot"), // 8
-        str2gid("erf"),   // 9
-        str2gid("comb"),  // 10
-        str2gid("fact"),  // 11
-        str2gid("gcd"),   // 12
-        str2gid("lcm"),   // 13
-        str2gid("pi"),    // 14
+        str2gid("sin"),    // 0
+        str2gid("cos"),    // 1
+        str2gid("tan"),    // 2
+        str2gid("asin"),   // 3
+        str2gid("acos"),   // 4
+        str2gid("atan"),   // 5
+        str2gid("log"),    // 6
+        str2gid("cbrt"),   // 7
+        str2gid("hypot"),  // 8
+        str2gid("erf"),    // 9
+        str2gid("comb"),   // 10
+        str2gid("fact"),   // 11
+        str2gid("gcd"),    // 12
+        str2gid("lcm"),    // 13
+        str2gid("pi"),     // 14
+        str2gid("matmul"), // 15
+        str2gid("softmax"),// 16
     ];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
@@ -2719,6 +2754,8 @@ fn make_math_namespace() -> B {
             m_sys_fn(1112), // gcd
             m_sys_fn(1113), // lcm
             B::m_f64(std::f64::consts::PI), // pi — immediate constant
+            m_sys_fn(1114), // matmul
+            m_sys_fn(1115), // softmax
         ],
     ));
 
@@ -2867,6 +2904,88 @@ fn math_lcm_c2(w: B, x: B) -> B {
     }
     let gcd = ga;
     B::m_f64((a.abs() / gcd * b.abs()) as f64)
+}
+
+/// CPU fallback softmax: numerically stable via max subtraction.
+fn math_softmax_cpu(x: B) -> B {
+    let arr = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw("•math.Softmax: argument must be a numeric array"));
+    if arr.rank() != 1 {
+        rbqn_core::error::throw("•math.Softmax: argument must be rank-1");
+    }
+    let n = arr.ia();
+    let vals: Vec<f64> = match &arr.data {
+        rbqn_core::array::ArrData::F64(v) => v.clone(),
+        rbqn_core::array::ArrData::I32(v) => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::I16(v) => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::I8(v)  => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::Bit(v) => (0..n).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect(),
+        _ => rbqn_core::error::throw("•math.Softmax: argument must be numeric"),
+    };
+    // Numerical stability: subtract max before exp
+    let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let exps: Vec<f64> = vals.iter().map(|&v| (v - max).exp()).collect();
+    let sum: f64 = exps.iter().sum();
+    let probs: Vec<f64> = exps.iter().map(|&e| e / sum).collect();
+    let result = rbqn_core::array::BqnArr {
+        shape: vec![n],
+        data: rbqn_core::array::ArrData::F64(probs),
+        fill: Some(B::m_f64(0.0)),
+    };
+    crate::vm::tag_arr(result)
+}
+
+/// CPU fallback matmul: naive triple-loop for rank-2 arrays.
+fn math_matmul_cpu(w: B, x: B) -> B {
+    let wa = crate::vm::get_arr(w).unwrap_or_else(|| rbqn_core::error::throw("•math.MatMul: left argument must be a rank-2 array"));
+    let xa = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw("•math.MatMul: right argument must be a rank-2 array"));
+    if wa.rank() != 2 { rbqn_core::error::throw("•math.MatMul: left argument must be rank-2"); }
+    if xa.rank() != 2 { rbqn_core::error::throw("•math.MatMul: right argument must be rank-2"); }
+    let m = wa.shape[0];
+    let k = wa.shape[1];
+    let kx = xa.shape[0];
+    let n = xa.shape[1];
+    if k != kx {
+        rbqn_core::error::throw(&format!("•math.MatMul: inner dimensions must match: {}≠{}", k, kx));
+    }
+    let w_vals: Vec<f64> = match &wa.data {
+        rbqn_core::array::ArrData::F64(v) => v.clone(),
+        rbqn_core::array::ArrData::I32(v) => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::I16(v) => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::I8(v)  => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::Bit(v) => {
+            let ia = wa.ia();
+            (0..ia).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect()
+        }
+        _ => rbqn_core::error::throw("•math.MatMul: left argument must be numeric"),
+    };
+    let x_vals: Vec<f64> = match &xa.data {
+        rbqn_core::array::ArrData::F64(v) => v.clone(),
+        rbqn_core::array::ArrData::I32(v) => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::I16(v) => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::I8(v)  => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::Bit(v) => {
+            let ia = xa.ia();
+            (0..ia).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect()
+        }
+        _ => rbqn_core::error::throw("•math.MatMul: right argument must be numeric"),
+    };
+    // Naive triple-loop matmul
+    let mut result = vec![0.0f64; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut acc = 0.0f64;
+            for l in 0..k {
+                acc += w_vals[i * k + l] * x_vals[l * n + j];
+            }
+            result[i * n + j] = acc;
+        }
+    }
+    let out = rbqn_core::array::BqnArr {
+        shape: vec![m, n],
+        data: rbqn_core::array::ArrData::F64(result),
+        fill: Some(B::m_f64(0.0)),
+    };
+    crate::vm::tag_arr(out)
 }
 
 // =============================================================================

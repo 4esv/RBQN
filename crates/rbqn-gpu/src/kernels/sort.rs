@@ -135,6 +135,50 @@ pub fn radix_sort_u32(
     buf_a
 }
 
+/// GPU-accelerated argsort: returns permutation indices that would sort the input i32 array.
+/// Uses GPU radix sort on sign-bit-flipped u32 keys, then reconstructs indices on CPU.
+/// The radix sort (O(n)) runs on GPU; index reconstruction (O(n)) runs on CPU.
+pub fn argsort_i32(
+    device: &Arc<wgpu::Device>,
+    queue: &wgpu::Queue,
+    cache: &mut PipelineCache,
+    input: &GpuBuffer,
+) -> Vec<i32> {
+    let n = input.len();
+    if n == 0 {
+        return vec![];
+    }
+
+    // Download i32 data from GPU.
+    let i32_data = pollster::block_on(
+        crate::buffer::download_i32(device, queue, input)
+    );
+
+    // Convert to sortable u32 keys (XOR sign bit so u32 ordering matches i32 ordering).
+    let original_keys: Vec<u32> = i32_data.iter().map(|&v| (v as u32) ^ 0x8000_0000u32).collect();
+
+    // Upload u32 keys and sort on GPU.
+    let u32_buf = crate::buffer::upload_u32(device, queue, &original_keys);
+    let sorted_u32_buf = radix_sort_u32(device, queue, cache, &u32_buf);
+    let sorted_keys = pollster::block_on(
+        crate::buffer::download_u32(device, queue, &sorted_u32_buf)
+    );
+
+    // Reconstruct permutation indices on CPU using a position queue per key value.
+    // This is O(n) with a HashMap of Vec<usize> queues for stable matching.
+    use std::collections::HashMap;
+    let mut positions: HashMap<u32, std::collections::VecDeque<usize>> = HashMap::new();
+    for (i, &k) in original_keys.iter().enumerate() {
+        positions.entry(k).or_default().push_back(i);
+    }
+
+    let indices: Vec<i32> = sorted_keys.iter().map(|k| {
+        positions.get_mut(k).and_then(|q| q.pop_front()).unwrap_or(0) as i32
+    }).collect();
+
+    indices
+}
+
 pub fn sort_i32(
     device: &Arc<wgpu::Device>,
     queue: &wgpu::Queue,

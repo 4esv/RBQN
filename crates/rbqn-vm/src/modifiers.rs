@@ -2,9 +2,29 @@
 // Modifier logic lives here rather than in rbqn-prim because modifiers need to call
 // derive::c1/c2 to apply operand functions, which creates a circular dep if in rbqn-prim.
 
+use std::sync::OnceLock;
+
 use rbqn_core::{B, BqnArr, ArrData, ElType};
 
 use crate::derive::{c1, c2};
+
+// NOTE: GPU fold hook — reduces large numeric arrays on GPU
+// Returns Some(B) if GPU handled the fold, None for CPU fallback
+type GpuFoldFn = fn(f: B, arr: &BqnArr) -> Option<B>;
+static GPU_FOLD_HOOK: OnceLock<GpuFoldFn> = OnceLock::new();
+
+pub fn register_gpu_fold(f: GpuFoldFn) {
+    let _ = GPU_FOLD_HOOK.set(f);
+}
+
+// NOTE: GPU scan hook — prefix-sums large numeric arrays on GPU
+// Returns Some(B) if GPU handled the scan, None for CPU fallback
+type GpuScanFn = fn(f: B, arr: &BqnArr) -> Option<B>;
+static GPU_SCAN_HOOK: OnceLock<GpuScanFn> = OnceLock::new();
+
+pub fn register_gpu_scan(f: GpuScanFn) {
+    let _ = GPU_SCAN_HOOK.set(f);
+}
 
 // BQN runtime's Under (⌾) function, set after runtime1 loads.
 // Used as fallback when native Under can't handle a case.
@@ -616,6 +636,14 @@ fn fold_c1(f: B, x: B) -> B {
             rbqn_core::error::throw("´: empty array with no identity")
         );
     }
+    // GPU dispatch for large rank-1 numeric arrays with supported ops
+    if arr.rank() == 1 {
+        if let Some(hook) = GPU_FOLD_HOOK.get() {
+            if let Some(result) = hook(f, &arr) {
+                return result;
+            }
+        }
+    }
     let mut acc = get_elem(&arr, n - 1);
     for i in (0..n - 1).rev() {
         acc = c2(f, get_elem(&arr, i), acc);
@@ -756,6 +784,12 @@ fn scan_c1(f: B, x: B) -> B {
         });
     }
     if rank == 1 {
+        // GPU dispatch for large rank-1 numeric arrays with supported ops
+        if let Some(hook) = GPU_SCAN_HOOK.get() {
+            if let Some(result) = hook(f, &arr) {
+                return result;
+            }
+        }
         // Rank-1: scan over individual elements
         let n = arr.ia();
         let mut results = Vec::with_capacity(n);
