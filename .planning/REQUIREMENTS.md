@@ -18,13 +18,13 @@
 ### MOD: Missing Modifiers
 - [x] **MOD-01**: Undo (⁼) — native inverse table for 12 required primitives (+, -, ÷, ⋆, √, ∧, ¬, ⊢, ⊣, <, ⌽, ⍉, /)
 - [x] **MOD-02**: Under (⌾) — structural mode for common cases, computational fallback
-- [ ] **MOD-03**: Rank (⎉) — apply function at specified rank
-- [ ] **MOD-04**: Depth (⚇) — apply function at specified depth
+- [x] **MOD-03**: Rank (⎉) — apply function at specified rank
+- [x] **MOD-04**: Depth (⚇) — apply function at specified depth
 
 ### PRIM: Primitive Completeness
-- [ ] **PRIM-01**: Pervasive extension (deep array arithmetic on nested arrays)
-- [ ] **PRIM-02**: Fill element propagation through all structural operations (↑, «, », >, ⥊↑)
-- [ ] **PRIM-03**: Identity elements for fold on empty arrays
+- [x] **PRIM-01**: Pervasive extension (deep array arithmetic on nested arrays)
+- [x] **PRIM-02**: Fill element propagation through all structural operations (↑, «, », >, ⥊↑)
+- [x] **PRIM-03**: Identity elements for fold on empty arrays
 - [x] **PRIM-04**: All edge cases in official test suite (empty arrays, rank-0, high-rank)
 
 ### SYS: System Functions (~50 total)
@@ -68,12 +68,12 @@
 - [x] **TEST-02**: Pass literal.bqn
 - [x] **TEST-03**: Pass syntax.bqn
 - [x] **TEST-04**: Pass bytecode.bqn
-- [x] **TEST-05**: Pass prim.bqn (9 failures remain)
+- [x] **TEST-05**: Pass prim.bqn
 - [x] **TEST-06**: Pass token.bqn
 - [x] **TEST-07**: Pass header.bqn
 - [x] **TEST-08**: Pass unhead.bqn
 - [x] **TEST-09**: Pass namespace.bqn
-- [x] **TEST-10**: Pass fill.bqn (3 failures remain)
+- [x] **TEST-10**: Pass fill.bqn
 - [x] **TEST-11**: Pass identity.bqn
 - [x] **TEST-12**: Pass under.bqn
 - [x] **TEST-13**: Pass undo.bqn
@@ -142,11 +142,11 @@
 | TEST-04 | Phase 2 | Complete |
 | MOD-01 | Phase 3 | Complete |
 | MOD-02 | Phase 3 | Complete |
-| MOD-03 | Phase 3 | Pending |
-| MOD-04 | Phase 3 | Pending |
-| PRIM-01 | Phase 3 | Pending |
-| PRIM-02 | Phase 3 | Pending |
-| PRIM-03 | Phase 3 | Pending |
+| MOD-03 | Phase 3 | Complete |
+| MOD-04 | Phase 3 | Complete |
+| PRIM-01 | Phase 3 | Complete |
+| PRIM-02 | Phase 3 | Complete |
+| PRIM-03 | Phase 3 | Complete |
 | PRIM-04 | Phase 3 | Complete |
 | SYS-06 | Phase 3 | Complete |
 | SYS-07 | Phase 3 | Complete |
@@ -164,12 +164,12 @@
 | SYS-19 | Phase 3 | Complete |
 | SYS-20 | Phase 3 | Complete |
 | SYS-21 | Phase 3 | Complete |
-| TEST-05 | Phase 4 | Blocked (9 failures) |
+| TEST-05 | Phase 4 | Complete |
 | TEST-06 | Phase 4 | Complete |
 | TEST-07 | Phase 4 | Complete |
 | TEST-08 | Phase 4 | Complete |
 | TEST-09 | Phase 4 | Complete |
-| TEST-10 | Phase 4 | Blocked (3 failures) |
+| TEST-10 | Phase 4 | Complete |
 | TEST-11 | Phase 4 | Complete |
 | TEST-12 | Phase 4 | Complete |
 | TEST-13 | Phase 4 | Complete |
