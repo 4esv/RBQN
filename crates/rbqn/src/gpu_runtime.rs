@@ -173,6 +173,113 @@ pub fn gpu_arith_binary(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnA
     })
 }
 
+/// Extract prim_idx from a B function value, if it's a NativeFn.
+fn prim_idx_of(f: B) -> Option<usize> {
+    if !f.is_fun() {
+        return None;
+    }
+    let fid = (f.0 & 0xFFFFFFFFFFFF) >> 3;
+    let d = rbqn_vm::derive::get_derived(fid);
+    if let rbqn_vm::derive::DerivedKind::NativeFn { prim_idx } = d.kind {
+        Some(prim_idx)
+    } else {
+        None
+    }
+}
+
+/// GPU fold (reduce) for large rank-1 numeric arrays.
+/// Supports +, x, floor, ceil (prim_idx 0, 2, 6, 7).
+/// Returns None for unsupported ops or if GPU dispatch is unavailable.
+pub fn gpu_fold(f: B, arr: &BqnArr) -> Option<B> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu_fold_inner(f, arr)))
+        .unwrap_or_else(|_| {
+            if debug_enabled() {
+                eprintln!("[gpu] fold dispatch panicked — CPU fallback");
+            }
+            None
+        })
+}
+
+fn gpu_fold_inner(f: B, arr: &BqnArr) -> Option<B> {
+    let gpu = get()?;
+    if !should_dispatch("reduce", arr.ia()) {
+        return None;
+    }
+    if !gpu_safe_arr(arr) {
+        return None;
+    }
+    // NOTE: Map prim_idx to GPU reduce op; only supported primitives dispatch
+    let op = match prim_idx_of(f)? {
+        0 => "add", // +
+        2 => "mul", // x
+        6 => "min", // floor
+        7 => "max", // ceil
+        _ => return None,
+    };
+    let buf = arr_to_gpu_i32(gpu, arr)?;
+    let result_buf = {
+        let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+        rbqn_gpu::kernels::reduce::reduce(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &buf)
+    };
+    let result_data =
+        pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &result_buf));
+    if result_data.is_empty() {
+        return None;
+    }
+    log_dispatch(&format!("reduce_{op}"), arr.ia(), "i32");
+    Some(B::m_f64(result_data[0] as f64))
+}
+
+/// GPU scan (inclusive prefix sum) for large rank-1 numeric arrays.
+/// Only supports + (prim_idx 0) — the scan kernel implements prefix add.
+/// Returns None for unsupported ops or if GPU dispatch is unavailable.
+pub fn gpu_scan(f: B, arr: &BqnArr) -> Option<B> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu_scan_inner(f, arr)))
+        .unwrap_or_else(|_| {
+            if debug_enabled() {
+                eprintln!("[gpu] scan dispatch panicked — CPU fallback");
+            }
+            None
+        })
+}
+
+fn gpu_scan_inner(f: B, arr: &BqnArr) -> Option<B> {
+    let gpu = get()?;
+    if !should_dispatch("scan", arr.ia()) {
+        return None;
+    }
+    if !gpu_safe_arr(arr) {
+        return None;
+    }
+    if arr.rank() != 1 {
+        return None;
+    }
+    // NOTE: Only + (prim_idx 0) supported for scan (GPU kernel implements prefix add)
+    match prim_idx_of(f)? {
+        0 => {}
+        _ => return None,
+    }
+    let buf = arr_to_gpu_i32(gpu, arr)?;
+    let result_buf = {
+        let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+        rbqn_gpu::kernels::scan::inclusive_scan(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &buf)
+    };
+    let result_data =
+        pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &result_buf));
+    if result_data.len() != arr.ia() {
+        return None;
+    }
+    log_dispatch("scan_add", arr.ia(), "i32");
+    // Build result array and squeeze to smallest integer type
+    let f64_data: Vec<f64> = result_data.iter().map(|&x| x as f64).collect();
+    let f64_arr = BqnArr {
+        shape: arr.shape.clone(),
+        data: ArrData::F64(f64_data),
+        fill: arr.fill,
+    };
+    Some(rbqn_vm::vm::tag_arr(squeeze_num(f64_arr)))
+}
+
 /// GPU-accelerated grade (⍋/⍒): returns permutation indices that sort the array.
 /// Returns None on any error (CPU fallback).
 /// Registered as GPU_GRADE_HOOK in rbqn-prim at startup.
