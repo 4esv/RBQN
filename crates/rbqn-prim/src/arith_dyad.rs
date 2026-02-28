@@ -1,5 +1,26 @@
+use std::sync::OnceLock;
 use rbqn_core::*;
 use crate::dispatch::PrimResult;
+
+// NOTE: GPU dispatch hook — set by rbqn crate at startup via register_gpu_arith.
+// Using a function pointer in a OnceLock avoids a direct dependency on rbqn (which depends on rbqn-prim).
+type GpuArithFn = fn(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnArr>;
+static GPU_ARITH_HOOK: OnceLock<GpuArithFn> = OnceLock::new();
+
+pub fn register_gpu_arith(f: GpuArithFn) {
+    let _ = GPU_ARITH_HOOK.set(f);
+}
+
+/// Map BQN operator names to GPU kernel names (only for supported numeric ops).
+fn gpu_op_name(name: &str) -> Option<&'static str> {
+    match name {
+        "+" => Some("add"),
+        "-" => Some("sub"),
+        "×" => Some("mul"),
+        "÷" => Some("div"),
+        _ => None,
+    }
+}
 
 /// Check that `short` is a prefix of `long`. Returns true if every element
 /// of `short` equals the corresponding leading element of `long`.
@@ -193,6 +214,16 @@ fn pervasive_dyad(
             }
             if xa_arr.rank() == 0 {
                 return pervasive_dyad(w, Some(wa_arr), x, None, scalar_fn, name);
+            }
+            // GPU dispatch for large matching-shape numeric arrays
+            if wa_arr.shape == xa_arr.shape {
+                if let Some(gpu_op) = gpu_op_name(name) {
+                    if let Some(hook) = GPU_ARITH_HOOK.get() {
+                        if let Some(result) = hook(gpu_op, wa_arr, xa_arr) {
+                            return Ok(PrimResult::Array(result));
+                        }
+                    }
+                }
             }
             // Try fast numeric path first
             if let (Ok(wvals), Ok(xvals)) = (wa_arr.f64_iter(), xa_arr.f64_iter()) {

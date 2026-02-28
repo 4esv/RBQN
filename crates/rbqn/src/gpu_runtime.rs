@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rbqn_core::array::{ArrData, BqnArr, squeeze_num};
 use rbqn_core::B;
-use rbqn_gpu::buffer::{GpuBuffer, upload_i32, download_i32};
+use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32, upload_f32, download_i32, download_f32};
 use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::pipeline::PipelineCache;
 
@@ -127,4 +127,272 @@ pub fn gpu_i32_to_arr(gpu: &GpuRuntime, buf: &GpuBuffer, shape: Vec<usize>, fill
 /// Check whether an operation on `len` elements should use the GPU.
 pub fn should_dispatch(op: &str, len: usize) -> bool {
     rbqn_gpu::dispatch::should_use_gpu(op, len)
+}
+
+/// GPU-accelerated binary arithmetic: w_arr op x_arr → result.
+/// Returns None on any error (CPU fallback).
+/// Registered as GPU_ARITH_HOOK in rbqn-prim at startup.
+pub fn gpu_arith_binary(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnArr> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let gpu = get()?;
+
+        // Threshold and safety checks
+        if !should_dispatch("arith", w_arr.ia()) { return None; }
+        if !gpu_safe_arr(w_arr) || !gpu_safe_arr(x_arr) { return None; }
+        if w_arr.shape != x_arr.shape { return None; }
+
+        let device = &gpu.ctx.device;
+        let queue = &gpu.ctx.queue;
+
+        // Upload both arrays as i32
+        let w_buf = arr_to_gpu_i32(gpu, w_arr)?;
+        let x_buf = arr_to_gpu_i32(gpu, x_arr)?;
+        let out_buf = GpuBuffer::storage(device, rbqn_gpu::buffer::ElementKind::I32, w_arr.ia());
+
+        {
+            let mut cache = gpu.cache.lock().ok()?;
+            rbqn_gpu::kernels::arith::arith_binary(
+                device,
+                queue,
+                &mut cache,
+                op,
+                &w_buf,
+                &x_buf,
+                &out_buf,
+            );
+        }
+
+        let result = gpu_i32_to_arr(gpu, &out_buf, w_arr.shape.clone(), w_arr.fill);
+        log_dispatch("arith", w_arr.ia(), "i32");
+        Some(result)
+    })).unwrap_or_else(|_| {
+        if debug_enabled() {
+            eprintln!("[gpu] arith GPU error — falling back to CPU");
+        }
+        None
+    })
+}
+
+/// GPU-accelerated grade (⍋/⍒): returns permutation indices that sort the array.
+/// Returns None on any error (CPU fallback).
+/// Registered as GPU_GRADE_HOOK in rbqn-prim at startup.
+pub fn gpu_grade(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let gpu = get()?;
+
+        // Only dispatch rank-1 numeric arrays above threshold
+        if arr.rank() != 1 { return None; }
+        if !should_dispatch("sort", arr.ia()) { return None; }
+        if !gpu_safe_arr(arr) { return None; }
+
+        let device = &gpu.ctx.device;
+        let queue = &gpu.ctx.queue;
+
+        let input_buf = arr_to_gpu_i32(gpu, arr)?;
+
+        let mut indices = {
+            let mut cache = gpu.cache.lock().ok()?;
+            rbqn_gpu::kernels::sort::argsort_i32(device, queue, &mut cache, &input_buf)
+        };
+
+        if !ascending {
+            indices.reverse();
+        }
+
+        let n = arr.ia();
+        let mut out = BqnArr::new_vec_i32(indices);
+        out.shape = vec![n];
+        out.fill = Some(B::m_i32(0));
+        log_dispatch("grade", n, "i32");
+        Some(out)
+    })).unwrap_or_else(|_| {
+        if debug_enabled() {
+            eprintln!("[gpu] grade GPU error — falling back to CPU");
+        }
+        None
+    })
+}
+
+/// GPU-accelerated matrix multiply: w (M×K) •math.MatMul x (K×N) → result (M×N).
+/// Returns None when GPU unavailable or data is invalid (CPU fallback).
+/// Registered as GPU_MATMUL_HOOK in rbqn-vm::derive at startup.
+pub fn gpu_matmul(w: B, x: B) -> Option<B> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let gpu = get()?;
+
+        let wa = rbqn_vm::vm::get_arr(w)?;
+        let xa = rbqn_vm::vm::get_arr(x)?;
+
+        if wa.rank() != 2 || xa.rank() != 2 { return None; }
+        let m = wa.shape[0];
+        let k = wa.shape[1];
+        let kx = xa.shape[0];
+        let n = xa.shape[1];
+        if k != kx { return None; }
+
+        // NOTE: Threshold check — dispatch to GPU for larger matrices.
+        // For small matrices, CPU is faster due to transfer overhead.
+        if m * k + k * n < 50_000 { return None; }
+
+        // Extract f64 data from arrays; skip if char/boxed
+        let w_f64: Vec<f64> = arr_to_f64(&wa)?;
+        let x_f64: Vec<f64> = arr_to_f64(&xa)?;
+
+        let device = &gpu.ctx.device;
+        let queue = &gpu.ctx.queue;
+
+        // Convert to f32 for GPU kernel (matmul kernel only supports f32)
+        let w_f32: Vec<f32> = w_f64.iter().map(|&v| v as f32).collect();
+        let x_f32: Vec<f32> = x_f64.iter().map(|&v| v as f32).collect();
+
+        let a_buf = upload_f32(device, queue, &w_f32);
+        let b_buf = upload_f32(device, queue, &x_f32);
+        let out_buf = GpuBuffer::storage(device, ElementKind::F32, m * n);
+
+        {
+            let mut cache = gpu.cache.lock().ok()?;
+            rbqn_gpu::kernels::matmul::matmul(
+                device,
+                queue,
+                &mut cache,
+                &a_buf,
+                &b_buf,
+                &out_buf,
+                m as u32,
+                n as u32,
+                k as u32,
+            );
+        }
+
+        let result_f32 = pollster::block_on(download_f32(device, queue, &out_buf));
+        let result_f64: Vec<f64> = result_f32.iter().map(|&v| v as f64).collect();
+
+        let out = BqnArr {
+            shape: vec![m, n],
+            data: ArrData::F64(result_f64),
+            fill: Some(B::m_f64(0.0)),
+        };
+
+        if debug_enabled() {
+            eprintln!("[gpu] matmul {}x{}x{} (f32)", m, k, n);
+        }
+
+        Some(rbqn_vm::vm::tag_arr(out))
+    })).unwrap_or_else(|_| {
+        if debug_enabled() {
+            eprintln!("[gpu] matmul GPU error — falling back to CPU");
+        }
+        None
+    })
+}
+
+/// GPU-accelerated softmax: •math.Softmax x → probability distribution.
+/// Returns None when GPU unavailable or data is invalid (CPU fallback).
+/// Registered as GPU_SOFTMAX_HOOK in rbqn-vm::derive at startup.
+pub fn gpu_softmax(x: B) -> Option<B> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let gpu = get()?;
+
+        let xa = rbqn_vm::vm::get_arr(x)?;
+        if xa.rank() != 1 { return None; }
+        let n = xa.ia();
+
+        // NOTE: Dispatch threshold — softmax GPU overhead only pays off for larger arrays.
+        if n < 256 { return None; }
+
+        let x_f64: Vec<f64> = arr_to_f64(&xa)?;
+        let x_f32: Vec<f32> = x_f64.iter().map(|&v| v as f32).collect();
+
+        let device = &gpu.ctx.device;
+        let queue = &gpu.ctx.queue;
+
+        let input_buf = upload_f32(device, queue, &x_f32);
+        let out_buf = GpuBuffer::storage(device, ElementKind::F32, n);
+
+        {
+            let mut cache = gpu.cache.lock().ok()?;
+            rbqn_gpu::kernels::softmax::softmax(device, queue, &mut cache, &input_buf, &out_buf);
+        }
+
+        let result_f32 = pollster::block_on(download_f32(device, queue, &out_buf));
+        let result_f64: Vec<f64> = result_f32.iter().map(|&v| v as f64).collect();
+
+        let out = BqnArr {
+            shape: vec![n],
+            data: ArrData::F64(result_f64),
+            fill: Some(B::m_f64(0.0)),
+        };
+
+        if debug_enabled() {
+            eprintln!("[gpu] softmax {} elements (f32)", n);
+        }
+
+        Some(rbqn_vm::vm::tag_arr(out))
+    })).unwrap_or_else(|_| {
+        if debug_enabled() {
+            eprintln!("[gpu] softmax GPU error — falling back to CPU");
+        }
+        None
+    })
+}
+
+/// Extract f64 values from a BqnArr. Returns None for char/boxed arrays.
+fn arr_to_f64(arr: &BqnArr) -> Option<Vec<f64>> {
+    let n = arr.ia();
+    match &arr.data {
+        ArrData::F64(v) => Some(v.clone()),
+        ArrData::I32(v) => Some(v.iter().map(|&x| x as f64).collect()),
+        ArrData::I16(v) => Some(v.iter().map(|&x| x as f64).collect()),
+        ArrData::I8(v)  => Some(v.iter().map(|&x| x as f64).collect()),
+        ArrData::Bit(v) => Some((0..n).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect()),
+        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) | ArrData::Boxed(_) => None,
+    }
+}
+
+/// GPU-accelerated monadic sort (∧/∨): returns sorted values.
+/// Returns None on any error (CPU fallback).
+/// Registered as GPU_SORT_HOOK in rbqn-prim at startup.
+pub fn gpu_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let gpu = get()?;
+
+        // Only dispatch rank-1 numeric arrays above threshold
+        if arr.rank() != 1 { return None; }
+        if !should_dispatch("sort", arr.ia()) { return None; }
+        if !gpu_safe_arr(arr) { return None; }
+
+        let device = &gpu.ctx.device;
+        let queue = &gpu.ctx.queue;
+
+        let input_buf = arr_to_gpu_i32(gpu, arr)?;
+
+        let sorted_buf = {
+            let mut cache = gpu.cache.lock().ok()?;
+            rbqn_gpu::kernels::sort::sort_i32(device, queue, &mut cache, &input_buf)
+        };
+
+        let n = arr.ia();
+        let mut result = gpu_i32_to_arr(gpu, &sorted_buf, vec![n], arr.fill);
+        if !ascending {
+            // Reverse the sorted array for descending order
+            if let rbqn_core::array::ArrData::I32(ref mut v) = result.data {
+                v.reverse();
+            } else {
+                // Convert to i32 for reversal if squeezed to smaller type
+                let vals: Vec<i32> = (0..result.ia()).filter_map(|i| {
+                    result.get(i).ok().and_then(|b| b.to_f64().ok()).map(|f| f as i32)
+                }).collect();
+                let mut reversed = vals;
+                reversed.reverse();
+                result.data = rbqn_core::array::ArrData::I32(reversed);
+            }
+        }
+        log_dispatch("sort", n, "i32");
+        Some(result)
+    })).unwrap_or_else(|_| {
+        if debug_enabled() {
+            eprintln!("[gpu] sort GPU error — falling back to CPU");
+        }
+        None
+    })
 }

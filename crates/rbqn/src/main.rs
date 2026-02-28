@@ -24,6 +24,15 @@ fn main() {
 
     gpu_runtime::init(args.no_gpu);
 
+    // NOTE: Register GPU dispatch hooks into rbqn-prim after GPU runtime is initialized.
+    // Function pointer pattern avoids circular dependency (rbqn-prim cannot depend on rbqn).
+    rbqn_prim::arith_dyad::register_gpu_arith(gpu_runtime::gpu_arith_binary);
+
+    // NOTE: Register GPU matmul and softmax hooks into rbqn-vm::derive.
+    // These enable •math.MatMul and •math.Softmax to dispatch to GPU when available.
+    rbqn_vm::derive::register_gpu_matmul(gpu_runtime::gpu_matmul);
+    rbqn_vm::derive::register_gpu_softmax(gpu_runtime::gpu_softmax);
+
     let rt = match bootstrap::bootstrap() {
         Ok(rt) => rt,
         Err(e) => {
