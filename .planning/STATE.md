@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 5 of 6 (GPU Integration)
-Plan: 1 of 5 in current phase (05-01 complete)
-Status: Active — GPU runtime foundation complete
-Last activity: 2026-02-28 - Completed 05-01: GPU runtime singleton, --no-gpu flag, precision guard, transfer layer, sort_i32 fix
+Plan: 2 of 5 in current phase (05-02 complete)
+Status: Active — GPU arithmetic and sort dispatch wired
+Last activity: 2026-02-27 - Completed 05-02: GPU arith hooks (+,-,×,÷ at 100K), GPU grade/sort hooks (⍋/⍒/∧/∨ at 500K), argsort_i32 kernel
 
-Progress: [██░░░░░░░░] 20%
+Progress: [████░░░░░░] 40%
 
 ## Performance Metrics
 
@@ -37,6 +37,7 @@ Progress: [██░░░░░░░░] 20%
 
 *Updated after each plan completion*
 | Phase 04 P10 | 11min | 3 tasks | 1 files |
+| Phase 05 P02 | 6min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -86,6 +87,10 @@ Progress: [██░░░░░░░░] 20%
 - [05-01]: GpuRuntime stored as OnceLock<Option<GpuRuntime>> — None when --no-gpu or no adapter found
 - [05-01]: Precision guard uses 2^24 (16_777_216.0) as f32 safe integer limit
 - [05-01]: sort_i32 sign-bit fix is CPU-side XOR pass (download, XOR, upload) — simpler than GPU shader pass
+- [05-02]: OnceLock<fn-pointer> pattern for cross-crate GPU hooks avoids circular dependency (rbqn-prim can't depend on rbqn)
+- [05-02]: GPU arith only dispatches array-array (matching shape) — scalar-array skipped (non-commutative op complexity)
+- [05-02]: GPU argsort uses radix sort on GPU for keys + HashMap VecDeque index reconstruction on CPU for stability
+- [05-02]: Sort/grade GPU threshold 500K (5x base) due to GPU-CPU roundtrip cost for argsort
 
 ### Pending Todos
 
@@ -106,6 +111,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-28
-Stopped at: Completed 05-01-PLAN.md (GPU runtime foundation — GpuRuntime singleton, --no-gpu, precision guard, transfer layer, sort_i32 fix)
+Last session: 2026-02-27
+Stopped at: Completed 05-02-PLAN.md (GPU dispatch hooks — arith at 100K, grade/sort at 500K, argsort_i32 kernel)
 Resume file: None

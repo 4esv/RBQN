@@ -81,8 +81,8 @@
 ### GPU: GPU Acceleration
 - [x] **GPU-01**: Array transfer layer (BqnArr ↔ GpuBuffer, f64→f32 conversion)
 - [x] **GPU-02**: Precision guard — only dispatch integer-valued or ordinal ops to GPU
-- [ ] **GPU-03**: Dispatch hooks in hot primitives (arithmetic, sort/grade, reduce, scan)
-- [ ] **GPU-04**: Element-wise arithmetic kernels (add, sub, mul, div for f32/i32)
+- [x] **GPU-03**: Dispatch hooks in hot primitives (arithmetic, sort/grade, reduce, scan)
+- [x] **GPU-04**: Element-wise arithmetic kernels (add, sub, mul, div for f32/i32)
 - [ ] **GPU-05**: Reduction kernels (sum, min, max, and, or)
 - [ ] **GPU-06**: Scan kernels (prefix sum)
 - [x] **GPU-07**: Sort/grade kernels (fix sign-bit bug in radix sort)
@@ -180,8 +180,8 @@
 | SYS-26 | Phase 4 | Complete |
 | GPU-01 | Phase 5 | Complete |
 | GPU-02 | Phase 5 | Complete |
-| GPU-03 | Phase 5 | Pending |
-| GPU-04 | Phase 5 | Pending |
+| GPU-03 | Phase 5 | Complete |
+| GPU-04 | Phase 5 | Complete |
 | GPU-05 | Phase 5 | Pending |
 | GPU-06 | Phase 5 | Pending |
 | GPU-07 | Phase 5 | Complete |
