@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-23)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 6 in progress — 06-01 complete
+**Current focus:** Phase 6 COMPLETE — all requirements satisfied
 
 ## Current Position
 
-Phase: 6 of 6 (Self-Hosting) — IN PROGRESS
-Plan: 1 of 1 in Phase 6 complete (06-01 complete)
-Status: 06-01 complete — embedded .bin bytecode, rbqn-gen tool, zero-dependency build
-Last activity: 2026-02-28 - Completed 06-01: CBQN build dependency eliminated, 4 .bin files committed, 13/13 tests green
+Phase: 6 of 6 (Self-Hosting) — COMPLETE
+Plan: 2 of 2 in Phase 6 complete (06-01 + 06-02 complete)
+Status: 06-02 complete — self-hosting verified, --version source tag, README bootstrap docs
+Last activity: 2026-02-28 - Completed 06-02: c.bqn compiled by RBQN's own compiler, --version shows bytecode source, README created
 
 Progress: [██████████] 100%
 
@@ -42,6 +42,7 @@ Progress: [██████████] 100%
 | Phase 05 P04 | 3min | 1 tasks | 3 files |
 | Phase 05 P05 | 59min | 2 tasks | 4 files |
 | Phase 06 P01 | 6min | 2 tasks | 9 files |
+| Phase 06 P02 | 9 | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -107,6 +108,9 @@ Progress: [██████████] 100%
 - [06-01]: ObjectEntry::Str changed from &'static [u32] to Vec<u32> — required for OwnedBytecode decode path
 - [06-01]: gen-tools feature NOT in defaults — cargo install rbqn only installs rbqn binary, not rbqn-gen
 - [06-01]: bootstrap.rs updated alongside embedded/mod.rs in Task 1 (plan said Task 2) due to type change requiring immediate rebuild
+- [Phase 06-02]: lib.rs exposes bootstrap + exec so rbqn-gen binary can call bootstrap::bootstrap() and exec_string() without subprocess
+- [Phase 06-02]: CBQN-generated .bin source_tag fixed to cbqn (was accidentally gen/ filename like 'compiles')
+- [Phase 06-02]: rbqn-gen --verify: catch_unwind per file, c.bqn and f.bqn compile OK, r0/r1 fail on assignment destructuring (documented, not blocked)
 
 ### Pending Todos
 
