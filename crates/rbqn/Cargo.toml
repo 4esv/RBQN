@@ -11,3 +11,12 @@ rbqn-prim.workspace = true
 rbqn-gpu.workspace = true
 rustyline = "15"
 pollster = "0.4"
+
+[dev-dependencies]
+criterion.workspace = true
+pollster.workspace = true
+wgpu.workspace = true
+
+[[bench]]
+name = "gpu_bench"
+harness = false
