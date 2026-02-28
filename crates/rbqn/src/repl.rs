@@ -1,7 +1,7 @@
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use crate::bootstrap::Runtime;
+use rbqn::bootstrap::Runtime;
 use crate::ReplState;
 
 pub fn run_repl(rt: &Runtime, silent: bool) {
