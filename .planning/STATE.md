@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-23)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 5 — GPU Integration
+**Current focus:** Phase 5 complete — ready for Phase 6
 
 ## Current Position
 
-Phase: 5 of 6 (GPU Integration)
-Plan: 4 of 5 in current phase (05-01, 05-02, 05-03, 05-04 complete)
-Status: Active — Kernel fusion infrastructure wired; GPU-08 satisfied
-Last activity: 2026-02-27 - Completed 05-04: FusionBuilder wired via GPU_FUSED_HOOK, try_fused_arith API, WGSL codegen verified
+Phase: 5 of 6 (GPU Integration) — COMPLETE
+Plan: 5 of 5 in Phase 5 complete (05-01, 05-02, 05-03, 05-04, 05-05 complete)
+Status: Phase 5 complete — All GPU plans executed, 13/13 BQN tests green, benchmarks recorded
+Last activity: 2026-02-28 - Completed 05-05: Criterion benchmarks, dispatch threshold update from Apple Silicon benchmark data, regression gate 13/13 green
 
-Progress: [████████░░] 80%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -40,6 +40,7 @@ Progress: [████████░░] 80%
 | Phase 05 P02 | 6min | 2 tasks | 7 files |
 | Phase 05-gpu-integration P06 | 7 | 1 tasks | 3 files |
 | Phase 05 P04 | 3min | 1 tasks | 3 files |
+| Phase 05 P05 | 59min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -100,6 +101,8 @@ Progress: [████████░░] 80%
 - [Phase 05-06]: f32 GPU compute for matmul/softmax: ML primitives accept f32 precision, interface stays f64
 - [05-04]: GPU_FUSED_HOOK explicit API chosen over auto-fusion: BQN evaluator calls c2 one at a time with no lookahead — true expression-level fusion requires VM-level analysis, documented as future work
 - [05-04]: try_fused_arith uses string op names (add/sub/mul/div/scalar_add/scalar_mul) matching existing gpu_op_name convention in arith_dyad.rs
+- [05-05]: Metal dispatch overhead on Apple Silicon is ~1.5ms constant — GPU slower than CPU at all tested sizes (50K-500K); crossover requires ~5-40M elements depending on op
+- [05-05]: Updated dispatch thresholds to benchmark-validated crossover × 2: arith 30M, reduce 80M, scan 10M, sort 100M
 
 ### Pending Todos
 
@@ -120,6 +123,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-27
-Stopped at: Completed 05-04-PLAN.md (Kernel fusion infrastructure — FusionBuilder wired via GPU_FUSED_HOOK, try_fused_arith API, GPU-08 satisfied)
+Last session: 2026-02-28
+Stopped at: Completed 05-05-PLAN.md (Criterion benchmarks, dispatch threshold tuning, regression gate — Phase 5 complete)
 Resume file: None

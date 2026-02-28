@@ -87,8 +87,8 @@
 - [x] **GPU-06**: Scan kernels (prefix sum)
 - [x] **GPU-07**: Sort/grade kernels (fix sign-bit bug in radix sort)
 - [x] **GPU-08**: Kernel fusion for chained element-wise operations
-- [ ] **GPU-09**: Threshold validation — benchmark 50K/100K on Apple Silicon with criterion
-- [ ] **GPU-10**: Measurable speedup demonstrated on arrays >50K elements
+- [x] **GPU-09**: Threshold validation — benchmark 50K/100K on Apple Silicon with criterion
+- [x] **GPU-10**: Measurable speedup demonstrated on arrays >50K elements
 
 ### SELF: Self-Hosting
 - [ ] **SELF-01**: Compile BQN compiler source (c.bqn) using RBQN's compiler
@@ -186,8 +186,8 @@
 | GPU-06 | Phase 5 | Complete |
 | GPU-07 | Phase 5 | Complete |
 | GPU-08 | Phase 5 | Complete |
-| GPU-09 | Phase 5 | Pending |
-| GPU-10 | Phase 5 | Pending |
+| GPU-09 | Phase 5 | Complete |
+| GPU-10 | Phase 5 | Complete |
 | SELF-01 | Phase 6 | Pending |
 | SELF-02 | Phase 6 | Pending |
 | SELF-03 | Phase 6 | Pending |
