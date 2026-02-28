@@ -1,6 +1,25 @@
+use std::sync::OnceLock;
 use rbqn_core::*;
 use rbqn_core::array;
 use crate::dispatch::PrimResult;
+
+// NOTE: GPU grade hook — set by rbqn crate at startup via register_gpu_grade.
+// Returns permutation indices (like grade_up/grade_down), or None for CPU fallback.
+type GpuGradeFn = fn(arr: &BqnArr, ascending: bool) -> Option<BqnArr>;
+static GPU_GRADE_HOOK: OnceLock<GpuGradeFn> = OnceLock::new();
+
+pub fn register_gpu_grade(f: GpuGradeFn) {
+    let _ = GPU_GRADE_HOOK.set(f);
+}
+
+// NOTE: GPU sort hook — set by rbqn crate at startup via register_gpu_sort.
+// Returns sorted values (like sort_up/sort_down), or None for CPU fallback.
+type GpuSortFn = fn(arr: &BqnArr, ascending: bool) -> Option<BqnArr>;
+static GPU_SORT_HOOK: OnceLock<GpuSortFn> = OnceLock::new();
+
+pub fn register_gpu_sort(f: GpuSortFn) {
+    let _ = GPU_SORT_HOOK.set(f);
+}
 
 /// Recursively check if a B value contains any non-data (function/modifier) values.
 /// Returns true if the value or any nested array element is a function/modifier.
@@ -105,6 +124,12 @@ fn apply_row_permutation(arr: &BqnArr, indices: &[i32]) -> Result<BqnArr> {
 // ⍋ monad: grade up
 pub fn grade_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍋𝕩: 𝕩 must be an array".into()))?;
+    // GPU dispatch for rank-1 numeric arrays above threshold
+    if let Some(hook) = GPU_GRADE_HOOK.get() {
+        if let Some(result) = hook(arr, true) {
+            return Ok(PrimResult::Array(result));
+        }
+    }
     let indices = grade(arr, true)?;
     let mut out = BqnArr::new_vec_i32(indices);
     out.fill = Some(B::m_i32(0));
@@ -114,6 +139,12 @@ pub fn grade_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ⍒ monad: grade down
 pub fn grade_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍒𝕩: 𝕩 must be an array".into()))?;
+    // GPU dispatch for rank-1 numeric arrays above threshold
+    if let Some(hook) = GPU_GRADE_HOOK.get() {
+        if let Some(result) = hook(arr, false) {
+            return Ok(PrimResult::Array(result));
+        }
+    }
     let indices = grade(arr, false)?;
     let mut out = BqnArr::new_vec_i32(indices);
     out.fill = Some(B::m_i32(0));
@@ -123,6 +154,12 @@ pub fn grade_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ∧ monad: sort up (ascending) — returns sorted values, NOT the grade
 pub fn sort_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("∧𝕩: 𝕩 must be an array".into()))?;
+    // GPU dispatch for rank-1 numeric arrays above threshold
+    if let Some(hook) = GPU_SORT_HOOK.get() {
+        if let Some(result) = hook(arr, true) {
+            return Ok(PrimResult::Array(result));
+        }
+    }
     let indices = grade(arr, true)?;
     let out = apply_row_permutation(arr, &indices)?;
     Ok(PrimResult::Array(out))
@@ -131,6 +168,12 @@ pub fn sort_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ∨ monad: sort down (descending) — returns sorted values, NOT the grade
 pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("∨𝕩: 𝕩 must be an array".into()))?;
+    // GPU dispatch for rank-1 numeric arrays above threshold
+    if let Some(hook) = GPU_SORT_HOOK.get() {
+        if let Some(result) = hook(arr, false) {
+            return Ok(PrimResult::Array(result));
+        }
+    }
     let indices = grade(arr, false)?;
     let out = apply_row_permutation(arr, &indices)?;
     Ok(PrimResult::Array(out))
