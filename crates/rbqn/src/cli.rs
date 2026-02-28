@@ -5,6 +5,7 @@ pub struct Args {
     pub repl: bool,
     pub silent: bool,
     pub heap_max: Option<u64>,
+    pub no_gpu: bool,
 }
 
 pub enum Action {
@@ -22,6 +23,7 @@ pub fn parse_args() -> Args {
     let mut repl = false;
     let mut silent = false;
     let mut heap_max = None;
+    let mut no_gpu = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -49,6 +51,12 @@ pub fn parse_args() -> Args {
         if arg == "--version" {
             println!("rbqn {}", env!("CARGO_PKG_VERSION"));
             process::exit(0);
+        }
+
+        if arg == "--no-gpu" {
+            no_gpu = true;
+            i += 1;
+            continue;
         }
 
         // Parse single-character flags
@@ -152,7 +160,7 @@ pub fn parse_args() -> Args {
         repl = true;
     }
 
-    Args { actions, repl, silent, heap_max }
+    Args { actions, repl, silent, heap_max, no_gpu }
 }
 
 pub fn print_help() {
@@ -167,6 +175,7 @@ pub fn print_help() {
          \x20 -M num     set maximum heap size to num megabytes\n\
          \x20 -r         start the REPL after executing all arguments\n\
          \x20 -s         start a silent REPL\n\
+         \x20 --no-gpu   disable GPU acceleration\n\
          \x20 --help     show this help text\n\
          \x20 --version  display version information"
     );

@@ -1,6 +1,7 @@
 mod bootstrap;
 mod cli;
 mod embedded;
+mod gpu_runtime;
 mod repl;
 
 use rbqn_core::array::BqnArr;
@@ -20,6 +21,8 @@ fn main() {
     std::panic::set_hook(Box::new(|_| {}));
 
     let args = cli::parse_args();
+
+    gpu_runtime::init(args.no_gpu);
 
     let rt = match bootstrap::bootstrap() {
         Ok(rt) => rt,

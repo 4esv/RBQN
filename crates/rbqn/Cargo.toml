@@ -10,3 +10,4 @@ rbqn-vm.workspace = true
 rbqn-prim.workspace = true
 rbqn-gpu.workspace = true
 rustyline = "15"
+pollster = "0.4"
