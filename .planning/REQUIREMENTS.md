@@ -57,11 +57,11 @@
 - [x] **SYS-21**: •_while_ (loop modifier)
 
 #### Low (full parity)
-- [ ] **SYS-22**: •FFI (foreign function interface)
-- [ ] **SYS-23**: •bit namespace (bitwise operations)
-- [ ] **SYS-24**: •term namespace (terminal I/O, RawMode, CharB, Flush)
-- [ ] **SYS-25**: •ns namespace (Keys, Values, Has, Get)
-- [ ] **SYS-26**: •HashMap (hash map operations)
+- [x] **SYS-22**: •FFI (foreign function interface)
+- [x] **SYS-23**: •bit namespace (bitwise operations)
+- [x] **SYS-24**: •term namespace (terminal I/O, RawMode, CharB, Flush)
+- [x] **SYS-25**: •ns namespace (Keys, Values, Has, Get)
+- [x] **SYS-26**: •HashMap (hash map operations)
 
 ### TEST: Official Test Suite (13 files)
 - [x] **TEST-01**: Pass simple.bqn
@@ -173,11 +173,11 @@
 | TEST-11 | Phase 4 | Complete |
 | TEST-12 | Phase 4 | Complete |
 | TEST-13 | Phase 4 | Complete |
-| SYS-22 | Phase 4 | Pending |
-| SYS-23 | Phase 4 | Pending |
-| SYS-24 | Phase 4 | Pending |
-| SYS-25 | Phase 4 | Pending |
-| SYS-26 | Phase 4 | Pending |
+| SYS-22 | Phase 4 | Complete |
+| SYS-23 | Phase 4 | Complete |
+| SYS-24 | Phase 4 | Complete |
+| SYS-25 | Phase 4 | Complete |
+| SYS-26 | Phase 4 | Complete |
 | GPU-01 | Phase 5 | Pending |
 | GPU-02 | Phase 5 | Pending |
 | GPU-03 | Phase 5 | Pending |

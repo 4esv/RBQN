@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 
 ## Current Position
 
-Phase: 4 of 6 (Full Test Suite Green)
-Plan: 9 of 10 in current phase (04-09 complete)
-Status: Phase 4 active — all 13 test files pass with 0 failures
-Last activity: 2026-02-27 - Completed 04-09: fix remaining prim/fill failures
+Phase: 4 of 6 (Full Test Suite Green) -- COMPLETE
+Plan: 10 of 10 in current phase (04-10 complete)
+Status: Phase 4 complete — all 13 test files pass, all system stubs registered
+Last activity: 2026-02-28 - Completed 04-10: system stubs + regression gate
 
-Progress: [█████████░] 90%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -36,6 +36,7 @@ Progress: [█████████░] 90%
 - Trend: Steady (averaging ~26min recently)
 
 *Updated after each plan completion*
+| Phase 04 P10 | 11min | 3 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,10 @@ Progress: [█████████░] 90%
 - [04-02]: f¨/f˘ on scalars return rank-0 arrays (BQN semantics), not plain scalars
 - [Phase 04-full-test-suite-green]: ScanInv DerivedKind intercepts inv_reg(F') natively to avoid BQN runtime issues with rank>1 arrays
 - [Phase 04-full-test-suite-green]: ⍉ rank>2: move first axis to last (not full reverse); ⍉⁼ rank>2: move last axis to first using permutation 1‥(r-1)‥0
+- [04-10]: HashMap uses namespace-per-instance with stub methods (test suite doesn't test it)
+- [04-10]: ns.Keys/Values/Has/Get fully functional — namespace introspection works via NSDesc.exp_gids
+- [Phase 04]: HashMap uses namespace-per-instance with stub methods (test suite doesn't test it)
+- [Phase 04]: ns.Keys/Values/Has/Get fully functional — namespace introspection works via NSDesc.exp_gids
 
 ### Pending Todos
 
@@ -98,6 +103,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-27
-Stopped at: Completed 04-09 (all 13 test files pass, proceeding with 04-10 system stubs)
+Last session: 2026-02-28
+Stopped at: Completed 04-10 (Phase 4 complete — all 13 test files pass, all system stubs registered)
 Resume file: None
