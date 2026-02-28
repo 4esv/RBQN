@@ -62,10 +62,12 @@ fn scan_add_i32(
 @compute @workgroup_size(256)
 fn propagate_i32(
     @builtin(global_invocation_id) gid: vec3<u32>,
-    @builtin(workgroup_id) wid: vec3<u32>,
 ) {
     let idx = gid.x;
     if (idx < arrayLength(&scan_output)) {
-        scan_output[idx] = scan_data[idx] + prefix_sums[wid.x];
+        // NOTE: Each scan block covers 512 elements (ELEMENTS_PER_WORKGROUP).
+        // Map the global element index to the correct block_sums entry.
+        let block_idx = idx / 512u;
+        scan_output[idx] = scan_data[idx] + prefix_sums[block_idx];
     }
 }
