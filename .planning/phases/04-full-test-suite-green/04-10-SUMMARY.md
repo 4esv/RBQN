@@ -64,7 +64,9 @@ Each task was committed atomically:
 1. **Task 1+2: System stubs for FFI, bit, term, ns, HashMap** - `fd98b01` (feat)
 2. **Task 3: Regression gate** - verification only, no code changes
 
-**Plan metadata:** (pending)
+**Plan metadata:** `5212954` (docs: complete plan)
+
+## Self-Check: PASSED
 
 ## Files Created/Modified
 - `crates/rbqn-vm/src/derive.rs` - Added sys_name_to_b entries, dispatch handlers, namespace constructors, ns introspection functions, HashMap constructor
