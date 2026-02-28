@@ -28,6 +28,11 @@ fn main() {
     // Function pointer pattern avoids circular dependency (rbqn-prim cannot depend on rbqn).
     rbqn_prim::arith_dyad::register_gpu_arith(gpu_runtime::gpu_arith_binary);
 
+    // NOTE: Register GPU fused arithmetic hook for explicit multi-op dispatch.
+    // FusionBuilder wired here; true expression-level auto-fusion is future work (requires
+    // VM-level lookahead — the BQN evaluator calls c2 one call at a time with no lookahead).
+    rbqn_prim::arith_dyad::register_gpu_fused(gpu_runtime::gpu_fused_arith);
+
     // NOTE: Register GPU matmul and softmax hooks into rbqn-vm::derive.
     // These enable •math.MatMul and •math.Softmax to dispatch to GPU when available.
     rbqn_vm::derive::register_gpu_matmul(gpu_runtime::gpu_matmul);
