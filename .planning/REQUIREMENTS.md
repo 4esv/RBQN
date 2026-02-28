@@ -79,13 +79,13 @@
 - [x] **TEST-13**: Pass undo.bqn
 
 ### GPU: GPU Acceleration
-- [ ] **GPU-01**: Array transfer layer (BqnArr ↔ GpuBuffer, f64→f32 conversion)
-- [ ] **GPU-02**: Precision guard — only dispatch integer-valued or ordinal ops to GPU
+- [x] **GPU-01**: Array transfer layer (BqnArr ↔ GpuBuffer, f64→f32 conversion)
+- [x] **GPU-02**: Precision guard — only dispatch integer-valued or ordinal ops to GPU
 - [ ] **GPU-03**: Dispatch hooks in hot primitives (arithmetic, sort/grade, reduce, scan)
 - [ ] **GPU-04**: Element-wise arithmetic kernels (add, sub, mul, div for f32/i32)
 - [ ] **GPU-05**: Reduction kernels (sum, min, max, and, or)
 - [ ] **GPU-06**: Scan kernels (prefix sum)
-- [ ] **GPU-07**: Sort/grade kernels (fix sign-bit bug in radix sort)
+- [x] **GPU-07**: Sort/grade kernels (fix sign-bit bug in radix sort)
 - [ ] **GPU-08**: Kernel fusion for chained element-wise operations
 - [ ] **GPU-09**: Threshold validation — benchmark 50K/100K on Apple Silicon with criterion
 - [ ] **GPU-10**: Measurable speedup demonstrated on arrays >50K elements
@@ -178,13 +178,13 @@
 | SYS-24 | Phase 4 | Complete |
 | SYS-25 | Phase 4 | Complete |
 | SYS-26 | Phase 4 | Complete |
-| GPU-01 | Phase 5 | Pending |
-| GPU-02 | Phase 5 | Pending |
+| GPU-01 | Phase 5 | Complete |
+| GPU-02 | Phase 5 | Complete |
 | GPU-03 | Phase 5 | Pending |
 | GPU-04 | Phase 5 | Pending |
 | GPU-05 | Phase 5 | Pending |
 | GPU-06 | Phase 5 | Pending |
-| GPU-07 | Phase 5 | Pending |
+| GPU-07 | Phase 5 | Complete |
 | GPU-08 | Phase 5 | Pending |
 | GPU-09 | Phase 5 | Pending |
 | GPU-10 | Phase 5 | Pending |

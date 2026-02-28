@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-23)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 4 — Full Test Suite Green
+**Current focus:** Phase 5 — GPU Integration
 
 ## Current Position
 
-Phase: 4 of 6 (Full Test Suite Green) -- COMPLETE
-Plan: 10 of 10 in current phase (04-10 complete)
-Status: Phase 4 complete — all 13 test files pass, all system stubs registered
-Last activity: 2026-02-28 - Completed 04-10: system stubs + regression gate
+Phase: 5 of 6 (GPU Integration)
+Plan: 1 of 5 in current phase (05-01 complete)
+Status: Active — GPU runtime foundation complete
+Last activity: 2026-02-28 - Completed 05-01: GPU runtime singleton, --no-gpu flag, precision guard, transfer layer, sort_i32 fix
 
-Progress: [██████████] 100%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
@@ -83,6 +83,9 @@ Progress: [██████████] 100%
 - [04-10]: ns.Keys/Values/Has/Get fully functional — namespace introspection works via NSDesc.exp_gids
 - [Phase 04]: HashMap uses namespace-per-instance with stub methods (test suite doesn't test it)
 - [Phase 04]: ns.Keys/Values/Has/Get fully functional — namespace introspection works via NSDesc.exp_gids
+- [05-01]: GpuRuntime stored as OnceLock<Option<GpuRuntime>> — None when --no-gpu or no adapter found
+- [05-01]: Precision guard uses 2^24 (16_777_216.0) as f32 safe integer limit
+- [05-01]: sort_i32 sign-bit fix is CPU-side XOR pass (download, XOR, upload) — simpler than GPU shader pass
 
 ### Pending Todos
 
@@ -104,5 +107,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: Completed 04-10 (Phase 4 complete — all 13 test files pass, all system stubs registered)
+Stopped at: Completed 05-01-PLAN.md (GPU runtime foundation — GpuRuntime singleton, --no-gpu, precision guard, transfer layer, sort_i32 fix)
 Resume file: None
