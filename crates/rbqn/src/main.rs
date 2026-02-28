@@ -33,6 +33,16 @@ fn main() {
     rbqn_vm::derive::register_gpu_matmul(gpu_runtime::gpu_matmul);
     rbqn_vm::derive::register_gpu_softmax(gpu_runtime::gpu_softmax);
 
+    // NOTE: Register GPU fold/scan hooks into rbqn-vm modifiers.
+    // These enable +´ and +` to dispatch to GPU for large arrays.
+    rbqn_vm::modifiers::register_gpu_fold(gpu_runtime::gpu_fold);
+    rbqn_vm::modifiers::register_gpu_scan(gpu_runtime::gpu_scan);
+
+    // NOTE: Register GPU grade and sort hooks into rbqn-prim.
+    // These enable ⍋/⍒ and ∧/∨ to dispatch to GPU for large arrays.
+    rbqn_prim::sort::register_gpu_grade(gpu_runtime::gpu_grade);
+    rbqn_prim::sort::register_gpu_sort(gpu_runtime::gpu_sort);
+
     let rt = match bootstrap::bootstrap() {
         Ok(rt) => rt,
         Err(e) => {
