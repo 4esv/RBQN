@@ -104,13 +104,13 @@ Plans:
   3. Precision guard blocks GPU dispatch for arrays with values above 2^24; falls back to CPU silently
   4. Criterion benchmark shows measurable speedup vs CPU for arrays >100K elements on Apple Silicon
   5. All 13 test files still pass after GPU wiring (correctness not regressed)
-**Plans:** 4/6 plans executed
+**Plans:** 4/6 plans executed (05-01 through 05-04 complete)
 
 Plans:
-- [ ] 05-01-PLAN.md — GPU runtime singleton, CLI --no-gpu flag, precision guard, transfer layer, sort sign-bit fix
-- [ ] 05-02-PLAN.md — Wire GPU dispatch into arithmetic primitives and sort/grade (incl. GPU argsort)
-- [ ] 05-03-PLAN.md — Wire GPU dispatch into fold (reduce) and scan (prefix sum)
-- [ ] 05-04-PLAN.md — Kernel fusion infrastructure via FusionBuilder
+- [x] 05-01-PLAN.md — GPU runtime singleton, CLI --no-gpu flag, precision guard, transfer layer, sort sign-bit fix
+- [x] 05-02-PLAN.md — Wire GPU dispatch into arithmetic primitives and sort/grade (incl. GPU argsort)
+- [x] 05-03-PLAN.md — Wire GPU dispatch into fold (reduce) and scan (prefix sum)
+- [x] 05-04-PLAN.md — Kernel fusion infrastructure via FusionBuilder (GPU-08 satisfied)
 - [ ] 05-05-PLAN.md — Criterion benchmarks, threshold validation, regression gate
 - [ ] 05-06-PLAN.md — Wire matmul and softmax kernels into •math namespace
 
