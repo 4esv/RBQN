@@ -104,7 +104,7 @@ Plans:
   3. Precision guard blocks GPU dispatch for arrays with values above 2^24; falls back to CPU silently
   4. Criterion benchmark shows measurable speedup vs CPU for arrays >100K elements on Apple Silicon
   5. All 13 test files still pass after GPU wiring (correctness not regressed)
-**Plans:** 2/6 plans executed
+**Plans:** 4/6 plans executed
 
 Plans:
 - [ ] 05-01-PLAN.md — GPU runtime singleton, CLI --no-gpu flag, precision guard, transfer layer, sort sign-bit fix
@@ -139,5 +139,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. Test Baseline | 0/3 | Complete    | 2026-02-24 |
 | 3. Language Completeness | 5/5 | Complete   | 2026-02-24 |
 | 4. Full Test Suite Green | 9/7 | Complete   | 2026-02-27 |
-| 5. GPU Integration | 2/6 | In Progress|  |
+| 5. GPU Integration | 4/6 | In Progress|  |
 | 6. Self-Hosting | 0/? | Not started | - |

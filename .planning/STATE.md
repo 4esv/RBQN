@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 5 of 6 (GPU Integration)
-Plan: 2 of 5 in current phase (05-02 complete)
-Status: Active — GPU arithmetic and sort dispatch wired
-Last activity: 2026-02-27 - Completed 05-02: GPU arith hooks (+,-,×,÷ at 100K), GPU grade/sort hooks (⍋/⍒/∧/∨ at 500K), argsort_i32 kernel
+Plan: 3 of 5 in current phase (05-01, 05-02, 05-03 complete)
+Status: Active — GPU fold/scan dispatch complete; primary Phase 5 success criterion satisfied
+Last activity: 2026-02-28 - Completed 05-03: GPU fold (+´ ×´ ⌊´ ⌈´) and scan (+`) on arrays >=50K, fixed scan shader propagate bug
 
 Progress: [████░░░░░░] 40%
 
@@ -38,6 +38,7 @@ Progress: [████░░░░░░] 40%
 *Updated after each plan completion*
 | Phase 04 P10 | 11min | 3 tasks | 1 files |
 | Phase 05 P02 | 6min | 2 tasks | 7 files |
+| Phase 05-gpu-integration P06 | 7 | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -91,6 +92,11 @@ Progress: [████░░░░░░] 40%
 - [05-02]: GPU arith only dispatches array-array (matching shape) — scalar-array skipped (non-commutative op complexity)
 - [05-02]: GPU argsort uses radix sort on GPU for keys + HashMap VecDeque index reconstruction on CPU for stability
 - [05-02]: Sort/grade GPU threshold 500K (5x base) due to GPU-CPU roundtrip cost for argsort
+- [05-03]: prim_idx mapping uses PRIM_GLYPHS order (0=+, 2=×, 6=⌊, 7=⌈) not provide-array order — plan had wrong indices
+- [05-03]: scan shader propagate must use idx/512 for block_sums index — wid.x maps to 256-element workgroups but scan blocks are 512 elements
+- [05-03]: gpu_scan only dispatches + (prim_idx 0); other scan ops fall back to CPU
+- [Phase 05-06]: MatMul threshold M*K+K*N>=50000 avoids GPU overhead for small matrices; Softmax threshold n>=256 matches single workgroup size
+- [Phase 05-06]: f32 GPU compute for matmul/softmax: ML primitives accept f32 precision, interface stays f64
 
 ### Pending Todos
 
@@ -111,6 +117,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-27
-Stopped at: Completed 05-02-PLAN.md (GPU dispatch hooks — arith at 100K, grade/sort at 500K, argsort_i32 kernel)
+Last session: 2026-02-28
+Stopped at: Completed 05-03-PLAN.md (GPU fold/scan dispatch — +´ ×´ ⌊´ ⌈´ at 50K via reduce kernel, +` at 50K via inclusive scan)
 Resume file: None
