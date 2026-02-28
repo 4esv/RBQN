@@ -16,7 +16,7 @@ Wire existing rbqn-gpu kernels into BQN primitive dispatch so arrays above 50K e
 ### Kernel priorities
 - Both ML (matmul, softmax) and general array ops (arithmetic, reduce, scan, sort) are first-class — no priority ordering
 - Include matmul and softmax kernels in Phase 5 since the code already exists in rbqn-gpu
-- Kernel fusion (GPU-08) is a must-have — chained elementwise ops like `2×a+b` should fuse into a single GPU dispatch to avoid round-trips
+- Kernel fusion (GPU-08) is a must-have — Phase 5 delivers FusionBuilder infrastructure and explicit API; transparent auto-detection of fuseable BQN expression patterns (e.g. `2×a+b`) is future work requiring VM lookahead
 
 ### Fallback behavior
 - No GPU available: silent CPU fallback, no message at all — GPU is an invisible optimization
