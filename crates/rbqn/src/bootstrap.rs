@@ -79,7 +79,7 @@ mod prov {
 /// Map provide index → fruntime index (primitive dispatch table index).
 /// System functions (type, fill, log, grLen, grOrd, fillBy) are mapped to
 /// system function B values instead of fruntime entries.
-fn build_provide(fruntime: &[B]) -> Vec<B> {
+pub fn build_provide(fruntime: &[B]) -> Vec<B> {
     let mut provide = Vec::with_capacity(40);
     // NOTE: provide indices don't match fruntime indices.
     // provide maps: name → which primitive or system fn to use.

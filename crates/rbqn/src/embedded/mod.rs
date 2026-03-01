@@ -79,6 +79,112 @@ pub fn bytecode_source_tag() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Encoder (reverse of decode_bytecode)
+// ---------------------------------------------------------------------------
+
+/// Serialize an OwnedBytecode to RBQN wire format bytes.
+/// This is the reverse of decode_bytecode() and mirrors the encode_bytecode() logic in rbqn_gen.rs.
+///
+/// Wire format (all little-endian):
+///   [magic: b"RBQN"] [version: u32 = 1]
+///   [tag_len: u16] [tag: bytes]
+///   [bc_len: u32] [bc: i32 × bc_len]
+///   [iarrs_count: u32] for each: [len: u32] [data: i32 × len]
+///   [objs_count: u32] for each: [tag: u8] [payload]
+///   [blocks_count: u32] for each: [tag: u8] [payload]
+///   [bodies_count: u32] [data: u32 × bodies_count]
+pub fn encode_owned_bytecode(obc: &OwnedBytecode, source_tag: &str) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+
+    // Magic + version
+    buf.extend_from_slice(b"RBQN");
+    buf.extend_from_slice(&1u32.to_le_bytes());
+
+    // Source tag
+    let tag_bytes = source_tag.as_bytes();
+    buf.extend_from_slice(&(tag_bytes.len() as u16).to_le_bytes());
+    buf.extend_from_slice(tag_bytes);
+
+    // Bytecode (bc stored directly, not via iarrs index)
+    buf.extend_from_slice(&(obc.bc.len() as u32).to_le_bytes());
+    for &v in &obc.bc {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    // iarrs
+    buf.extend_from_slice(&(obc.iarrs.len() as u32).to_le_bytes());
+    for arr in &obc.iarrs {
+        buf.extend_from_slice(&(arr.len() as u32).to_le_bytes());
+        for &v in arr {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+
+    // objs
+    buf.extend_from_slice(&(obc.objs.len() as u32).to_le_bytes());
+    for entry in &obc.objs {
+        match entry {
+            ObjectEntry::Provide(n) => {
+                buf.push(0);
+                buf.extend_from_slice(&(*n as u32).to_le_bytes());
+            }
+            ObjectEntry::Runtime(n) => {
+                buf.push(1);
+                buf.extend_from_slice(&(*n as u32).to_le_bytes());
+            }
+            ObjectEntry::RuntimePrev(n) => {
+                buf.push(2);
+                buf.extend_from_slice(&(*n as u32).to_le_bytes());
+            }
+            ObjectEntry::Float(v) => {
+                buf.push(3);
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            ObjectEntry::Char(c) => {
+                buf.push(4);
+                buf.extend_from_slice(&(*c as u32).to_le_bytes());
+            }
+            ObjectEntry::Str(chars) => {
+                buf.push(5);
+                buf.extend_from_slice(&(chars.len() as u32).to_le_bytes());
+                for &cp in chars {
+                    buf.extend_from_slice(&cp.to_le_bytes());
+                }
+            }
+            ObjectEntry::IArr(n) => {
+                buf.push(6);
+                buf.extend_from_slice(&(*n as u32).to_le_bytes());
+            }
+        }
+    }
+
+    // blocks
+    buf.extend_from_slice(&(obc.blocks.len() as u32).to_le_bytes());
+    for entry in &obc.blocks {
+        match entry {
+            BlockEntry::IArr(n) => {
+                buf.push(0);
+                buf.extend_from_slice(&(*n as u32).to_le_bytes());
+            }
+            BlockEntry::Info { typ, iarrs0_idx, data_idx } => {
+                buf.push(1);
+                buf.push(*typ);
+                buf.extend_from_slice(&(*iarrs0_idx as u32).to_le_bytes());
+                buf.extend_from_slice(&(*data_idx as u32).to_le_bytes());
+            }
+        }
+    }
+
+    // bodies
+    buf.extend_from_slice(&(obc.bodies.len() as u32).to_le_bytes());
+    for &iarrs_idx in &obc.bodies {
+        buf.extend_from_slice(&(iarrs_idx as u32).to_le_bytes());
+    }
+
+    buf
+}
+
+// ---------------------------------------------------------------------------
 // Decoder
 // ---------------------------------------------------------------------------
 
