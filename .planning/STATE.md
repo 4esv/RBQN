@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 6 of 6 (Self-Hosting) — COMPLETE
-Plan: 2 of 2 in Phase 6 complete (06-01 + 06-02 complete)
-Status: 06-02 complete — self-hosting verified, --version source tag, README bootstrap docs
-Last activity: 2026-02-28 - Completed 06-02: c.bqn compiled by RBQN's own compiler, --version shows bytecode source, README created
+Plan: 3 of 3 in Phase 6 complete (06-01 + 06-02 + 06-03 complete)
+Status: 06-03 complete — real self-compiled .bin files, SELF-02 behavioral equivalence confirmed
+Last activity: 2026-03-01 - Completed 06-03: self-compiled compiler.bin+formatter.bin pass all 13 tests (SELF-02)
 
 Progress: [██████████] 100%
 
@@ -43,6 +43,7 @@ Progress: [██████████] 100%
 | Phase 05 P05 | 59min | 2 tasks | 4 files |
 | Phase 06 P01 | 6min | 2 tasks | 9 files |
 | Phase 06 P02 | 9 | 3 tasks | 11 files |
+| Phase 06 P03 | 45min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -111,6 +112,9 @@ Progress: [██████████] 100%
 - [Phase 06-02]: lib.rs exposes bootstrap + exec so rbqn-gen binary can call bootstrap::bootstrap() and exec_string() without subprocess
 - [Phase 06-02]: CBQN-generated .bin source_tag fixed to cbqn (was accidentally gen/ filename like 'compiles')
 - [Phase 06-02]: rbqn-gen --verify: catch_unwind per file, c.bqn and f.bqn compile OK, r0/r1 fail on assignment destructuring (documented, not blocked)
+- [06-03]: iarrs[0] must be empty [] not bc — CBQN wire format uses iarrs[0]=[] as shared placeholder for no-bodies block lists
+- [06-03]: c.bqn wrapping uses {func‿mod1‿mod2←𝕩} (𝕩 arg forces imm=0) — embedded glyph constants cause imm=1 which breaks bootstrap c1(compgen,glyphs)
+- [06-03]: Self-compiled .bin sizes (~half of CBQN) expected — RBQN uses mixed Provide+Runtime obj refs vs CBQN's Runtime-only; same semantics
 
 ### Pending Todos
 
@@ -131,6 +135,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-28
-Stopped at: Completed 06-01-PLAN.md (embedded .bin bytecode, rbqn-gen tool, zero-dependency build — Phase 6 Plan 01 complete)
+Last session: 2026-03-01
+Stopped at: Completed 06-03-PLAN.md (self-compiled .bin files with real bytecode, SELF-02 behavioral equivalence confirmed — Phase 6 fully complete)
 Resume file: None
