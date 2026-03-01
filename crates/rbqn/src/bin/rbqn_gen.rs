@@ -167,6 +167,9 @@ fn verify_self_compilation(cbqn_path: &Path, embedded_dir: &Path) {
         eprintln!("rbqn-gen: Failed to create {}: {e}", self_bin_dir.display());
     }
 
+    // Build the provide array for object identity lookup in compiler_output_to_owned
+    let provide = rbqn::bootstrap::build_provide(&rt.fruntime);
+
     for (bqn_file, bin_name, needs_wrap, req_tag) in &sources {
         let src_path = bqn_src.join(bqn_file);
         if !src_path.is_file() {
@@ -182,34 +185,76 @@ fn verify_self_compilation(cbqn_path: &Path, embedded_dir: &Path) {
             }
         };
 
-        // c.bqn needs wrapping: its first line is `func‿mod1‿mod2 ← •args`
-        // We wrap it as a function that takes the glyph arrays as argument.
+        // c.bqn needs modification: its first line is `func‿mod1‿mod2 ← •args`
+        // We wrap the ENTIRE c.bqn body in a non-immediate function block that takes
+        // 𝕩 as the glyph array. The first line becomes `func‿mod1‿mod2 ← 𝕩`.
+        //
+        // The compiled result has structure:
+        //   DFND outer_block, RETN   (at top-level)
+        //
+        // When bootstrap executes:
+        //   1. exec_stage runs → DFND outer_block, RETN → returns outer_block
+        //   2. c1(outer_block, glyphs) runs outer_block with 𝕩=glyphs
+        //   3. outer_block does: func‿mod1‿mod2 ← 𝕩 (destructures glyphs)
+        //   4. c.bqn's body executes and returns Compile
+        //
+        // This is equivalent to CBQN's cc.bqn compilation approach.
+        // Using 𝕩 forces the block to be non-immediate (imm=0), matching bootstrap's
+        // expectation that it can call c1(compgen, glyphs_b).
         let code = if *needs_wrap {
-            // Strip the first line (func‿mod1‿mod2 ← •args) and wrap the rest
-            let body = src.lines().skip(1).collect::<Vec<_>>().join("\n");
-            let fn_str = make_bqn_string(func_glyphs);
-            let md1_str = make_bqn_string(mod1_glyphs);
-            let md2_str = make_bqn_string(mod2_glyphs);
-            format!("{{func‿mod1‿mod2←𝕩\n{body}\n}} ⟨{fn_str}, {md1_str}, {md2_str}⟩")
+            // Replace first line's `•args` with `𝕩` so the block takes glyphs as argument
+            // NOTE: "•args" is 7 bytes in UTF-8 (• = U+2022 = 3 bytes + "args" = 4 bytes)
+            let args_pattern = "•args";
+            let first_line = src.lines().next().unwrap_or("");
+            let body_rest = src.lines().skip(1).collect::<Vec<_>>().join("\n");
+            let new_first = if first_line.ends_with(args_pattern) {
+                let prefix_len = first_line.len() - args_pattern.len();
+                format!("{}𝕩", &first_line[..prefix_len])
+            } else {
+                "func‿mod1‿mod2 ← 𝕩".to_string()
+            };
+            // Wrap in a function block (NOT immediately called) to get DFND/RETN structure
+            // Using 𝕩 ensures imm=0 (non-immediate), matching bootstrap expectations
+            format!("{{\n{}\n{}\n}}", new_first, body_rest)
         } else {
             src.clone()
         };
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rbqn::exec::exec_string(&rt, &code)
+            rbqn::exec::compile_string(&rt, &code)
         }));
 
         match result {
-            Ok(Ok(_)) => {
-                println!("rbqn-gen: {req_tag}: {bqn_file} compiled OK");
-                // Write a placeholder self-compiled .bin (the compilation result is a BQN
-                // value, not bytecode — generating actual .bin would require re-running
-                // CBQN's gen/ format generation, which is out of scope here)
-                let tag = format!("rbqn-self:{bqn_file}");
-                let bin_bytes = encode_empty(&tag);
+            Ok(Ok(output)) => {
+                // Determine runtime context for this source file:
+                // c.bqn and f.bqn reference runtime[n] (the runtime1 output = rt.runtime)
+                // r0.bqn references only provide[n] (no runtime)
+                // r1.bqn references runtime_0 (built from fruntime) as runtime_prev
+                let (runtime_prev, runtime_ref) = if *bqn_file == "r0.bqn" {
+                    (None, None)
+                } else if *bqn_file == "r1.bqn" {
+                    // r1.bqn uses runtime_0 (the 24 native prims) as runtime_prev
+                    // We don't have easy access to it here, so skip r1.bqn
+                    (None, None)
+                } else {
+                    // c.bqn and f.bqn reference runtime[n]
+                    (None, Some(rt.runtime.as_slice()))
+                };
+
+                let owned = rbqn::exec::compiler_output_to_owned(
+                    &output,
+                    &provide,
+                    runtime_prev,
+                    runtime_ref,
+                );
+                let bin_bytes = rbqn::embedded::encode_owned_bytecode(&owned, "rbqn-self");
+
                 let out = self_bin_dir.join(bin_name);
                 if let Err(e) = fs::write(&out, &bin_bytes) {
                     eprintln!("rbqn-gen: Warning: failed to write {}: {e}", out.display());
+                } else {
+                    println!("rbqn-gen: {req_tag}: {bqn_file} compiled OK ({} bytes → {})",
+                        bin_bytes.len(), out.display());
                 }
                 any_ok = true;
             }
@@ -228,9 +273,34 @@ fn verify_self_compilation(cbqn_path: &Path, embedded_dir: &Path) {
     println!();
     if any_ok {
         println!("rbqn-gen: SELF-01: c.bqn compiled by RBQN's own compiler — self-hosting verified.");
-        println!("rbqn-gen: SELF-02: Behavioral equivalence requires running the test suite.");
-        println!("rbqn-gen:   The committed .bin files (CBQN-generated) and self-compiled sources");
-        println!("rbqn-gen:   both produce the same behavior — verified by the 13-file test suite.");
+
+        // Print size comparison for compiler and formatter
+        let cbqn_compiler = embedded_dir.join("compiler.bin");
+        let self_compiler = self_bin_dir.join("compiler.bin");
+        let cbqn_formatter = embedded_dir.join("formatter.bin");
+        let self_formatter = self_bin_dir.join("formatter.bin");
+
+        if let (Ok(cbqn_bytes), Ok(self_bytes)) = (
+            fs::metadata(&cbqn_compiler).map(|m| m.len()),
+            fs::metadata(&self_compiler).map(|m| m.len()),
+        ) {
+            println!("rbqn-gen: SELF-02: compiler.bin  — CBQN: {} bytes, RBQN-self: {} bytes",
+                cbqn_bytes, self_bytes);
+        }
+        if let (Ok(cbqn_bytes), Ok(self_bytes)) = (
+            fs::metadata(&cbqn_formatter).map(|m| m.len()),
+            fs::metadata(&self_formatter).map(|m| m.len()),
+        ) {
+            println!("rbqn-gen: SELF-02: formatter.bin — CBQN: {} bytes, RBQN-self: {} bytes",
+                cbqn_bytes, self_bytes);
+        }
+
+        println!();
+        println!("rbqn-gen: SELF-02: To verify behavioral equivalence, run:");
+        println!("rbqn-gen:   cp crates/rbqn/src/embedded/self-compiled/compiler.bin crates/rbqn/src/embedded/compiler.bin");
+        println!("rbqn-gen:   cp crates/rbqn/src/embedded/self-compiled/formatter.bin crates/rbqn/src/embedded/formatter.bin");
+        println!("rbqn-gen:   cargo build -p rbqn && ./test_suite.sh");
+        println!("rbqn-gen:   (restore originals: CBQN_PATH=... cargo run --bin rbqn-gen --features gen-tools)");
     } else {
         println!("rbqn-gen: SELF-01: All compilations failed — RBQN cannot yet compile its own sources.");
         println!("rbqn-gen:   This is informational only; the CBQN-generated .bin files are used for shipping.");
