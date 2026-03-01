@@ -121,9 +121,12 @@ pub fn compiler_output_to_owned(
 ) -> OwnedBytecode {
     let mut iarrs: Vec<Vec<i32>> = Vec::new();
 
-    // bc goes into iarrs[0]
-    iarrs.push(output.bc.clone());
-    let bc_iarrs_idx = 0usize;
+    // NOTE: Do NOT put bc in iarrs[0]. In the CBQN wire format, iarrs[0] is an empty array
+    // used as a shared "no-bodies" placeholder for blocks with no monadic body list.
+    // The bc is stored separately in the wire format (not in iarrs at all).
+    // We pre-populate iarrs[0] = [] to match this convention.
+    iarrs.push(vec![]);  // iarrs[0] = empty (placeholder for zero-length body list)
+    let _empty_iarrs_idx = 0usize;  // index of empty array, used for blocks with no mono bodies
 
     // Helper: find or insert an i32 array into iarrs, return its index
     let find_or_insert_iarr = |data: Vec<i32>, iarrs: &mut Vec<Vec<i32>>| -> usize {
@@ -221,13 +224,13 @@ pub fn compiler_output_to_owned(
             Some(a) => a,
             None => {
                 eprintln!("compiler_output_to_owned: block is not an array");
-                return BlockEntry::IArr(bc_iarrs_idx);
+                return BlockEntry::IArr(0);
             }
         };
 
         if arr.ia() < 3 {
             eprintln!("compiler_output_to_owned: block array has < 3 elements");
-            return BlockEntry::IArr(bc_iarrs_idx);
+            return BlockEntry::IArr(0);
         }
 
         let typ_b = arr.get(0).unwrap_or(B::m_f64(0.0));
@@ -279,14 +282,20 @@ pub fn compiler_output_to_owned(
         }
     }).collect();
 
-    // Convert bodies: each body B is an integer array [bcOffset, varCount, ...]
+    // Convert bodies: each body B is an array [bcOffset, varCount, ...].
+    // The BQN compiler returns bodies as 4-element mixed arrays [bcOffset, varCount, names, depths].
+    // Only elements [0] (bcOffset) and [1] (varCount) are used by compile_all and needed for serialization.
+    // The compile_all source in compiler.rs reads only body_arr.get(0) and body_arr.get(1).
     let bodies: Vec<usize> = output.bodies.iter().map(|&b| {
         let body_ints: Vec<i32> = if let Some(arr) = get_arr(b) {
-            arr.i32_iter().unwrap_or_default()
+            // Extract only bcOffset and varCount (elements 0 and 1)
+            let bc_offset = arr.get(0).ok().and_then(|v| if v.is_f64() { Some(v.o2f() as i32) } else { None }).unwrap_or(0);
+            let var_count = arr.get(1).ok().and_then(|v| if v.is_f64() { Some(v.o2f() as i32) } else { None }).unwrap_or(0);
+            vec![bc_offset, var_count]
         } else if b.is_f64() {
-            vec![b.o2f() as i32]
+            vec![b.o2f() as i32, 0]
         } else {
-            vec![]
+            vec![0, 0]
         };
         find_or_insert_iarr(body_ints, &mut iarrs)
     }).collect();
