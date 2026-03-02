@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 7 of 7 (Code Simplification & CBQN Parity) — IN PROGRESS
-Plan: 1 of 3 in Phase 7 complete (07-01 complete)
-Status: 07-01 complete — zero-warning workspace build, all 1316 tests still pass
-Last activity: 2026-03-02 - Completed 07-01: eliminated all 209 clippy + 39 compiler warnings
+Plan: 2 of 3 in Phase 7 complete (07-01, 07-02 complete)
+Status: 07-02 complete — CBQN parity: box-drawing formatter, clean error messages, •Glyph descriptive strings
+Last activity: 2026-03-02 - Completed 07-02: box-drawing for rank-2+ arrays, •Repr for numeric arrays, clean errors
 
 Progress: [██████████] 100% (Phase 6 complete + Phase 7 started)
 
@@ -45,6 +45,7 @@ Progress: [██████████] 100% (Phase 6 complete + Phase 7 star
 | Phase 06 P02 | 9 | 3 tasks | 11 files |
 | Phase 06 P03 | 45min | 2 tasks | 2 files |
 | Phase 07 P01 | 35min | 2 tasks | 13 files |
+| Phase 07 P02 | 24min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -119,6 +120,8 @@ Progress: [██████████] 100% (Phase 6 complete + Phase 7 star
 
 - [07-01]: `return error::throw(...)` triggers both unreachable_code and diverging_sub_expression simultaneously — drop `return` to fix both
 - [07-01]: Dead code removal (270 lines): deep_pick_one/deep_pick/group_multi_axis_scalar_x/md2d_inverse_reg were fully unreachable
+- [Phase 07]: Native repr function (sys_fn 200) for BQN formatter: m_sys_fn(35) causes infinite recursion because ReprAtom calls FN on numbers; native Rust repr avoids this
+- [Phase 07]: throw_bqn(BqnError) via panic_any preserves error variant through catch_unwind; panic_to_bqn_error() downcasts directly, eliminating Domain error double-prefix
 
 ### Pending Todos
 

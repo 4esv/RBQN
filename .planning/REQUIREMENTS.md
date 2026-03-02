@@ -103,9 +103,9 @@
 - [ ] **SIMP-03**: Code-simplifier agent sweep on largest files (derive.rs, modifiers.rs, structural.rs)
 
 ### PAR: CBQN Output Parity
-- [ ] **PAR-01**: •Fmt/-p produces box-drawing for multi-dim arrays; •Repr correctly formats numeric arrays
-- [ ] **PAR-02**: Error messages have clean format without double-prefix
-- [ ] **PAR-03**: •Glyph returns descriptive string for non-primitive functions
+- [x] **PAR-01**: •Fmt/-p produces box-drawing for multi-dim arrays; •Repr correctly formats numeric arrays
+- [x] **PAR-02**: Error messages have clean format without double-prefix
+- [x] **PAR-03**: •Glyph returns descriptive string for non-primitive functions
 
 ## Future Requirements
 
