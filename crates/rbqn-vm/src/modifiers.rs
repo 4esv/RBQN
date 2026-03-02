@@ -214,37 +214,16 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
 // Helpers
 // ============================================================
 
-/// Convert a Vec<B> of results into a typed array.
-/// If all results are numeric scalars, produces a numeric array (applying squeeze).
-/// If all results are characters, produces a character array.
-/// Otherwise, keeps as Boxed.
+/// Convert a Vec<B> of results into a typed BQN array.
+/// Produces a numeric array (with squeeze), character array, or boxed array as appropriate.
 fn results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
     results_to_arr_fill(results, shape, None)
 }
 
 fn results_to_arr_fill(results: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> B {
-    if results.is_empty() {
-        let mut out = BqnArr::new_vec_b(results);
-        out.shape = shape;
-        out.fill = fill;
-        return crate::vm::tag_arr(out);
-    }
-    if results.iter().all(|b| b.is_f64()) {
-        let vals: Vec<f64> = results.iter().map(|b| b.o2f()).collect();
-        let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
-        out.shape = shape;
-        out.fill = fill;
-        return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
-    }
-    if results.iter().all(|b| b.is_c32()) {
-        let vals: Vec<u32> = results.iter().map(|b| b.0 as u32).collect();
-        let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
-        out.shape = shape;
-        out.fill = fill;
-        return crate::vm::tag_arr(out);
-    }
-    let mut out = BqnArr::new_vec_b(results);
-    out.shape = shape;
+    let mut out = rbqn_core::array::typed_arr_from_b_vec(results, shape, fill);
+    // NOTE: typed_arr_from_b_vec sets default fills (0.0/space) for non-empty arrays.
+    // Restore our explicit fill (may be None) so callers retain control over fill values.
     out.fill = fill;
     crate::vm::tag_arr(out)
 }
@@ -255,58 +234,27 @@ fn results_to_arr_fill(results: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> B
 /// If all results are scalars, produces a simple array.
 /// If all results are arrays of the same shape, flattens and concatenates.
 fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
-    if results.is_empty() {
-        let mut out = BqnArr::new_vec_b(results);
-        out.shape = lead_shape;
-        return crate::vm::tag_arr(out);
-    }
-    // All scalar numbers
-    if results.iter().all(|b| b.is_f64()) {
-        let vals: Vec<f64> = results.iter().map(|b| b.o2f()).collect();
-        let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
-        out.shape = lead_shape;
-        return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
-    }
-    // All scalar characters
-    if results.iter().all(|b| b.is_c32()) {
-        let vals: Vec<u32> = results.iter().map(|b| b.0 as u32).collect();
-        let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
-        out.shape = lead_shape;
-        return crate::vm::tag_arr(out);
+    // Empty or all-scalar cases: delegate to results_to_arr which handles typed dispatch.
+    if results.is_empty() || results.iter().all(|b| !b.is_arr()) {
+        return results_to_arr(results, lead_shape);
     }
     // All arrays with same cell shape → merge into higher-rank
-    if results.iter().all(|b| b.is_arr()) {
-        let arrs: Vec<BqnArr> = results.iter()
-            .filter_map(|b| crate::vm::get_arr(*b))
-            .collect();
-        if arrs.len() == results.len() && !arrs.is_empty() {
-            let cell_shape = &arrs[0].shape;
-            if arrs.iter().all(|a| &a.shape == cell_shape) {
-                let mut merged_shape = lead_shape;
-                merged_shape.extend_from_slice(cell_shape);
-                let total: usize = arrs.iter().map(|a| a.ia()).sum();
-                let mut flat: Vec<B> = Vec::with_capacity(total);
-                for a in &arrs {
-                    for i in 0..a.ia() {
-                        flat.push(a.get(i).unwrap_or(B::SENTINEL));
-                    }
+    let arrs: Vec<BqnArr> = results.iter()
+        .filter_map(|b| crate::vm::get_arr(*b))
+        .collect();
+    if arrs.len() == results.len() && !arrs.is_empty() {
+        let cell_shape = &arrs[0].shape;
+        if arrs.iter().all(|a| &a.shape == cell_shape) {
+            let mut merged_shape = lead_shape;
+            merged_shape.extend_from_slice(cell_shape);
+            let total: usize = arrs.iter().map(|a| a.ia()).sum();
+            let mut flat: Vec<B> = Vec::with_capacity(total);
+            for a in &arrs {
+                for i in 0..a.ia() {
+                    flat.push(a.get(i).unwrap_or(B::SENTINEL));
                 }
-                if flat.iter().all(|b| b.is_f64()) {
-                    let vals: Vec<f64> = flat.iter().map(|b| b.o2f()).collect();
-                    let mut out = rbqn_core::array::BqnArr::new_vec_f64(vals);
-                    out.shape = merged_shape;
-                    return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
-                }
-                if flat.iter().all(|b| b.is_c32()) {
-                    let vals: Vec<u32> = flat.iter().map(|b| b.0 as u32).collect();
-                    let mut out = rbqn_core::array::BqnArr::new_vec_c32(vals);
-                    out.shape = merged_shape;
-                    return crate::vm::tag_arr(out);
-                }
-                let mut out = BqnArr::new_vec_b(flat);
-                out.shape = merged_shape;
-                return crate::vm::tag_arr(out);
             }
+            return results_to_arr(flat, merged_shape);
         }
     }
     // Fallback: boxed array

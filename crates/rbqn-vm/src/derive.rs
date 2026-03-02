@@ -650,7 +650,7 @@ pub fn c1(f: B, x: B) -> B {
                     if let DerivedKind::NativeMd1 { prim_idx } = &md.kind {
                         let x_ia = if x.is_arr() { crate::vm::get_arr(x).map_or(-1i64, |a| a.ia() as i64) } else { -2 };
                         crate::vm::vm_trace_push(format!("c1 NativeMd1 prim={} x={:#x} x_ia={}", prim_idx, x.0, x_ia));
-                        return dispatch_native_md1_c1(*prim_idx, operand, f, x);
+                        return crate::modifiers::native_md1_c1(*prim_idx, operand, f, x);
                     }
                     if md.kind == DerivedKind::Md2PartialL {
                         let derived_fn = m2_d(md.g, md.f, operand);
@@ -680,7 +680,7 @@ pub fn c1(f: B, x: B) -> B {
                         );
                     }
                     if let DerivedKind::NativeMd2 { prim_idx } = &md.kind {
-                        return dispatch_native_md2_c1(*prim_idx, operand_f, operand_g, f, x);
+                        return crate::modifiers::native_md2_c1(*prim_idx, operand_f, operand_g, f, x);
                     }
                 }
                 rbqn_core::error::throw("c1: unhandled md2d dispatch");
@@ -758,24 +758,13 @@ pub fn c1(f: B, x: B) -> B {
             DerivedKind::InvMd1Block => {
                 // 1-modifier block inverse: execute the inverse body of the modifier block.
                 // bl = modifier block (with inv_m_body), d.f = operand function.
-                // Args: [forward_derived, x, SENTINEL, modifier_val, operand]
                 // NOTE: 𝕊 in the inverse body refers to the FORWARD derived (not the inverse).
-                // This allows the inverse body to call the forward function recursively.
                 let bl = d.bl.as_ref().unwrap().clone();
                 let psc = d.sc.as_ref().unwrap().clone();
                 let operand = d.f;
                 let inv_body = bl.inv_m_body.clone().or_else(|| bl.inv_x_body.clone());
                 if let Some(body) = inv_body {
-                    // Reconstruct modifier B value for 𝔽 binding
-                    let modifier_val = {
-                        let tmp_id = store_derived(Derived {
-                            kind: DerivedKind::Md1Block,
-                            f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
-                            bl: Some(bl.clone()), sc: Some(psc.clone()),
-                        });
-                        tagu64(tmp_id << 3, MD1_TAG)
-                    };
-                    // Build the forward derived function (operand modifier) for 𝕊 binding
+                    let modifier_val = make_md1_block_val(&bl, &psc);
                     let forward_derived = m_md1d(modifier_val, operand);
                     crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, operand])
                 } else {
@@ -792,14 +781,7 @@ pub fn c1(f: B, x: B) -> B {
                 let g_operand = d.h;
                 let inv_body = bl.inv_m_body.clone().or_else(|| bl.inv_x_body.clone());
                 if let Some(body) = inv_body {
-                    let modifier_val = {
-                        let tmp_id = store_derived(Derived {
-                            kind: DerivedKind::Md2Block,
-                            f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
-                            bl: Some(bl.clone()), sc: Some(psc.clone()),
-                        });
-                        tagu64(tmp_id << 3, MD2_TAG)
-                    };
+                    let modifier_val = make_md2_block_val(&bl, &psc);
                     let forward_derived = m_md2d(modifier_val, f_operand, g_operand);
                     crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, f_operand, g_operand])
                 } else {
@@ -858,7 +840,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                         );
                     }
                     if let DerivedKind::NativeMd1 { prim_idx } = &md.kind {
-                        return dispatch_native_md1_c2(*prim_idx, operand, f, w, x);
+                        return crate::modifiers::native_md1_c2(*prim_idx, operand, f, w, x);
                     }
                     if md.kind == DerivedKind::Md2PartialL {
                         let derived_fn = m2_d(md.g, md.f, operand);
@@ -893,7 +875,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                         );
                     }
                     if let DerivedKind::NativeMd2 { prim_idx } = &md.kind {
-                        return dispatch_native_md2_c2(*prim_idx, operand_f, operand_g, f, w, x);
+                        return crate::modifiers::native_md2_c2(*prim_idx, operand_f, operand_g, f, w, x);
                     }
                 }
                 rbqn_core::error::throw("c2: unhandled md2d dispatch");
@@ -1001,14 +983,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     .or_else(|| bl.inv_x_body.clone())
                     .or_else(|| bl.inv_m_body.clone());
                 if let Some(body) = inv_body {
-                    let modifier_val = {
-                        let tmp_id = store_derived(Derived {
-                            kind: DerivedKind::Md1Block,
-                            f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
-                            bl: Some(bl.clone()), sc: Some(psc.clone()),
-                        });
-                        tagu64(tmp_id << 3, MD1_TAG)
-                    };
+                    let modifier_val = make_md1_block_val(&bl, &psc);
                     let forward_derived = m_md1d(modifier_val, operand);
                     crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, operand])
                 } else {
@@ -1024,14 +999,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 let g_operand = d.h;
                 let inv_body = bl.inv_x_body.clone().or_else(|| bl.inv_m_body.clone());
                 if let Some(body) = inv_body {
-                    let modifier_val = {
-                        let tmp_id = store_derived(Derived {
-                            kind: DerivedKind::Md2Block,
-                            f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
-                            bl: Some(bl.clone()), sc: Some(psc.clone()),
-                        });
-                        tagu64(tmp_id << 3, MD2_TAG)
-                    };
+                    let modifier_val = make_md2_block_val(&bl, &psc);
                     let forward_derived = m_md2d(modifier_val, f_operand, g_operand);
                     crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, f_operand, g_operand])
                 } else {
@@ -1072,20 +1040,28 @@ fn str_to_b(s: &str) -> B {
     crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
 }
 
-fn dispatch_native_md1_c1(prim_idx: usize, operand: B, self_val: B, x: B) -> B {
-    crate::modifiers::native_md1_c1(prim_idx, operand, self_val, x)
+/// Reconstruct a Md1Block B value from the block and its parent scope.
+/// Used when rebuilding the modifier value for 𝔽 binding in InvMd1Block dispatch.
+#[inline]
+fn make_md1_block_val(bl: &Arc<Block>, psc: &Arc<Scope>) -> B {
+    let tmp_id = store_derived(Derived {
+        kind: DerivedKind::Md1Block,
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: Some(bl.clone()), sc: Some(psc.clone()),
+    });
+    tagu64(tmp_id << 3, MD1_TAG)
 }
 
-fn dispatch_native_md1_c2(prim_idx: usize, operand: B, self_val: B, w: B, x: B) -> B {
-    crate::modifiers::native_md1_c2(prim_idx, operand, self_val, w, x)
-}
-
-fn dispatch_native_md2_c1(prim_idx: usize, operand_f: B, operand_g: B, self_val: B, x: B) -> B {
-    crate::modifiers::native_md2_c1(prim_idx, operand_f, operand_g, self_val, x)
-}
-
-fn dispatch_native_md2_c2(prim_idx: usize, operand_f: B, operand_g: B, self_val: B, w: B, x: B) -> B {
-    crate::modifiers::native_md2_c2(prim_idx, operand_f, operand_g, self_val, w, x)
+/// Reconstruct a Md2Block B value from the block and its parent scope.
+/// Used when rebuilding the modifier value for 𝔽 binding in InvMd2Block dispatch.
+#[inline]
+fn make_md2_block_val(bl: &Arc<Block>, psc: &Arc<Scope>) -> B {
+    let tmp_id = store_derived(Derived {
+        kind: DerivedKind::Md2Block,
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: Some(bl.clone()), sc: Some(psc.clone()),
+    });
+    tagu64(tmp_id << 3, MD2_TAG)
 }
 
 /// Convert a primitive index to a NaN-boxed B value.
@@ -1771,29 +1747,29 @@ fn dispatch_sys_decompose_c1(x: B) -> B {
     }
 }
 
-/// •Glyph: return the glyph character for a primitive, or empty string
-fn dispatch_sys_glyph_c1(x: B) -> B {
-    let prims = rbqn_prim::get_runtime();
-    if x.is_fun() {
+/// Extract the runtime primitive index from a B value (fun/md1/md2).
+/// Returns Some(prim_idx) for native primitives, None for blocks and derived values.
+fn native_prim_idx(x: B) -> Option<usize> {
+    if x.is_fun() || x.is_md1() || x.is_md2() {
         let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
-        let d = get_derived(id);
-        if let DerivedKind::NativeFn { prim_idx } = d.kind
-            && prim_idx < prims.len() {
-                return str_to_b(prims[prim_idx].glyph);
-            }
-    } else if x.is_md1() || x.is_md2() {
-        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
-        let d = get_derived(id);
-        let prim_idx = match d.kind {
+        match get_derived(id).kind {
+            DerivedKind::NativeFn { prim_idx } => Some(prim_idx),
             DerivedKind::NativeMd1 { prim_idx } => Some(prim_idx),
             DerivedKind::NativeMd2 { prim_idx } => Some(prim_idx),
             _ => None,
-        };
-        if let Some(idx) = prim_idx
-            && idx < prims.len() {
-                return str_to_b(prims[idx].glyph);
-            }
+        }
+    } else {
+        None
     }
+}
+
+/// •Glyph: return the glyph character for a primitive, or descriptive string for blocks.
+fn dispatch_sys_glyph_c1(x: B) -> B {
+    let prims = rbqn_prim::get_runtime();
+    if let Some(idx) = native_prim_idx(x)
+        && idx < prims.len() {
+            return str_to_b(prims[idx].glyph);
+        }
     // Non-primitive: return a descriptive string matching CBQN behavior
     let desc = if x.is_fun() {
         "(function block)"
@@ -1887,22 +1863,10 @@ fn native_repr_arr(arr: &rbqn_core::array::BqnArr) -> String {
 /// CBQN: primInd_c1 in sysfn.c
 fn dispatch_sys_primind_c1(x: B) -> B {
     const RT_LEN: i32 = 64;
-    if x.is_fun() {
-        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
-        let d = get_derived(id);
-        if let DerivedKind::NativeFn { prim_idx } = d.kind {
-            return B::m_i32(prim_idx as i32);
-        }
-    } else if x.is_md1() || x.is_md2() {
-        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
-        let d = get_derived(id);
-        match d.kind {
-            DerivedKind::NativeMd1 { prim_idx } => return B::m_i32(prim_idx as i32),
-            DerivedKind::NativeMd2 { prim_idx } => return B::m_i32(prim_idx as i32),
-            _ => {}
-        }
+    match native_prim_idx(x) {
+        Some(idx) => B::m_i32(idx as i32),
+        None => B::m_i32(RT_LEN),
     }
-    B::m_i32(RT_LEN)
 }
 
 // --- System value name resolver ---
