@@ -581,10 +581,11 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
                 let type_fn = m_sys_fn(0);
                 let decompose_fn = m_sys_fn(1);
                 let glyph_fn = m_sys_fn(4);
-                // NOTE: •Repr is not implemented as a system function. Use SENTINEL so the
-                // formatter knows it's unavailable rather than passing •Decompose (sys_idx=1)
-                // which was the old wrong placeholder that confused the formatter.
-                let repr_fn = B::SENTINEL;
+                // NOTE: Pass sys_fn(200) as the native repr function.
+                // sys_fn(200) formats values natively (Rust-level) without going through the
+                // BQN formatter, avoiding infinite recursion. The BQN formatter's repr function
+                // uses this for atomic values (numbers, chars); arrays are formatted recursively.
+                let repr_fn = m_sys_fn(200);
                 let args = tag_arr(BqnArr::from_b_vec(vec![type_fn, decompose_fn, glyph_fn, repr_fn]));
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(fmt_mod, args))) {
                     Ok(fmt_result) => {
