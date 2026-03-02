@@ -149,9 +149,10 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 **Goal:** Zero-warning workspace with structurally simplified code and CBQN-matching output for display, repr, errors, and glyph introspection
 **Depends on:** Phase 6
 **Requirements:** SIMP-01, SIMP-02, SIMP-03, PAR-01, PAR-02, PAR-03
-**Plans:** 3/3 plans complete
+**Plans:** 4 plans (3 complete + 1 gap closure)
 
 Plans:
 - [ ] 07-01-PLAN.md — Clippy auto-fix + manual warning cleanup across all crates (SIMP-01, SIMP-02)
 - [ ] 07-02-PLAN.md — Fix CBQN output parity: •Fmt, •Repr, error format, •Glyph (PAR-01, PAR-02, PAR-03)
 - [ ] 07-03-PLAN.md — Code-simplifier agent sweep on largest files (SIMP-03)
+- [ ] 07-04-PLAN.md — [gap closure] Fix •Glyph for SysFn display names and primitive scalar char return (PAR-03)
