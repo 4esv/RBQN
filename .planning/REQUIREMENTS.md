@@ -98,8 +98,8 @@
 - [x] **SELF-05**: `cargo install rbqn` works with no external dependencies
 
 ### SIMP: Code Simplification
-- [ ] **SIMP-01**: All clippy auto-fixable warnings resolved across workspace (143 warnings)
-- [ ] **SIMP-02**: All remaining clippy and compiler warnings manually resolved (66 warnings)
+- [x] **SIMP-01**: All clippy auto-fixable warnings resolved across workspace (143 warnings)
+- [x] **SIMP-02**: All remaining clippy and compiler warnings manually resolved (66 warnings)
 - [ ] **SIMP-03**: Code-simplifier agent sweep on largest files (derive.rs, modifiers.rs, structural.rs)
 
 ### PAR: CBQN Output Parity

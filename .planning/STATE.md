@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-23)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 6 COMPLETE — all requirements satisfied
+**Current focus:** Phase 7 — Code Simplification & CBQN Parity (in progress)
 
 ## Current Position
 
-Phase: 6 of 6 (Self-Hosting) — COMPLETE
-Plan: 3 of 3 in Phase 6 complete (06-01 + 06-02 + 06-03 complete)
-Status: 06-03 complete — real self-compiled .bin files, SELF-02 behavioral equivalence confirmed
-Last activity: 2026-03-01 - Completed 06-03: self-compiled compiler.bin+formatter.bin pass all 13 tests (SELF-02)
+Phase: 7 of 7 (Code Simplification & CBQN Parity) — IN PROGRESS
+Plan: 1 of 3 in Phase 7 complete (07-01 complete)
+Status: 07-01 complete — zero-warning workspace build, all 1316 tests still pass
+Last activity: 2026-03-02 - Completed 07-01: eliminated all 209 clippy + 39 compiler warnings
 
-Progress: [██████████] 100%
+Progress: [██████████] 100% (Phase 6 complete + Phase 7 started)
 
 ## Performance Metrics
 
@@ -44,6 +44,7 @@ Progress: [██████████] 100%
 | Phase 06 P01 | 6min | 2 tasks | 9 files |
 | Phase 06 P02 | 9 | 3 tasks | 11 files |
 | Phase 06 P03 | 45min | 2 tasks | 2 files |
+| Phase 07 P01 | 35min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -116,6 +117,9 @@ Progress: [██████████] 100%
 - [06-03]: c.bqn wrapping uses {func‿mod1‿mod2←𝕩} (𝕩 arg forces imm=0) — embedded glyph constants cause imm=1 which breaks bootstrap c1(compgen,glyphs)
 - [06-03]: Self-compiled .bin sizes (~half of CBQN) expected — RBQN uses mixed Provide+Runtime obj refs vs CBQN's Runtime-only; same semantics
 
+- [07-01]: `return error::throw(...)` triggers both unreachable_code and diverging_sub_expression simultaneously — drop `return` to fix both
+- [07-01]: Dead code removal (270 lines): deep_pick_one/deep_pick/group_multi_axis_scalar_x/md2d_inverse_reg were fully unreachable
+
 ### Pending Todos
 
 None yet.
@@ -133,8 +137,12 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 4 | Run the bisect script to identify regression points | 2026-02-25 | 01a4147 | [4-run-the-bisect-script-to-identify-regres](./quick/4-run-the-bisect-script-to-identify-regres/) |
 
+### Roadmap Evolution
+
+- Phase 7 added: Code Simplification & CBQN Parity
+
 ## Session Continuity
 
-Last session: 2026-03-01
-Stopped at: Completed 06-03-PLAN.md (self-compiled .bin files with real bytecode, SELF-02 behavioral equivalence confirmed — Phase 6 fully complete)
+Last session: 2026-03-02
+Stopped at: Completed 07-01-PLAN.md (zero-warning workspace, all 1316 tests green — ready for Phase 7 Plans 02 and 03)
 Resume file: None
