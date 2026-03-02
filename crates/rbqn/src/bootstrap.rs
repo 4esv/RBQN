@@ -237,8 +237,9 @@ fn build_objs(
 
 /// Reconstruct the blocks array (a1) from embedded data.
 /// In CBQN format, each block is either:
-///   - A simple `[type, imm, bodyIndex]` integer array
-///   - A `m_blockinfo(info, monadicBodies, dyadicBodies)` = `⟨type, imm, ⟨monadics, dyadics⟩⟩`
+/// - A simple `[type, imm, bodyIndex]` integer array
+/// - A `m_blockinfo(info, monadicBodies, dyadicBodies)` = `⟨type, imm, ⟨monadics, dyadics⟩⟩`
+///
 /// We convert them all to boxed B arrays for compile_all.
 fn build_blocks(emb: &OwnedBytecode) -> Vec<B> {
     let mut result = Vec::with_capacity(emb.blocks.len());
@@ -567,8 +568,6 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
             B::SENTINEL
         }
     };
-
-    let compiler = compiler;
 
     // --- Stage 4: Execute formatter (optional) ---
     let formatter = if !fmt_bin.is_empty() {

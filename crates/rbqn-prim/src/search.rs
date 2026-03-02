@@ -33,16 +33,16 @@ pub fn self_indexOf_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let mut found_class: Option<i32> = None;
         if cell_size == 1 {
             let v = arr.get(i)?;
-            for j in 0..i {
+            for (j, &cls) in class_map.iter().enumerate() {
                 if rbqn_core::compare::deep_equal(v, arr.get(j)?) {
-                    found_class = Some(class_map[j]);
+                    found_class = Some(cls);
                     break;
                 }
             }
         } else {
-            for j in 0..i {
+            for (j, &cls) in class_map.iter().enumerate() {
                 if cells_equal(arr, i, j, cell_size) {
-                    found_class = Some(class_map[j]);
+                    found_class = Some(cls);
                     break;
                 }
             }
@@ -231,8 +231,8 @@ pub fn count_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
     for i in 0..result_ia {
         let x_cell_offset = i * w_cell_size;
         let mut found = w_lead as i32;
-        for j in 0..w_lead {
-            if used[j] { continue; }
+        for (j, used_j) in used.iter_mut().enumerate() {
+            if *used_j { continue; }
             let mut eq = true;
             for k in 0..w_cell_size {
                 let wv = warr.get(j * w_cell_size + k)?;
@@ -243,7 +243,7 @@ pub fn count_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
                 };
                 if !rbqn_core::compare::deep_equal(xv, wv) { eq = false; break; }
             }
-            if eq { found = j as i32; used[j] = true; break; }
+            if eq { found = j as i32; *used_j = true; break; }
         }
         result.push(found);
     }
@@ -430,11 +430,12 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
     let rank = x_rank;
 
     // Result shape: 1+x_dim - w_dim per axis (clamped to 0), using padded w_shape
-    let mut result_shape = Vec::with_capacity(rank);
-    for r in 0..rank {
-        let d = 1isize + xarr.shape[r] as isize - w_shape[r] as isize;
-        result_shape.push(if d < 0 { 0 } else { d as usize });
-    }
+    let result_shape: Vec<usize> = xarr.shape.iter().zip(w_shape.iter())
+        .map(|(&xs, &ws)| {
+            let d = 1isize + xs as isize - ws as isize;
+            if d < 0 { 0 } else { d as usize }
+        })
+        .collect();
     let result_ia: usize = result_shape.iter().product();
 
     if result_ia == 0 {

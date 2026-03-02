@@ -273,53 +273,6 @@ pub fn inv_reg(func: B) -> B {
     c1(reg_fn, func)
 }
 
-/// Native inverse for Md2D (2-modifier derived) values.
-/// Matches CBQN's before_im and after_im in md2.c.
-fn md2d_inverse_reg(d: &Derived) -> Option<B> {
-    // d.g = modifier, d.f = left operand, d.h = right operand
-    let modifier = d.g;
-    if !modifier.is_md2() { return None; }
-
-    let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
-    let md = get_derived(mid);
-
-    match md.kind {
-        DerivedKind::NativeMd2 { prim_idx: 55 } => {
-            // ⊸ (before): (F⊸G)⁻¹ x = F G⁻¹ₓ x (dyadic inverse of G with F as w)
-            // Only when F is a value (not callable) and G is a function.
-            // CBQN: before_im(d,x) = isFun(d->g) && !isCallable(d->f)
-            //       ? TI(d->g, fn_ix)(d->g, d->f, x) : def_m2_im(d, x)
-            let f_operand = d.f;  // left operand of ⊸
-            let g_operand = d.h;  // right operand of ⊸
-            if g_operand.is_fun() && !f_operand.is_fun() && !f_operand.is_md() {
-                // (val⊸G)⁻¹ = val⊸(inv_reg(G))
-                // When called as c1(result, x), ⊸ dispatcher computes:
-                //   c1(val, x) = val (constant), then c2(inv_reg(G), val, x)
-                let g_inv = inv_reg(g_operand);
-                let before_md2 = m_native_md2(55); // ⊸
-                return Some(m_md2d(before_md2, f_operand, g_inv));
-            }
-            None
-        }
-        DerivedKind::NativeMd2 { prim_idx: 56 } => {
-            // ⟜ (after): (F⟜G)⁻¹ x → only when G is a value
-            // CBQN: after_im(d,x) = isFun(d->f) && !isCallable(d->g)
-            //       ? TI(d->f, fn_iw)(d->f, d->g, x) : def_m2_im(d, x)
-            let f_operand = d.f;
-            let g_operand = d.h;
-            if f_operand.is_fun() && !g_operand.is_fun() && !g_operand.is_md() {
-                // (F⟜val)⁻¹ = (inv_swap(F))⟜val
-                // When called as c1(result, x), ⟜ dispatcher computes:
-                //   c1(val, x) = val, then c2(inv_swap(F), x, val) = swap-inverse
-                let f_inv = inv_swap(f_operand);
-                let after_md2 = m_native_md2(56); // ⟜
-                return Some(m_md2d(after_md2, f_inv, g_operand));
-            }
-            None
-        }
-        _ => None,
-    }
-}
 
 /// Look up the swap inverse of a function using the BQN runtime's inverse tables.
 pub fn inv_swap(func: B) -> B {
@@ -1765,7 +1718,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
     }
 }
 
-fn dispatch_sys_group_len_c2(w: B, x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
+fn dispatch_sys_group_len_c2(w: B, _x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
     let arr = xa.unwrap_or_else(|| rbqn_core::error::throw("•GroupLen: 𝕩 must be an array"));
     let indices = arr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
     let n = w.o2i() as usize;
@@ -1778,7 +1731,7 @@ fn dispatch_sys_group_len_c2(w: B, x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
     prim_result_to_b(rbqn_prim::PrimResult::Array(rbqn_core::BqnArr::new_vec_i32(counts)))
 }
 
-fn dispatch_sys_group_ord_c2(w: B, wa: Option<&rbqn_core::BqnArr>, x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
+fn dispatch_sys_group_ord_c2(_w: B, wa: Option<&rbqn_core::BqnArr>, _x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
     let warr = wa.unwrap_or_else(|| rbqn_core::error::throw("•GroupOrd: 𝕨 must be an array"));
     let xarr = xa.unwrap_or_else(|| rbqn_core::error::throw("•GroupOrd: 𝕩 must be an array"));
     let lengths = warr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
@@ -1852,10 +1805,7 @@ fn dispatch_sys_decompose_c1(x: B) -> B {
                 crate::vm::tag_arr(arr)
             }
         }
-    } else if x.is_md1() {
-        let arr = BqnArr::from_b_vec(vec![B::m_i32(0), x]);
-        crate::vm::tag_arr(arr)
-    } else if x.is_md2() {
+    } else if x.is_md1() || x.is_md2() {
         let arr = BqnArr::from_b_vec(vec![B::m_i32(0), x]);
         crate::vm::tag_arr(arr)
     } else {
@@ -2582,7 +2532,7 @@ fn format_b_repr(x: B) -> String {
 /// This is the implementation of •BQN.
 fn dispatch_sys_bqn_eval(src: &str) -> B {
     // Retrieve the global runtime state
-    let (compiler, runtime, formatter) = {
+    let (compiler, runtime, _formatter) = {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
             Some(rt) => (rt.compiler, rt.runtime.clone(), rt.formatter),
@@ -2656,6 +2606,7 @@ fn dispatch_sys_bqn_eval(src: &str) -> B {
 
 /// Wrapper to call rbqn_vm::compiler::compile_all from within derive.rs
 /// (avoids needing to import it directly in the module).
+#[allow(clippy::too_many_arguments)]
 fn rbqn_vm_compile_all(
     bc: &[i32],
     objs: Vec<B>,
@@ -2821,7 +2772,7 @@ fn lgamma_approx(x: f64) -> f64 {
     }
 }
 
-fn math_comb_c1(x: B) -> B {
+fn math_comb_c1(_x: B) -> B {
     // Monadic: C(x, 0) = 1
     B::m_f64(1.0)
 }
@@ -2859,7 +2810,7 @@ fn math_gcd_c2(w: B, x: B) -> B {
     B::m_f64(a as f64)
 }
 
-fn math_lcm_c1(x: B) -> B {
+fn math_lcm_c1(_x: B) -> B {
     // Monadic: lcm(x, 0) = 0
     B::m_f64(0.0)
 }
@@ -3201,7 +3152,7 @@ fn sh_exec_c1(x: B) -> B {
     crate::vm::tag_arr(result)
 }
 
-fn sh_exec_c2(w: B, x: B) -> B {
+fn sh_exec_c2(_w: B, x: B) -> B {
     // w •SH x — w is options (ignored for now), x is command or array of command parts
     if x.is_arr()
         && let Some(arr) = crate::vm::get_arr(x)
@@ -3443,6 +3394,7 @@ fn ns_get_c2(w: B, x: B) -> B {
 
 use std::collections::HashMap as StdHashMap;
 
+#[allow(clippy::type_complexity)]
 static HASHMAP_STORE: std::sync::LazyLock<Mutex<StdHashMap<u64, Mutex<StdHashMap<u64, (B, B)>>>>> =
     std::sync::LazyLock::new(|| Mutex::new(StdHashMap::new()));
 

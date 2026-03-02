@@ -90,14 +90,14 @@ pub fn indices_inverse_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>)
         let w_len = w_arr.ia();
         let mut counts = vec![0i32; x_len];
         let mut wi = 0usize;
-        for xi in 0..x_len {
+        for (xi, count) in counts.iter_mut().enumerate() {
             while wi < w_len {
                 // Count matching elements
                 let w_val = w_arr.get(wi)?;
                 let x_val = x_arr.get(xi)?;
                 // Compare: for the replicate inverse, we need w[wi] == x[xi]
                 if w_val.0 == x_val.0 || (w_val.is_f64() && x_val.is_f64() && w_val.o2f() == x_val.o2f()) {
-                    counts[xi] += 1;
+                    *count += 1;
                     wi += 1;
                 } else {
                     break;

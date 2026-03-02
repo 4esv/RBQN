@@ -8,7 +8,7 @@ use crate::dispatch::PrimResult;
 //   ! x      → throws x directly when x is not a float
 // The ⟨msg, cond⟩ form used in CBQN's compiler is casrt_c2 (dyadic assert during
 // compilation), not user-level !. User-level ! just throws the whole value if not 1.
-pub fn assert_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn assert_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_f64() {
         let v = x.o2f();
         if v == 1.0 {

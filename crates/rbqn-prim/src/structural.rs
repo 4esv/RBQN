@@ -656,7 +656,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
         }
 
-        let trailing_rank = inner_rank.saturating_sub(outer_rank);
+        let _trailing_rank = inner_rank.saturating_sub(outer_rank);
 
         // Compute outer strides
         let outer_strides: Vec<usize> = {
@@ -738,7 +738,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         result_shape.extend_from_slice(&trailing_shape);
 
         let result_ia: usize = result_shape.iter().product();
-        let trailing_size: usize = trailing_shape.iter().product::<usize>().max(1);
+        let _trailing_size: usize = trailing_shape.iter().product::<usize>().max(1);
 
         // Result strides
         let result_strides: Vec<usize> = {
@@ -1733,27 +1733,27 @@ fn windows_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRe
                 rem /= window_shape[a];
             }
             // Source index = out_indices + win_indices for each axis
-            let mut flat_idx = 0usize;
+            let mut _flat_idx = 0usize;
             let mut stride = inner_size;
             for a in (0..n_axes).rev() {
                 let src = out_indices[a] + win_indices[a];
-                flat_idx += src * stride;
+                _flat_idx += src * stride;
                 stride *= arr.shape[a];
             }
             // Actually stride needs to be computed differently
             // Let me recalculate from the beginning
-            let mut src_flat = 0;
+            let mut _src_flat = 0;
             let mut s = 1;
             for a in (0..arr.rank() as usize).rev() {
                 if a < n_axes {
-                    src_flat += (out_indices[a] + win_indices[a]) * s;
+                    _src_flat += (out_indices[a] + win_indices[a]) * s;
                 }
                 s *= arr.shape[a];
             }
             // This approach is getting complex. For inner dimensions, iterate directly.
             for j in 0..inner_size {
                 // Compute flat source index
-                let mut src = j;
+                let mut _src = j;
                 let mut stride = 1;
                 for a in (0..arr.rank() as usize).rev() {
                     if a >= n_axes {
@@ -1761,7 +1761,7 @@ fn windows_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRe
                         // handled by j already
                     } else {
                         let idx = out_indices[a] + win_indices[a];
-                        src += idx * stride * inner_size;
+                        _src += idx * stride * inner_size;
                     }
                     stride *= arr.shape[a];
                 }
@@ -2231,18 +2231,18 @@ fn rotate_along_axis(arr: &BqnArr, axis: usize, rot: i32) -> Result<BqnArr> {
     let shift = ((rot % dim as i32) + dim as i32) as usize % dim;
     let mut result = vec![B::m_i32(0); ia];
 
-    for flat in 0..ia {
+    for (flat, slot) in result.iter_mut().enumerate() {
         // Decompose flat into multi-index, compute source index
         // BQN: result[i] = arr[(i+shift) % dim] along the rotated axis
         let mut rem = flat;
         let mut src_flat = 0;
-        for a in 0..rank {
-            let idx = rem / strides[a];
-            rem %= strides[a];
+        for (a, &stride) in strides.iter().enumerate() {
+            let idx = rem / stride;
+            rem %= stride;
             let src_idx = if a == axis { (idx + shift) % dim } else { idx };
-            src_flat += src_idx * strides[a];
+            src_flat += src_idx * stride;
         }
-        result[flat] = arr.get(src_flat)?;
+        *slot = arr.get(src_flat)?;
     }
 
     Ok(typed_arr(result, arr.shape.clone(), arr.fill))
@@ -2285,20 +2285,17 @@ pub fn transpose_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             old_strides[i] = old_strides[i + 1] * old_shape[i + 1];
         }
         let mut result = vec![B::m_i32(0); ia];
-        for flat in 0..ia {
+        for (flat, slot) in result.iter_mut().enumerate() {
             let mut rem = flat;
             let mut old_flat = 0;
             for new_axis in 0..rank {
-                let mut s = 1;
-                for a in (new_axis + 1)..rank {
-                    s *= new_shape[a];
-                }
+                let s: usize = new_shape[(new_axis + 1)..rank].iter().product();
                 let idx = rem / s;
                 rem %= s;
                 let old_axis = rank - 1 - new_axis;
                 old_flat += idx * old_strides[old_axis];
             }
-            result[flat] = arr.get(old_flat)?;
+            *slot = arr.get(old_flat)?;
         }
         return Ok(PrimResult::Array(typed_arr(result, new_shape, arr.fill)));
     }

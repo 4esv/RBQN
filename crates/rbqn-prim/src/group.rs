@@ -88,10 +88,8 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
     enum DimSpec {
         Scalar {
             target_group: usize,
-            result_size: usize,
         },
         Array {
-            result_size: usize,
             matches: Vec<Vec<usize>>, // matches[g] = flat positions with index g
             elem_shape: Vec<usize>,   // original shape of the element (for expanding flat→multi-dim)
         },
@@ -114,7 +112,7 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
             let target = n as usize;
             let size = target + 1;
             result_shape.push(size);
-            dims.push(DimSpec::Scalar { target_group: target, result_size: size });
+            dims.push(DimSpec::Scalar { target_group: target });
         } else {
             let elem_arr = get_arr(elem)
                 .ok_or_else(|| BqnError::Type(format!("⊔𝕩: element {} must be an integer array", k)))?;
@@ -137,7 +135,7 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
                     matches[g as usize].push(i);
                 }
             }
-            dims.push(DimSpec::Array { result_size, matches, elem_shape: elem_arr.shape.clone() });
+            dims.push(DimSpec::Array { matches, elem_shape: elem_arr.shape.clone() });
         }
     }
 
@@ -177,9 +175,9 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
         // Decode cell multi-index (g₁,...,gₙ)
         let mut group_indices: Vec<usize> = Vec::with_capacity(ndim);
         let mut remaining = cell_flat;
-        for k in 0..ndim {
-            let g = remaining / result_strides[k];
-            remaining %= result_strides[k];
+        for &stride in &result_strides {
+            let g = remaining / stride;
+            remaining %= stride;
             group_indices.push(g);
         }
 
@@ -217,8 +215,8 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
         for elem_flat in 0..cell_total {
             let mut r_per_dim: Vec<usize> = Vec::with_capacity(ndim);
             let mut rem = elem_flat;
-            for k in 0..ndim {
-                let stride = if k < ndim - 1 { cell_strides[k] } else { 1 };
+            for (k, &cs) in cell_strides.iter().enumerate() {
+                let stride = if k < ndim - 1 { cs } else { 1 };
                 let r = if stride > 0 { rem / stride } else { 0 };
                 rem %= stride.max(1);
                 r_per_dim.push(r);
@@ -345,7 +343,7 @@ fn group_scalar_w(n: usize, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 }
 
 /// Rank-1 w: standard dyadic group of major cells.
-fn group_rank1_w(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+fn group_rank1_w(warr: &BqnArr, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let xarr = if let Some(a) = xa {
         a
     } else {
@@ -422,7 +420,7 @@ fn group_rank1_w(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult>
 
 /// Rank-k (k>1) simple w: w's shape must be a prefix of x's shape.
 /// Treat as ⥊w ⊔ (x reshaped to flatten leading k dims).
-fn group_high_rank_w(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+fn group_high_rank_w(warr: &BqnArr, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⊔𝕩: 𝕩 must be an array".into()))?;
     let w_rank = warr.rank() as usize;
     let x_rank = xarr.rank() as usize;
@@ -447,7 +445,7 @@ fn group_high_rank_w(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRes
     // NOTE: Create a flattened rank-1 view of w (as indices)
     // and treat x with its leading w_rank dims flattened.
     let flat_indices = warr.i32_iter()?;
-    let leading_count: usize = warr.shape.iter().product();
+    let _leading_count: usize = warr.shape.iter().product();
     let trailing_shape = xarr.shape[w_rank..].to_vec();
     let cell_size: usize = trailing_shape.iter().product::<usize>().max(1);
 
@@ -615,7 +613,6 @@ fn group_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
 
     // Build per-dimension specs
     struct DimSpec {
-        result_size: usize,
         matches: Vec<Vec<usize>>,  // matches[g] = positions for group g
     }
 
@@ -637,7 +634,7 @@ fn group_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
                 let mut matches: Vec<Vec<usize>> = vec![vec![]; result_size];
                 matches[n_u] = vec![0]; // single "position" placeholder
                 result_shape.push(result_size);
-                dims.push(DimSpec { result_size, matches });
+                dims.push(DimSpec { matches });
             }
             WElem::Array(indices) => {
                 let xa_k = xa_idx.unwrap();
@@ -674,7 +671,7 @@ fn group_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
                         matches[g as usize].push(j);
                     }
                 }
-                dims.push(DimSpec { result_size, matches });
+                dims.push(DimSpec { matches });
             }
         }
     }
@@ -705,9 +702,9 @@ fn group_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
         // Decode group multi-index
         let mut group_idxs: Vec<usize> = Vec::with_capacity(n_dims);
         let mut rem = cell_flat;
-        for k in 0..n_dims {
-            let g = rem / result_strides[k];
-            rem %= result_strides[k];
+        for &stride in &result_strides {
+            let g = rem / stride;
+            rem %= stride;
             group_idxs.push(g);
         }
 
@@ -759,80 +756,6 @@ fn group_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
     Ok(PrimResult::Array(out))
 }
 
-/// Handle multi-axis group when x is a scalar (rank 0).
-/// w elements are scalars specifying group counts.
-/// The single x element goes to cell (n₀, n₁, ...) where nₖ is the scalar for axis k.
-fn group_multi_axis_scalar_x(warr: &BqnArr, x: B) -> Result<PrimResult> {
-    let n_axes = warr.ia();
-    let mut result_shape: Vec<usize> = Vec::with_capacity(n_axes);
-    let mut target_group: Vec<usize> = Vec::with_capacity(n_axes);
-
-    for a in 0..n_axes {
-        let w_elem = warr.get(a)?;
-        if w_elem.is_f64() {
-            let n = w_elem.to_i32().map_err(|_| BqnError::Domain(format!(
-                "𝕨⊔𝕩: axis {} w element must be an integer", a
-            )))?;
-            if n < 0 {
-                return Err(BqnError::Domain(format!(
-                    "𝕨⊔𝕩: scalar w for axis {} must be ≥ 0, got {}", a, n
-                )));
-            }
-            result_shape.push(n as usize + 1);
-            target_group.push(n as usize);
-        } else {
-            // For array w element with scalar x: not well-defined without x dims
-            // Treat as scalar n = max of the index array
-            let w_arr = get_arr(w_elem)
-                .ok_or_else(|| BqnError::Type(format!("𝕨⊔𝕩: axis {} w must be integer", a)))?;
-            let indices = w_arr.i32_iter()?;
-            let max_idx = indices.iter().copied().max().unwrap_or(-1);
-            let result_size = (max_idx + 1).max(0) as usize;
-            result_shape.push(result_size);
-            // No matching position for scalar x with non-scalar w — group stays empty
-            target_group.push(usize::MAX); // sentinel for "no match"
-        }
-    }
-
-    let total_cells: usize = result_shape.iter().product();
-    let result_strides: Vec<usize> = {
-        let mut s = vec![1usize; n_axes];
-        for k in (0..n_axes.saturating_sub(1)).rev() {
-            s[k] = s[k + 1] * result_shape[k + 1];
-        }
-        s
-    };
-
-    // Compute flat index of target cell
-    let target_flat: usize = target_group.iter().enumerate()
-        .map(|(k, &g)| if g == usize::MAX { usize::MAX } else { g * result_strides[k] })
-        .fold(0usize, |acc, v| if v == usize::MAX { usize::MAX } else { acc + v });
-
-    let empty_cell_shape: Vec<usize> = {
-        let s = vec![0usize; n_axes];
-        s
-    };
-    let full_cell_shape: Vec<usize> = vec![1usize; n_axes];
-
-    let mut result: Vec<B> = Vec::with_capacity(total_cells);
-    for flat in 0..total_cells {
-        if flat == target_flat && target_flat != usize::MAX {
-            // This cell contains x
-            let cell = array::typed_arr_from_b_vec(vec![x], full_cell_shape.clone(), None);
-            result.push(tag_arr(cell));
-        } else {
-            let cell = array::typed_arr_from_b_vec(vec![], empty_cell_shape.clone(), None);
-            result.push(tag_arr(cell));
-        }
-    }
-
-    let group_fill_arr = array::typed_arr_from_b_vec(vec![], empty_cell_shape, None);
-    let group_fill = rbqn_core::tag_arr(group_fill_arr);
-    let mut out = BqnArr::new_vec_b(result);
-    out.shape = result_shape;
-    out.fill = Some(group_fill);
-    Ok(PrimResult::Array(out))
-}
 
 /// Enumerate over the outer product of slices, calling f with each combination.
 /// Each combination is a Vec<usize> with one position from each slice.

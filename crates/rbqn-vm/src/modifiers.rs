@@ -765,7 +765,7 @@ fn insert_c2(f: B, w: B, x: B) -> B {
 
 fn scan_c1(f: B, x: B) -> B {
     if x.is_atom() {
-        return rbqn_core::error::throw("`: 𝕩 must be an array");
+        rbqn_core::error::throw("`: 𝕩 must be an array");
     }
     let arr = arr_of(x);
     let rank = arr.rank();
@@ -821,7 +821,7 @@ fn scan_c1(f: B, x: B) -> B {
 
 fn scan_c2(f: B, w: B, x: B) -> B {
     if x.is_atom() {
-        return rbqn_core::error::throw("𝕨F`𝕩: 𝕩 must be an array");
+        rbqn_core::error::throw("𝕨F`𝕩: 𝕩 must be an array");
     }
     let arr = arr_of(x);
     let rank = arr.rank();
@@ -852,7 +852,7 @@ fn scan_c2(f: B, w: B, x: B) -> B {
     if w.is_arr() {
         let warr = arr_of(w);
         if warr.shape != cell_shape {
-            return rbqn_core::error::throw(format!(
+            rbqn_core::error::throw(format!(
                 "𝕨F`𝕩: Shape of 𝕨 must match the cell of 𝕩 ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
                 warr.shape, arr.shape
             ));
@@ -879,7 +879,7 @@ fn scan_c2(f: B, w: B, x: B) -> B {
 /// result[0] = x[0], result[i] = x[i] F⁼ x[i-1]  (or x[i] F⁼ cell[i-1] for rank>1)
 pub fn scan_inv_c1(f: B, x: B) -> B {
     if x.is_atom() {
-        return rbqn_core::error::throw("F`⁼𝕩: 𝕩 must be an array");
+        rbqn_core::error::throw("F`⁼𝕩: 𝕩 must be an array");
     }
     let arr = arr_of(x);
     let rank = arr.rank();
@@ -928,7 +928,7 @@ pub fn scan_inv_c1(f: B, x: B) -> B {
 /// result[0] = x[0] F⁼ w,  result[i] = x[i] F⁼ x[i-1]
 pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
     if x.is_atom() {
-        return rbqn_core::error::throw("𝕨F`⁼𝕩: 𝕩 must be an array");
+        rbqn_core::error::throw("𝕨F`⁼𝕩: 𝕩 must be an array");
     }
     let arr = arr_of(x);
     let rank = arr.rank();
@@ -958,7 +958,7 @@ pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
     if w.is_arr() {
         let warr = arr_of(w);
         if warr.shape != cell_shape {
-            return rbqn_core::error::throw(format!(
+            rbqn_core::error::throw(format!(
                 "𝕨F`⁼𝕩: Shape of 𝕨 must match the cell of 𝕩 ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
                 warr.shape, arr.shape
             ));

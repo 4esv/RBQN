@@ -80,7 +80,7 @@ pub enum Op {
 impl Op {
     pub fn from_u32(v: u32) -> Option<Op> {
         if v < Op::BC_SIZE as u32 {
-            Some(unsafe { std::mem::transmute(v) })
+            Some(unsafe { std::mem::transmute::<u32, Op>(v) })
         } else {
             None
         }
