@@ -89,11 +89,7 @@ fn pervasive_boxed_scalar_arr(
         let r = pervasive_dyad(w_eff, w_eff_arr_opt.as_ref(), xi, xi_arr.as_ref(), scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
-    let result_fill = if !results.is_empty() {
-        Some(crate::structural::prototype_of(results[0]))
-    } else {
-        xa_arr.fill
-    };
+    let result_fill = pervasive_fill(&results, xa_arr.fill);
     let out = array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), result_fill);
     Ok(PrimResult::Array(out))
 }
@@ -119,11 +115,7 @@ fn pervasive_boxed_arr_scalar(
                 let r = pervasive_dyad(wi, wi_arr.as_ref(), x_content, x_content_arr.as_ref(), scalar_fn, name)?;
                 results.push(prim_result_to_b(r));
             }
-            let result_fill = if !results.is_empty() {
-                Some(crate::structural::prototype_of(results[0]))
-            } else {
-                wa_arr.fill
-            };
+            let result_fill = pervasive_fill(&results, wa_arr.fill);
             let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
             return Ok(PrimResult::Array(out));
         }
@@ -135,11 +127,7 @@ fn pervasive_boxed_arr_scalar(
         let r = pervasive_dyad(wi, wi_arr.as_ref(), x, None, scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
-    let result_fill = if !results.is_empty() {
-        Some(crate::structural::prototype_of(results[0]))
-    } else {
-        wa_arr.fill
-    };
+    let result_fill = pervasive_fill(&results, wa_arr.fill);
     let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
     Ok(PrimResult::Array(out))
 }
@@ -168,11 +156,7 @@ fn pervasive_boxed_arr_arr(
     }
     // NOTE: Compute fill from result elements (not wa_arr.fill) since the result
     // may have different structure than either input (e.g., scalar+array → array).
-    let result_fill = if !results.is_empty() {
-        Some(crate::structural::prototype_of(results[0]))
-    } else {
-        wa_arr.fill
-    };
+    let result_fill = pervasive_fill(&results, wa_arr.fill);
     let out = array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
     Ok(PrimResult::Array(out))
 }
@@ -181,6 +165,16 @@ fn prim_result_to_b(r: PrimResult) -> B {
     match r {
         PrimResult::Scalar(b) => b,
         PrimResult::Array(a) => tag_arr(a),
+    }
+}
+
+/// Compute fill for a pervasive result: prototype of first element, or fallback fill.
+#[inline]
+fn pervasive_fill(results: &[B], fallback: Option<B>) -> Option<B> {
+    if !results.is_empty() {
+        Some(crate::structural::prototype_of(results[0]))
+    } else {
+        fallback
     }
 }
 

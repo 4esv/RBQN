@@ -36,6 +36,27 @@ fn typed_arr(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
     rbqn_core::array::typed_arr_from_b_vec(elems, shape, fill)
 }
 
+/// Return b as PrimResult::Array (if arr) or PrimResult::Scalar (if atom).
+/// Shared by identity_c1, ltack_c2, rtack_c2 and similar pass-through functions.
+#[inline]
+fn b_to_prim(b: B, ba: Option<&BqnArr>) -> PrimResult {
+    match ba {
+        Some(arr) => PrimResult::Array(arr.clone()),
+        None => PrimResult::Scalar(b),
+    }
+}
+
+/// Wrap a B value in a rank-0 boxed array (unit enclosure).
+/// Used everywhere structural ops need to wrap a scalar in ⟨⟩ shape.
+#[inline]
+fn enclose_scalar(x: B) -> BqnArr {
+    BqnArr {
+        shape: vec![],
+        data: ArrData::Boxed(vec![x]),
+        fill: Some(prototype_of(x)),
+    }
+}
+
 /// Compute major cell size: product of all trailing axis sizes, minimum 1.
 /// For a rank-n array with shape [d0, d1, ..., dn-1]:
 ///   cell_size(&shape[1..]) = d1 * d2 * ... * dn-1, or 1 if rank≤1.
@@ -50,6 +71,19 @@ fn cell_size(shape: &[usize]) -> usize {
 #[inline]
 fn leading_dim(arr: &BqnArr) -> usize {
     if arr.shape.is_empty() { 1 } else { arr.shape[0] }
+}
+
+/// Compute C-order (row-major) strides for a shape.
+/// strides[i] = product of shape[i+1..]. Last stride is always 1.
+/// For rank-0 (empty shape), returns an empty Vec.
+#[inline]
+fn strides_from_shape(shape: &[usize]) -> Vec<usize> {
+    let n = shape.len();
+    let mut s = vec![1usize; n];
+    for k in (0..n.saturating_sub(1)).rev() {
+        s[k] = s[k + 1] * shape[k + 1];
+    }
+    s
 }
 
 // NOTE: Compute the prototype (fill element) of a BQN value.
@@ -204,11 +238,7 @@ pub fn depth_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
 // < monad: enclose
 pub fn enclose_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
-    Ok(PrimResult::Array(BqnArr {
-        shape: vec![],
-        data: ArrData::Boxed(vec![x]),
-        fill: Some(prototype_of(x)),
-    }))
+    Ok(PrimResult::Array(enclose_scalar(x)))
 }
 
 // > monad: merge
@@ -379,24 +409,15 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
 // ⊣ monad/dyad: identity / left
 pub fn identity_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
-    match xa {
-        Some(arr) => Ok(PrimResult::Array(arr.clone())),
-        None => Ok(PrimResult::Scalar(x)),
-    }
+    Ok(b_to_prim(x, xa))
 }
 
 pub fn ltack_c2(w: B, wa: Option<&BqnArr>, _x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
-    match wa {
-        Some(arr) => Ok(PrimResult::Array(arr.clone())),
-        None => Ok(PrimResult::Scalar(w)),
-    }
+    Ok(b_to_prim(w, wa))
 }
 
 pub fn rtack_c2(_w: B, _wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
-    match xa {
-        Some(arr) => Ok(PrimResult::Array(arr.clone())),
-        None => Ok(PrimResult::Scalar(x)),
-    }
+    Ok(b_to_prim(x, xa))
 }
 
 // ⥊ monad: deshape (flatten to list)
@@ -675,13 +696,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let _trailing_rank = inner_rank.saturating_sub(outer_rank);
 
         // Compute outer strides
-        let outer_strides: Vec<usize> = {
-            let mut s = vec![1usize; outer_rank];
-            for k in (0..outer_rank.saturating_sub(1)).rev() {
-                s[k] = s[k + 1] * outer_shape[k + 1];
-            }
-            s
-        };
+        let outer_strides = strides_from_shape(&outer_shape);
 
         // For each outer axis k and each position p along that axis:
         // axis_sizes[k][p] = inner_shape[k] for all elements at outer position iₖ = p.
@@ -757,14 +772,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let _trailing_size: usize = trailing_shape.iter().product::<usize>().max(1);
 
         // Result strides
-        let result_strides: Vec<usize> = {
-            let n = result_shape.len();
-            let mut s = vec![1usize; n];
-            for k in (0..n.saturating_sub(1)).rev() {
-                s[k] = s[k + 1] * result_shape[k + 1];
-            }
-            s
-        };
+        let result_strides = strides_from_shape(&result_shape);
 
         let mut result: Vec<B> = vec![B::SENTINEL; result_ia];
 
@@ -804,14 +812,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             }
 
             // Inner strides
-            let inner_strides: Vec<usize> = {
-                let n = inner_shape.len();
-                let mut s = vec![1usize; n];
-                for k in (0..n.saturating_sub(1)).rev() {
-                    s[k] = s[k + 1] * inner_shape[k + 1];
-                }
-                s
-            };
+            let inner_strides = strides_from_shape(inner_shape);
 
             for inner_flat in 0..inner_ia {
                 let v = inner_arr.get(inner_flat)?;
@@ -1317,22 +1318,11 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
     let axes = warr.i32_iter()?;
     if axes.is_empty() {
         // NOTE: ⟨⟩↑x = <x (rank-0 enclosed, depth 1), regardless of x's type.
-        if x.is_atom() {
-            return Ok(PrimResult::Array(BqnArr {
-                shape: vec![],
-                data: ArrData::Boxed(vec![x]),
-                fill: Some(prototype_of(x)),
-            }));
-        }
         if let Some(arr) = xa {
             return Ok(PrimResult::Array(arr.clone()));
         }
-        // x is a function or other non-array: wrap in rank-0.
-        return Ok(PrimResult::Array(BqnArr {
-            shape: vec![],
-            data: ArrData::Boxed(vec![x]),
-            fill: Some(prototype_of(x)),
-        }));
+        // x is atom or non-array: wrap in rank-0 enclose.
+        return Ok(PrimResult::Array(enclose_scalar(x)));
     }
     // Start with x, apply take along each axis
     // NOTE: for atom x, treat as rank-n array with shape [1,1,...,1] containing x
@@ -1459,12 +1449,7 @@ pub fn drop_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
     if xa.is_none() {
         // x is atom (scalar or function): treat as rank-0 enclosed.
         // Any drop on rank-0 returns rank-0.
-        let enclosed = BqnArr {
-            shape: vec![],
-            data: ArrData::Boxed(vec![_x]),
-            fill: Some(prototype_of(_x)),
-        };
-        return Ok(PrimResult::Array(enclosed));
+        return Ok(PrimResult::Array(enclose_scalar(_x)));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?;
 
@@ -1519,11 +1504,7 @@ fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
             return Ok(PrimResult::Array(arr.clone()));
         }
         // x is atom: return rank-0 enclosed atom.
-        return Ok(PrimResult::Array(BqnArr {
-            shape: vec![],
-            data: ArrData::Boxed(vec![x]),
-            fill: Some(prototype_of(x)),
-        }));
+        return Ok(PrimResult::Array(enclose_scalar(x)));
     }
     // NOTE: when x is a scalar atom, treat as rank-n array with all dims = 1
     // (where n = len(axes)), containing that scalar.
@@ -2231,17 +2212,12 @@ pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
 
 /// Rotate arr along the given axis by rot positions.
 fn rotate_along_axis(arr: &BqnArr, axis: usize, rot: i32) -> Result<BqnArr> {
-    let rank = arr.rank() as usize;
     let dim = arr.shape[axis];
     if dim == 0 {
         return Ok(arr.clone());
     }
 
-    // Compute strides
-    let mut strides = vec![1usize; rank];
-    for i in (0..rank - 1).rev() {
-        strides[i] = strides[i + 1] * arr.shape[i + 1];
-    }
+    let strides = strides_from_shape(&arr.shape);
 
     let ia = arr.ia();
     let shift = ((rot % dim as i32) + dim as i32) as usize % dim;
