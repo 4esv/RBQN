@@ -332,16 +332,15 @@ fn normalize_cell_result(result: B, cell_shape: &[usize], cell_size: usize) -> B
     // If result matches expected cell shape, nothing to do
     if result.is_arr() {
         let rarr = crate::vm::get_arr(result);
-        if let Some(a) = rarr {
-            if a.shape == cell_shape {
+        if let Some(a) = rarr
+            && a.shape == cell_shape {
                 return result;
             }
-        }
         return result;
     }
     // Result is a scalar — replicate it to fill cell_shape
     if result.is_f64() || result.is_c32() || result.is_atom() {
-        let vals: Vec<B> = std::iter::repeat(result).take(cell_size).collect();
+        let vals: Vec<B> = std::iter::repeat_n(result, cell_size).collect();
         if result.is_f64() {
             let fvals: Vec<f64> = vals.iter().map(|b| b.o2f()).collect();
             let mut out = rbqn_core::array::BqnArr::new_vec_f64(fvals);
@@ -371,7 +370,7 @@ fn extract_cell(arr: &BqnArr, cell_idx: usize, cell_size: usize, cell_shape: &[u
     let start = cell_idx * cell_size;
     let data = match &arr.data {
         ArrData::Bit(v) => {
-            let nwords = (cell_size + 63) / 64;
+            let nwords = cell_size.div_ceil(64);
             let mut bits = vec![0u64; nwords];
             for i in 0..cell_size {
                 let src = start + i;
@@ -637,13 +636,11 @@ fn fold_c1(f: B, x: B) -> B {
         );
     }
     // GPU dispatch for large rank-1 numeric arrays with supported ops
-    if arr.rank() == 1 {
-        if let Some(hook) = GPU_FOLD_HOOK.get() {
-            if let Some(result) = hook(f, &arr) {
+    if arr.rank() == 1
+        && let Some(hook) = GPU_FOLD_HOOK.get()
+            && let Some(result) = hook(f, &arr) {
                 return result;
             }
-        }
-    }
     let mut acc = get_elem(&arr, n - 1);
     for i in (0..n - 1).rev() {
         acc = c2(f, get_elem(&arr, i), acc);
@@ -785,11 +782,10 @@ fn scan_c1(f: B, x: B) -> B {
     }
     if rank == 1 {
         // GPU dispatch for large rank-1 numeric arrays with supported ops
-        if let Some(hook) = GPU_SCAN_HOOK.get() {
-            if let Some(result) = hook(f, &arr) {
+        if let Some(hook) = GPU_SCAN_HOOK.get()
+            && let Some(result) = hook(f, &arr) {
                 return result;
             }
-        }
         // Rank-1: scan over individual elements
         let n = arr.ia();
         let mut results = Vec::with_capacity(n);
@@ -993,12 +989,11 @@ fn cells_c1(f: B, x: B) -> B {
         if result.is_arr() {
             // Already an array — wrap in rank-0
             let inner = rbqn_core::get_arr(result);
-            if let Some(arr) = inner {
-                if arr.shape.is_empty() {
+            if let Some(arr) = inner
+                && arr.shape.is_empty() {
                     // Already rank-0 — return as-is
                     return result;
                 }
-            }
             return crate::vm::tag_arr(BqnArr {
                 shape: vec![],
                 data: ArrData::Boxed(vec![result]),
@@ -1281,15 +1276,14 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
                 if g_mod.is_md2() {
                     let mid = (g_mod.0 & 0xFFFFFFFFFFFF) >> 3;
                     let md = crate::derive::get_derived(mid);
-                    if let crate::derive::DerivedKind::NativeMd2 { prim_idx: 60 } = md.kind {
-                        if g_lop.is_fun() {
+                    if let crate::derive::DerivedKind::NativeMd2 { prim_idx: 60 } = md.kind
+                        && g_lop.is_fun() {
                             let lid = (g_lop.0 & 0xFFFFFFFFFFFF) >> 3;
                             let ld = crate::derive::get_derived(lid);
                             if let crate::derive::DerivedKind::NativeFn { prim_idx: 36 } = ld.kind {
                                 return Some(rank_select_under(f, fork_f, g_rsp, x));
                             }
                         }
-                    }
                 }
             }
         }
@@ -1329,9 +1323,9 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
                             let n = if inner_f.is_f64() {
                                 Some(inner_f.o2f().abs() as usize)
                             } else { None };
-                            if let Some(n_val) = n {
-                                if x.is_arr() {
-                                    if let Some(xa) = crate::vm::get_arr(x) {
+                            if let Some(n_val) = n
+                                && x.is_arr()
+                                    && let Some(xa) = crate::vm::get_arr(x) {
                                         let len = if xa.shape.is_empty() { 1 } else { xa.shape[0] };
                                         if n_val > len {
                                             rbqn_core::error::throw(format!(
@@ -1340,8 +1334,6 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
                                             ));
                                         }
                                     }
-                                }
-                            }
                         }
                     }
                 }
@@ -1478,10 +1470,8 @@ fn take_under(f: B, k: B, x: B, drop: bool) -> B {
             if drop {
                 if ki >= 0.0 { take_starts.push(abs_ki); take_lens.push(si - abs_ki); }
                 else { take_starts.push(0); take_lens.push(si - abs_ki); }
-            } else {
-                if ki >= 0.0 { take_starts.push(0); take_lens.push(abs_ki); }
-                else { take_starts.push(si - abs_ki); take_lens.push(abs_ki); }
-            }
+            } else if ki >= 0.0 { take_starts.push(0); take_lens.push(abs_ki); }
+            else { take_starts.push(si - abs_ki); take_lens.push(abs_ki); }
         }
         let selected = if drop { c2(drop_fn, k, x) } else { c2(take_fn, k, x) };
         let modified = c1(f, selected);
@@ -1754,15 +1744,12 @@ fn b_to_index(v: B) -> usize {
         return u;
     }
     // Try unwrapping a single-element array
-    if let Some(arr) = crate::vm::get_arr(v) {
-        if arr.ia() == 1 {
-            if let Ok(elem) = arr.get(0) {
-                if let Ok(u) = elem.to_usz() {
+    if let Some(arr) = crate::vm::get_arr(v)
+        && arr.ia() == 1
+            && let Ok(elem) = arr.get(0)
+                && let Ok(u) = elem.to_usz() {
                     return u;
                 }
-            }
-        }
-    }
     rbqn_core::error::throw(format!("◶: Expected number index, got {:#x}", v.0))
 }
 

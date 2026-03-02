@@ -88,14 +88,14 @@ impl BufferPool {
     pub fn acquire(&mut self, element_type: ElementKind, len: usize) -> GpuBuffer {
         let size = (len as u64) * element_type.byte_size();
         let idx = self.free_buffers.iter().position(|(s, _)| *s >= size);
-        let buffer = match idx {
+        
+        match idx {
             Some(i) => {
                 let (buf_size, buffer) = self.free_buffers.swap_remove(i);
                 GpuBuffer { buffer, size: buf_size, element_type, len }
             }
             None => GpuBuffer::storage(&self.device, element_type, len),
-        };
-        buffer
+        }
     }
 
     pub fn release(&mut self, buf: GpuBuffer) {

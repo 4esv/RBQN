@@ -173,15 +173,14 @@ pub fn inv_reg(func: B) -> B {
         let d = get_derived(id);
 
         // Fast path: native primitive inverse
-        if let DerivedKind::NativeFn { prim_idx } = d.kind {
-            if let Some(inv) = native_inverse_reg(prim_idx) {
+        if let DerivedKind::NativeFn { prim_idx } = d.kind
+            && let Some(inv) = native_inverse_reg(prim_idx) {
                 return inv;
             }
-        }
 
         // Block inverse: check for inverse header bodies (𝕊⁼: or 𝕊⁼𝕨:)
-        if d.kind == DerivedKind::FunBlock {
-            if let Some(ref bl) = d.bl {
+        if d.kind == DerivedKind::FunBlock
+            && let Some(ref bl) = d.bl {
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[INV_REG FunBlock] inv_m={} inv_x={} inv_w={}",
                         bl.inv_m_body.is_some(), bl.inv_x_body.is_some(), bl.inv_w_body.is_some());
@@ -191,7 +190,6 @@ pub fn inv_reg(func: B) -> B {
                     return m_inv_block(bl.clone(), psc);
                 }
             }
-        }
 
         // Md1D modifier block inverse: check if the modifier has inverse bodies (𝔽_𝕣⁼𝕩: etc.)
         if d.kind == DerivedKind::Md1D {
@@ -204,20 +202,17 @@ pub fn inv_reg(func: B) -> B {
                 // NOTE: Don't intercept natively — native_inverse_swap only handles monadic.
                 // For dyadic (w F˜⁼ x), the BQN runtime handles both cases correctly.
                 // Only intercept for block functions with explicit inverse bodies.
-                if md.kind == (DerivedKind::NativeMd1 { prim_idx: 45 }) {
-                    if d.f.is_fun() {
+                if md.kind == (DerivedKind::NativeMd1 { prim_idx: 45 })
+                    && d.f.is_fun() {
                         let fid = (d.f.0 & 0xFFFFFFFFFFFF) >> 3;
                         let fd = get_derived(fid);
-                        if fd.kind == DerivedKind::FunBlock {
-                            if let Some(ref bl) = fd.bl {
-                                if bl.inv_w_body.is_some() || bl.inv_x_body.is_some() {
+                        if fd.kind == DerivedKind::FunBlock
+                            && let Some(ref bl) = fd.bl
+                                && (bl.inv_w_body.is_some() || bl.inv_x_body.is_some()) {
                                     return inv_swap(d.f);
                                 }
-                            }
-                        }
                     }
                     // Fall through to BQN runtime for all native F˜⁼
-                }
 
                 // ˘ (prim 46): only handle <˘⁼ = >˘ (enclose-cells inverse is merge-cells).
                 // General F˘⁼ is NOT valid — fall through to BQN runtime which will error.
@@ -241,14 +236,12 @@ pub fn inv_reg(func: B) -> B {
                     return m_scan_inv(d.f);
                 }
 
-                if md.kind == DerivedKind::Md1Block {
-                    if let Some(ref bl) = md.bl {
-                        if bl.inv_m_body.is_some() || bl.inv_x_body.is_some() {
+                if md.kind == DerivedKind::Md1Block
+                    && let Some(ref bl) = md.bl
+                        && (bl.inv_m_body.is_some() || bl.inv_x_body.is_some()) {
                             let psc = md.sc.clone().unwrap();
                             return m_inv_md1_block(bl.clone(), psc, d.f);
                         }
-                    }
-                }
             }
         }
 
@@ -258,14 +251,12 @@ pub fn inv_reg(func: B) -> B {
             if modifier.is_md2() {
                 let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                 let md = get_derived(mid);
-                if md.kind == DerivedKind::Md2Block {
-                    if let Some(ref bl) = md.bl {
-                        if bl.inv_m_body.is_some() || bl.inv_x_body.is_some() {
+                if md.kind == DerivedKind::Md2Block
+                    && let Some(ref bl) = md.bl
+                        && (bl.inv_m_body.is_some() || bl.inv_x_body.is_some()) {
                             let psc = md.sc.clone().unwrap();
                             return m_inv_md2_block(bl.clone(), psc, d.f, d.h);
                         }
-                    }
-                }
             }
         }
 
@@ -336,22 +327,19 @@ pub fn inv_swap(func: B) -> B {
     if func.is_fun() {
         let id = (func.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
-        if let DerivedKind::NativeFn { prim_idx } = d.kind {
-            if let Some(inv) = native_inverse_swap(prim_idx) {
+        if let DerivedKind::NativeFn { prim_idx } = d.kind
+            && let Some(inv) = native_inverse_swap(prim_idx) {
                 return inv;
             }
-        }
 
         // Block swap inverse: check for inv_w_body (B˜⁼: header) or inv_x_body
-        if d.kind == DerivedKind::FunBlock {
-            if let Some(ref bl) = d.bl {
-                if bl.inv_w_body.is_some() || bl.inv_x_body.is_some() {
+        if d.kind == DerivedKind::FunBlock
+            && let Some(ref bl) = d.bl
+                && (bl.inv_w_body.is_some() || bl.inv_x_body.is_some()) {
                     // Create an InvBlock that for c1 uses inv_x_body and for c2 uses inv_w_body
                     let psc = d.sc.clone().unwrap();
                     return m_inv_block(bl.clone(), psc);
                 }
-            }
-        }
 
         // Md1D swap inverse: check if the modifier is a Md1Block with inv_w_body (𝔽_𝕣˜⁼: header)
         if d.kind == DerivedKind::Md1D {
@@ -359,15 +347,13 @@ pub fn inv_swap(func: B) -> B {
             if modifier.is_md1() {
                 let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                 let md = get_derived(mid);
-                if md.kind == DerivedKind::Md1Block {
-                    if let Some(ref bl) = md.bl {
-                        if bl.inv_w_body.is_some() || bl.inv_x_body.is_some() {
+                if md.kind == DerivedKind::Md1Block
+                    && let Some(ref bl) = md.bl
+                        && (bl.inv_w_body.is_some() || bl.inv_x_body.is_some()) {
                             // Create an InvMd1Block using the dyadic inverse body
                             let psc = md.sc.clone().unwrap();
                             return m_inv_md1_block(bl.clone(), psc, d.f);
                         }
-                    }
-                }
             }
         }
     }
@@ -1197,11 +1183,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             if x.is_fun() {
                 let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
                 let d = get_derived(id);
-                if let DerivedKind::NativeFn { prim_idx } = d.kind {
-                    if let Some(inv) = native_inverse_reg(prim_idx) {
+                if let DerivedKind::NativeFn { prim_idx } = d.kind
+                    && let Some(inv) = native_inverse_reg(prim_idx) {
                         return inv;
                     }
-                }
             }
             // Create a lazy inverse wrapper: a Derived that stores the original function
             // and computes the inverse when called.
@@ -1211,11 +1196,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             if x.is_fun() {
                 let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
                 let d = get_derived(id);
-                if let DerivedKind::NativeFn { prim_idx } = d.kind {
-                    if let Some(inv) = native_inverse_swap(prim_idx) {
+                if let DerivedKind::NativeFn { prim_idx } = d.kind
+                    && let Some(inv) = native_inverse_swap(prim_idx) {
                         return inv;
                     }
-                }
             }
             m_lazy_inv_swap(x)
         }
@@ -1449,11 +1433,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         1114 => rbqn_core::error::throw("•math.MatMul requires left argument (w •math.MatMul x)"),
         // NOTE: •math.Softmax — monadic: compute softmax of rank-1 numeric array
         1115 => {
-            if let Some(hook) = GPU_SOFTMAX_HOOK.get() {
-                if let Some(result) = hook(x) {
+            if let Some(hook) = GPU_SOFTMAX_HOOK.get()
+                && let Some(result) = hook(x) {
                     return result;
                 }
-            }
             math_softmax_cpu(x)
         }
         // NOTE: •rand sys functions — range 1120-1123
@@ -1640,11 +1623,10 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         }
         // NOTE: •math.MatMul — dyadic: w •math.MatMul x = matrix multiply
         1114 => {
-            if let Some(hook) = GPU_MATMUL_HOOK.get() {
-                if let Some(result) = hook(w, x) {
+            if let Some(hook) = GPU_MATMUL_HOOK.get()
+                && let Some(result) = hook(w, x) {
                     return result;
                 }
-            }
             math_matmul_cpu(w, x)
         }
         // NOTE: •math.Softmax — dyadic: not standard, throw error
@@ -1684,9 +1666,9 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             };
             // Only compute inverse if p is a full bijection (length == rank, all values distinct and cover 0..rank)
             let is_full_bijection = perm_len == rank && rank > 0 && w_arr.is_some();
-            if is_full_bijection {
-                if let Some(ref wa) = w_arr {
-                    if let Ok(perm) = wa.i32_iter() {
+            if is_full_bijection
+                && let Some(ref wa) = w_arr
+                    && let Ok(perm) = wa.i32_iter() {
                         let mut inv_perm = vec![-1i32; rank];
                         let mut valid = true;
                         for (i, &p) in perm.iter().enumerate() {
@@ -1712,8 +1694,6 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                             };
                         }
                     }
-                }
-            }
             // Partial permutation (len(w) < rank(x)): extend to full permutation, then invert.
             // CBQN extension rule: uncovered target positions get remaining source axes in order.
             // Example: p=2‿1 rank=4: full_perm = 2‿1‿0‿3
@@ -1721,7 +1701,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             let partial: Vec<i32> = if let Some(ref wa) = w_arr {
                 wa.i32_iter().unwrap_or_default()
             } else if w.is_f64() {
-                vec![w.to_i32().unwrap_or(0) as i32]
+                vec![w.to_i32().unwrap_or(0)]
             } else {
                 vec![]
             };
@@ -2330,8 +2310,8 @@ fn sys_import_c1(x: B) -> B {
         .parent()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let old_path = SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let old_name = SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let old_path = *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner());
+    let old_name = *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner());
     set_sys_path(&resolved);
 
     // Compile and execute the imported file using •BQN machinery
@@ -2402,14 +2382,13 @@ fn sys_hash_c1(x: B) -> B {
     fn hash_b(b: B) -> u64 {
         let mut h = DefaultHasher::new();
         b.0.hash(&mut h);
-        if b.is_arr() {
-            if let Some(arr) = crate::vm::get_arr(b) {
+        if b.is_arr()
+            && let Some(arr) = crate::vm::get_arr(b) {
                 for i in 0..arr.ia() {
                     let elem = arr.get(i).unwrap_or(B::SENTINEL);
                     hash_b(elem).hash(&mut h);
                 }
             }
-        }
         h.finish()
     }
 
@@ -2504,7 +2483,7 @@ fn resolve_path(path: String) -> String {
         return path;
     }
     // Try to get •path (the script's directory)
-    let sys_path = SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let sys_path = *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(path_b) = sys_path {
         let path_str = b_to_string(path_b);
         if !path_str.is_empty() {
@@ -2524,9 +2503,9 @@ fn b_to_byte_vec(x: B) -> Vec<u8> {
             .filter_map(|i| arr.get(i).ok())
             .map(|b| {
                 if b.is_f64() {
-                    (b.o2f() as u8)
+                    b.o2f() as u8
                 } else if b.is_c32() {
-                    (b.0 as u8)
+                    b.0 as u8
                 } else {
                     0u8
                 }
@@ -2545,8 +2524,8 @@ pub fn b_to_string_pub(x: B) -> String {
 /// Convert a B value (character array) to a Rust String.
 /// Returns empty string if x is not a character array.
 fn b_to_string(x: B) -> String {
-    if x.is_arr() {
-        if let Some(arr) = crate::vm::get_arr(x) {
+    if x.is_arr()
+        && let Some(arr) = crate::vm::get_arr(x) {
             let chars: String = (0..arr.ia())
                 .filter_map(|i| arr.get(i).ok())
                 .filter_map(|b| {
@@ -2555,7 +2534,6 @@ fn b_to_string(x: B) -> String {
                 .collect();
             return chars;
         }
-    }
     String::new()
 }
 
@@ -2567,8 +2545,8 @@ fn format_b_for_show(x: B) -> String {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
         guard.as_ref().and_then(|rt| rt.formatter.map(|(f, _)| f))
     };
-    if let Some(fmt) = fmt_fn {
-        if let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    if let Some(fmt) = fmt_fn
+        && let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             c1(fmt, x)
         })) {
             let s = b_to_string(result);
@@ -2576,7 +2554,6 @@ fn format_b_for_show(x: B) -> String {
                 return s;
             }
         }
-    }
     // Fallback: basic value description
     crate::vm::fmt_b_detail(x)
 }
@@ -2588,8 +2565,8 @@ fn format_b_repr(x: B) -> String {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
         guard.as_ref().and_then(|rt| rt.formatter.map(|(_, r)| r))
     };
-    if let Some(repr) = repr_fn {
-        if let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    if let Some(repr) = repr_fn
+        && let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             c1(repr, x)
         })) {
             let s = b_to_string(result);
@@ -2597,7 +2574,6 @@ fn format_b_repr(x: B) -> String {
                 return s;
             }
         }
-    }
     // Fallback
     format_b_for_show(x)
 }
@@ -2822,14 +2798,14 @@ fn lgamma_approx(x: f64) -> f64 {
     // NOTE: Use Lanczos approximation. Coefficients for g=7.
     const G: f64 = 7.0;
     const COEFFS: [f64; 9] = [
-        0.99999999999980993,
+        0.999_999_999_999_809_9,
         676.5203681218851,
         -1259.1392167224028,
-        771.32342877765313,
-        -176.61502916214059,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
         12.507343278686905,
         -0.13857109526572012,
-        9.9843695780195716e-6,
+        9.984_369_578_019_572e-6,
         1.5056327351493116e-7,
     ];
     if x < 0.5 {
@@ -2945,7 +2921,7 @@ fn math_matmul_cpu(w: B, x: B) -> B {
     let kx = xa.shape[0];
     let n = xa.shape[1];
     if k != kx {
-        rbqn_core::error::throw(&format!("•math.MatMul: inner dimensions must match: {}≠{}", k, kx));
+        rbqn_core::error::throw(format!("•math.MatMul: inner dimensions must match: {}≠{}", k, kx));
     }
     let w_vals: Vec<f64> = match &wa.data {
         rbqn_core::array::ArrData::F64(v) => v.clone(),
@@ -3227,9 +3203,9 @@ fn sh_exec_c1(x: B) -> B {
 
 fn sh_exec_c2(w: B, x: B) -> B {
     // w •SH x — w is options (ignored for now), x is command or array of command parts
-    if x.is_arr() {
-        if let Some(arr) = crate::vm::get_arr(x) {
-            if arr.ia() > 0 {
+    if x.is_arr()
+        && let Some(arr) = crate::vm::get_arr(x)
+            && arr.ia() > 0 {
                 let cmd_b = arr.get(0).unwrap_or(B::SENTINEL);
                 let cmd = b_to_string(cmd_b);
                 let mut proc = std::process::Command::new(&cmd);
@@ -3251,8 +3227,6 @@ fn sh_exec_c2(w: B, x: B) -> B {
                 ]);
                 return crate::vm::tag_arr(result);
             }
-        }
-    }
     // Fall back to monadic form with x as string command
     sh_exec_c1(x)
 }
@@ -3481,10 +3455,10 @@ fn make_hashmap_instance(x: B) -> B {
     let mut inner_map = StdHashMap::new();
 
     // If x is a 2-element array ⟨keys, values⟩, initialize with those
-    if let Some(arr) = crate::vm::get_arr(x) {
-        if arr.ia() == 2 && arr.rank() == 1 {
-            if let (Ok(k_b), Ok(v_b)) = (arr.get(0), arr.get(1)) {
-                if let (Some(k_arr), Some(v_arr)) = (crate::vm::get_arr(k_b), crate::vm::get_arr(v_b)) {
+    if let Some(arr) = crate::vm::get_arr(x)
+        && arr.ia() == 2 && arr.rank() == 1
+            && let (Ok(k_b), Ok(v_b)) = (arr.get(0), arr.get(1))
+                && let (Some(k_arr), Some(v_arr)) = (crate::vm::get_arr(k_b), crate::vm::get_arr(v_b)) {
                     let n = k_arr.ia().min(v_arr.ia());
                     for i in 0..n {
                         if let (Ok(k), Ok(v)) = (k_arr.get(i), v_arr.get(i)) {
@@ -3493,10 +3467,7 @@ fn make_hashmap_instance(x: B) -> B {
                         }
                     }
                 }
-            }
-        }
         // Empty array or ⟨⟩ — leave map empty
-    }
     // If x is 0, also leave map empty
 
     HASHMAP_STORE.lock().unwrap_or_else(|e| e.into_inner())

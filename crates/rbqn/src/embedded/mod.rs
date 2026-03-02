@@ -142,7 +142,7 @@ pub fn encode_owned_bytecode(obc: &OwnedBytecode, source_tag: &str) -> Vec<u8> {
             }
             ObjectEntry::Char(c) => {
                 buf.push(4);
-                buf.extend_from_slice(&(*c as u32).to_le_bytes());
+                buf.extend_from_slice(&(*c).to_le_bytes());
             }
             ObjectEntry::Str(chars) => {
                 buf.push(5);

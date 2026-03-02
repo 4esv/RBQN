@@ -324,7 +324,7 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     assert_eq!(prims.len(), RT_LEN, "primitive registry must have exactly {RT_LEN} entries");
 
     // Build fruntime: 64 B values, one per primitive, as callable NaN-boxed Derived values.
-    let fruntime: Vec<B> = (0..RT_LEN).map(|i| prim_to_b(i)).collect();
+    let fruntime: Vec<B> = (0..RT_LEN).map(prim_to_b).collect();
 
     // Build glyphs as char arrays
     let fn_glyphs: Vec<u32> = "+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥≡≢⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/⍋⍒⊏⊑⊐⊒∊⍷⊔!".chars().map(|c| c as u32).collect();
@@ -513,17 +513,15 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     // (e.g. mask⊸/). The BQN runtime's Under handles both computational and
     // structural cases, matching CBQN's def_fn_uc1 fallback behavior.
     if let Some(rt_obj_arr) = get_arr(rt_obj_raw) {
-        if let Ok(rt_under_fn) = rt_obj_arr.get(57) {
-            if rt_under_fn.is_md2() {
+        if let Ok(rt_under_fn) = rt_obj_arr.get(57)
+            && rt_under_fn.is_md2() {
                 rbqn_vm::modifiers::set_rt_under(rt_under_fn);
             }
-        }
         // Extract BQN runtime's Depth (⚇) function from rtObjRaw[61]
-        if let Ok(rt_depth_fn) = rt_obj_arr.get(61) {
-            if rt_depth_fn.is_md2() {
+        if let Ok(rt_depth_fn) = rt_obj_arr.get(61)
+            && rt_depth_fn.is_md2() {
                 rbqn_vm::modifiers::set_rt_depth(rt_depth_fn);
             }
-        }
     }
 
     // --- Stage 3: Execute compiler (graceful fallback if it panics) ---

@@ -25,7 +25,7 @@ fn dispatch_scan_pass(
     output: &GpuBuffer,
     block_sums: &GpuBuffer,
 ) {
-    let num_groups = (input.len() + ELEMENTS_PER_WORKGROUP - 1) / ELEMENTS_PER_WORKGROUP;
+    let num_groups = input.len().div_ceil(ELEMENTS_PER_WORKGROUP);
 
     let bind_group_layout = pipeline.get_bind_group_layout(0);
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -56,7 +56,7 @@ fn dispatch_propagate(
     output: &GpuBuffer,
     prefix_sums: &GpuBuffer,
 ) {
-    let num_groups = (data.len() + WORKGROUP_SIZE as usize - 1) / WORKGROUP_SIZE as usize;
+    let num_groups = data.len().div_ceil(WORKGROUP_SIZE as usize);
 
     let bind_group_layout = pipeline.get_bind_group_layout(0);
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -99,7 +99,7 @@ pub fn exclusive_scan(
         return output;
     }
 
-    let num_blocks = (n + ELEMENTS_PER_WORKGROUP - 1) / ELEMENTS_PER_WORKGROUP;
+    let num_blocks = n.div_ceil(ELEMENTS_PER_WORKGROUP);
     let output = GpuBuffer::storage(device, elem, n);
     let block_sums = GpuBuffer::storage(device, elem, num_blocks);
 

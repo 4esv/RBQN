@@ -458,7 +458,7 @@ fn group_high_rank_w(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRes
     }
 
     let max_idx = flat_indices.iter().copied().max().unwrap_or(-1);
-    let n = ((max_idx + 1).max(0) as usize);
+    let n = (max_idx + 1).max(0) as usize;
 
     let mut groups: Vec<Vec<B>> = vec![vec![]; n];
     for (i, &g) in flat_indices.iter().enumerate() {
@@ -809,7 +809,7 @@ fn group_multi_axis_scalar_x(warr: &BqnArr, x: B) -> Result<PrimResult> {
         .fold(0usize, |acc, v| if v == usize::MAX { usize::MAX } else { acc + v });
 
     let empty_cell_shape: Vec<usize> = {
-        let mut s = vec![0usize; n_axes];
+        let s = vec![0usize; n_axes];
         s
     };
     let full_cell_shape: Vec<usize> = vec![1usize; n_axes];

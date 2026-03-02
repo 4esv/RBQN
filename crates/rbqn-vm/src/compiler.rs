@@ -28,10 +28,7 @@ fn build_ns_desc(
     // we may still need an NSDesc. If export_mask_b is an array (even empty),
     // this is a namespace-returning body and we must create a descriptor.
     // If export_mask_b is not an array, we can't create a descriptor.
-    let export_arr = match get_arr(export_mask_b) {
-        Some(a) => a,
-        None => return None,
-    };
+    let export_arr = get_arr(export_mask_b)?;
 
     // var_ids_b may be absent for bare {⇐}; handle both cases
     let (ia, var_ids_arr_opt) = if var_ids_b.is_arr() {
@@ -59,11 +56,11 @@ fn build_ns_desc(
 
             let cid = var_ids_arr.get(i).map(|v| v.o2f() as usize).unwrap_or(0);
 
-            if name_list.is_arr() {
-                if let Some(nl_arr) = get_arr(name_list) {
-                    if cid < nl_arr.ia() {
-                        if let Ok(name_b) = nl_arr.get(cid) {
-                            if name_b.is_arr() {
+            if name_list.is_arr()
+                && let Some(nl_arr) = get_arr(name_list)
+                    && cid < nl_arr.ia()
+                        && let Ok(name_b) = nl_arr.get(cid)
+                            && name_b.is_arr() {
                                 let name = crate::derive::b_to_string_pub(name_b);
                                 let gid = crate::namespace::str2gid(&name);
                                 let slot_idx = i + arg_off;
@@ -71,10 +68,6 @@ fn build_ns_desc(
                                     exp_gids[slot_idx] = gid;
                                 }
                             }
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -120,14 +113,12 @@ fn build_all_var_gids(
         let slot_idx = i + arg_off;
         if slot_idx >= gids.len() { break; }
 
-        if cid < nl_arr.ia() {
-            if let Ok(name_b) = nl_arr.get(cid) {
-                if name_b.is_arr() {
+        if cid < nl_arr.ia()
+            && let Ok(name_b) = nl_arr.get(cid)
+                && name_b.is_arr() {
                     let name = crate::derive::b_to_string_pub(name_b);
                     gids[slot_idx] = crate::namespace::str2gid(&name);
                 }
-            }
-        }
     }
 
     gids
@@ -329,13 +320,11 @@ fn compile_block(
             let mut mpsc: i32 = 0;
 
             // Scope extension for REPL (depth==0 && sc present && vam > sc.var_am)
-            if depth == 0 {
-                if let Some(sc) = sc {
-                    if vam > sc.var_am && bo_ia >= 4 {
+            if depth == 0
+                && let Some(sc) = sc
+                    && vam > sc.var_am && bo_ia >= 4 {
                         // TODO: implement scope extension for REPL
                     }
-                }
-            }
 
             let bc_start = new_bc.len();
 
@@ -455,8 +444,8 @@ fn compile_block(
                         if cdepth + 1 > mpsc { mpsc = cdepth + 1; }
 
                         // EXT promotion for REPL scope extension
-                        if let Some(sc) = sc {
-                            if cdepth >= depth {
+                        if let Some(sc) = sc
+                            && cdepth >= depth {
                                 let mut csc = sc;
                                 for _ in depth..cdepth {
                                     match &csc.psc {
@@ -473,7 +462,6 @@ fn compile_block(
                                     };
                                 }
                             }
-                        }
 
                         if remap_args && cpos < arg_am && cdepth == 0 {
                             cpos += vam as i32;
@@ -488,9 +476,7 @@ fn compile_block(
                         let is_seth = op_val == Op::SETH as u32;
                         let new_op = if is_seth {
                             if imm { Op::SETH1 } else { Op::SETH2 }
-                        } else {
-                            if imm { Op::PRED1 } else { Op::PRED2 }
-                        };
+                        } else if imm { Op::PRED1 } else { Op::PRED2 };
                         new_bc.push(new_op as i32);
 
                         let fixup_off = new_bc.len();

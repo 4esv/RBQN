@@ -150,11 +150,10 @@ pub fn compiler_output_to_owned(
         } else if b.is_arr() {
             // Try as integer array first
             if let Some(arr) = get_arr(b) {
-                if arr.is_char_arr() {
-                    if let Ok(chars) = arr.c32_iter() {
+                if arr.is_char_arr()
+                    && let Ok(chars) = arr.c32_iter() {
                         return ObjectEntry::Str(chars);
                     }
-                }
                 if let Ok(ints) = arr.i32_iter() {
                     let idx = {
                         // find or insert
@@ -350,8 +349,8 @@ pub fn exec_string_inner(
     let rt_arr = tag_arr(BqnArr::from_b_vec(rt.runtime.clone()));
 
     // Verify runtime array integrity
-    if std::env::var("RBQN_COMP_TRACE").is_ok() {
-        if let Some(rta) = get_arr(rt_arr) {
+    if std::env::var("RBQN_COMP_TRACE").is_ok()
+        && let Some(rta) = get_arr(rt_arr) {
             eprintln!("[COMP] runtime array: {} elems, data_kind={}", rta.ia(), match &rta.data {
                 rbqn_core::array::ArrData::Boxed(_) => "Boxed",
                 rbqn_core::array::ArrData::F64(_) => "F64",
@@ -368,7 +367,6 @@ pub fn exec_string_inner(
                 }
             }
         }
-    }
 
     let sys_fn = rbqn_vm::derive::m_sys_fn(100);
     let var_names = tag_arr(BqnArr::empty_harr());
