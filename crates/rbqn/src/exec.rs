@@ -15,6 +15,25 @@ use rbqn_vm::vm::{get_arr, tag_arr};
 use crate::bootstrap;
 use crate::embedded::{BlockEntry, ObjectEntry, OwnedBytecode};
 
+/// Convert a catch_unwind panic payload to a BqnError.
+/// Prefers typed BqnError (from throw_bqn) over string extraction to preserve
+/// the original error variant (Assert, Type, Rank, etc.) without re-wrapping.
+pub fn panic_to_bqn_error(panic: Box<dyn std::any::Any + Send>) -> BqnError {
+    // First: try typed BqnError (set via throw_bqn / panic_any)
+    if let Some(e) = panic.downcast_ref::<BqnError>() {
+        return e.clone();
+    }
+    // Fallback: string payload (legacy or external panic)
+    let msg = if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = panic.downcast_ref::<&str>() {
+        s.to_string()
+    } else {
+        "unknown error".into()
+    };
+    BqnError::Domain(msg)
+}
+
 /// Raw output from the BQN compiler (before VM execution).
 /// Contains the same arrays that exec_string_inner uses to call compile_all + eval_fun_block,
 /// but as raw BQN B values so they can be converted to OwnedBytecode for serialization.
@@ -43,19 +62,7 @@ pub fn compile_string(
         compile_string_inner(rt, code)
     })) {
         Ok(result) => result,
-        Err(panic) => {
-            let msg = if let Some(s) = panic.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = panic.downcast_ref::<&str>() {
-                s.to_string()
-            } else {
-                "unknown error".into()
-            };
-            let msg = msg.strip_prefix("Domain error: ")
-                .or_else(|| msg.strip_prefix("Not yet implemented: "))
-                .unwrap_or(&msg);
-            Err(BqnError::Domain(msg.to_string()))
-        }
+        Err(panic) => Err(panic_to_bqn_error(panic)),
     }
 }
 
@@ -324,20 +331,7 @@ pub fn exec_string(
         exec_string_inner(rt, code)
     })) {
         Ok(result) => result,
-        Err(panic) => {
-            let msg = if let Some(s) = panic.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = panic.downcast_ref::<&str>() {
-                s.to_string()
-            } else {
-                "unknown error".into()
-            };
-            // Strip "Domain error: " prefix since BqnError::Domain adds it
-            let msg = msg.strip_prefix("Domain error: ")
-                .or_else(|| msg.strip_prefix("Not yet implemented: "))
-                .unwrap_or(&msg);
-            Err(BqnError::Domain(msg.to_string()))
-        }
+        Err(panic) => Err(panic_to_bqn_error(panic)),
     }
 }
 

@@ -143,19 +143,7 @@ pub(crate) fn exec_repl_line(
         exec_repl_line_inner(rt, code, state)
     })) {
         Ok(result) => result,
-        Err(panic) => {
-            let msg = if let Some(s) = panic.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = panic.downcast_ref::<&str>() {
-                s.to_string()
-            } else {
-                "unknown error".into()
-            };
-            let msg = msg.strip_prefix("Domain error: ")
-                .or_else(|| msg.strip_prefix("Not yet implemented: "))
-                .unwrap_or(&msg);
-            Err(BqnError::Domain(msg.to_string()))
-        }
+        Err(panic) => Err(rbqn::exec::panic_to_bqn_error(panic)),
     }
 }
 

@@ -102,7 +102,7 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let len = s_arr.ia();
         let mut results = Vec::with_capacity(len);
         for i in 0..len {
-            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
             results.push(v_get(pscs, si, chk));
         }
         rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(results, vec![len], None))
@@ -178,7 +178,7 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
             // Each element in s is a VAR ref (field name = variable name) or ALIAS (explicit rename).
             let ns = get_ns(x);
             for i in 0..s_len {
-                let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+                let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
                 if si.is_var() {
                     // Plain VAR ref: use the variable's own name as the field name
                     let d = si.v_depth() as usize;
@@ -244,8 +244,8 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
                 ));
             }
             for i in 0..s_len {
-                let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-                let xi = x_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+                let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
+                let xi = x_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
                 v_set(pscs, si, xi, upd, chk);
             }
         }
@@ -289,8 +289,8 @@ fn v_merge(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
     if x_arr.rank() == 1 {
         // Rank 1: each element becomes a unit (rank-0) array like CBQN's m_unit (<x)
         for i in 0..s_len {
-            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-            let xi = x_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
+            let xi = x_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
             // Wrap in rank-0 array (shape []) — equivalent to <x
             let unit = rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(
                 vec![xi], vec![], x_arr.fill,
@@ -303,13 +303,13 @@ fn v_merge(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         let cell_shape: Vec<usize> = x_arr.shape[1..].to_vec();
         let cell_size: usize = cell_shape.iter().product();
         for i in 0..s_len {
-            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
             // Extract cell i: elements from i*cell_size to (i+1)*cell_size
             let start = i * cell_size;
             let mut cell_data = Vec::with_capacity(cell_size);
             for j in 0..cell_size {
                 cell_data.push(x_arr.get(start + j)
-                    .unwrap_or_else(|e| rbqn_core::error::throw(e.to_string())));
+                    .unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)));
             }
             let cell = rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(
                 cell_data, cell_shape.clone(), x_arr.fill,
@@ -532,7 +532,7 @@ pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let len = s_arr.ia();
         let mut results = Vec::with_capacity(len);
         for i in 0..len {
-            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+            let si = s_arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
             results.push(v_get_move(pscs, si, chk));
         }
         rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(results, vec![len], None))

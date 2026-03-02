@@ -27,22 +27,28 @@ impl std::error::Error for BqnError {}
 
 pub type Result<T> = std::result::Result<T, BqnError>;
 
+/// Panic with a typed BqnError value. Use this to propagate errors through
+/// catch_unwind boundaries without losing the error variant.
+pub fn throw_bqn(e: BqnError) -> ! {
+    std::panic::panic_any(e)
+}
+
 pub fn throw(msg: impl Into<String>) -> ! {
-    panic!("{}", BqnError::Domain(msg.into()))
+    throw_bqn(BqnError::Domain(msg.into()))
 }
 
 pub fn throw_type(msg: impl Into<String>) -> ! {
-    panic!("{}", BqnError::Type(msg.into()))
+    throw_bqn(BqnError::Type(msg.into()))
 }
 
 pub fn throw_rank(msg: impl Into<String>) -> ! {
-    panic!("{}", BqnError::Rank(msg.into()))
+    throw_bqn(BqnError::Rank(msg.into()))
 }
 
 pub fn throw_shape(msg: impl Into<String>) -> ! {
-    panic!("{}", BqnError::Shape(msg.into()))
+    throw_bqn(BqnError::Shape(msg.into()))
 }
 
 pub fn throw_nyi(msg: impl Into<String>) -> ! {
-    panic!("{}", BqnError::Nyi(msg.into()))
+    throw_bqn(BqnError::Nyi(msg.into()))
 }
