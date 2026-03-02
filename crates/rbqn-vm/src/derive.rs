@@ -712,7 +712,7 @@ pub fn c1(f: B, x: B) -> B {
                 }
                 let result = match c1_fn(x, x_arr.as_ref()) {
                     Ok(r) => r,
-                    Err(e) => rbqn_core::error::throw(e.to_string()),
+                    Err(e) => rbqn_core::error::throw_bqn(e),
                 };
                 let result_b = prim_result_to_b(result);
                 if crate::vm::prim_trace_enabled() {
@@ -934,7 +934,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                             eprintln!("=== VM TRACE (last {} ops) ===", trace.len());
                             for t in &trace { eprintln!("  {}", t); }
                         }
-                        rbqn_core::error::throw(e.to_string())
+                        rbqn_core::error::throw_bqn(e)
                     },
                 };
                 let result_b = prim_result_to_b(result);
@@ -1100,7 +1100,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             let r = rbqn_prim::sysfn::type_fn(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         1 => { // •Decompose
@@ -1116,7 +1116,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             let r = rbqn_prim::sysfn::fill_fn(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         8 => { // setInvReg: stores x (a BQN function) as the inverse-reg resolver,
@@ -1160,14 +1160,14 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             let r = rbqn_prim::group::group_len(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         23 => { // •_groupOrd
             let r = rbqn_prim::group::group_ord(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         // NOTE: •ReBQN (alias for •BQN for now)
@@ -1320,11 +1320,18 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         79 => sys_toutf8_c1(x),
         // NOTE: •CurrentError — current error in catch context (stub)
         80 => B::SENTINEL,
+        200 => {
+            // NOTE: Native repr function used by the BQN formatter.
+            // The BQN formatter (f.bqn) takes ⟨Type,Decompose,Glyph,Repr⟩ and uses Repr
+            // for atomic values (numbers in ReprAtom). This must be a native Rust function
+            // to avoid infinite recursion through the BQN-level Repr.
+            native_repr_c1(x)
+        }
         201 => { // Internal: /⁼ (inverse of indices)
             let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         // NOTE: Internal inverse functions registered in native_inverse_reg
@@ -1332,28 +1339,28 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             let r = rbqn_prim::arith_monad::log_c1(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         203 => { // √⁼ = x^2 — square
             let r = rbqn_prim::arith_monad::square_c1(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         204 => { // +˜⁼ = x÷2 — halve
             let r = rbqn_prim::arith_monad::halve_c1(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         205 => { // ⍉⁼ = inverse transpose (rank≤2: same as ⍉; rank>2: move first axis to last)
             let r = rbqn_prim::structural::transpose_inv_c1(x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         206 => { // <⁼ = unbox: extract content from rank-0 array
@@ -1497,7 +1504,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             let r = rbqn_prim::slash::indices_inverse_c2(w, w_arr.as_ref(), x, x_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         202 => { // Dyadic ⋆⁼: w⋆⁼x = log_w(x) = ln(x)/ln(w) — apply to each element pair
@@ -1594,7 +1601,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             let r = rbqn_prim::arith_dyad::sub_c2(x, x_arr.as_ref(), w, w_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         // NOTE: w√⁼x = x^w (dyadic sqrt-inverse = power with args swapped)
@@ -1603,7 +1610,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             let r = rbqn_prim::arith_dyad::pow_c2(x, x_arr.as_ref(), w, w_arr.as_ref());
             match r {
                 Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw(e.to_string()),
+                Err(e) => rbqn_core::error::throw_bqn(e),
             }
         }
         205 => { // w⍉⁼x = inverse-permutation(w)⍉x
@@ -1643,7 +1650,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                             let r = rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref());
                             return match r {
                                 Ok(pr) => prim_result_to_b(pr),
-                                Err(e) => rbqn_core::error::throw(e.to_string()),
+                                Err(e) => rbqn_core::error::throw_bqn(e),
                             };
                         }
                     }
@@ -1691,7 +1698,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                     let r = rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref());
                     return match r {
                         Ok(pr) => prim_result_to_b(pr),
-                        Err(e) => rbqn_core::error::throw(e.to_string()),
+                        Err(e) => rbqn_core::error::throw_bqn(e),
                     };
                 }
             }
@@ -1720,7 +1727,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
 
 fn dispatch_sys_group_len_c2(w: B, _x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
     let arr = xa.unwrap_or_else(|| rbqn_core::error::throw("•GroupLen: 𝕩 must be an array"));
-    let indices = arr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+    let indices = arr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
     let n = w.o2i() as usize;
     let mut counts = vec![0i32; n];
     for &g in &indices {
@@ -1734,8 +1741,8 @@ fn dispatch_sys_group_len_c2(w: B, _x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
 fn dispatch_sys_group_ord_c2(_w: B, wa: Option<&rbqn_core::BqnArr>, _x: B, xa: Option<&rbqn_core::BqnArr>) -> B {
     let warr = wa.unwrap_or_else(|| rbqn_core::error::throw("•GroupOrd: 𝕨 must be an array"));
     let xarr = xa.unwrap_or_else(|| rbqn_core::error::throw("•GroupOrd: 𝕩 must be an array"));
-    let lengths = warr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
-    let indices = xarr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+    let lengths = warr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
+    let indices = xarr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
     let n_groups = lengths.len();
     let mut offsets = Vec::with_capacity(n_groups + 1);
     offsets.push(0usize);
@@ -1846,9 +1853,99 @@ fn dispatch_sys_glyph_c1(x: B) -> B {
             }
         }
     }
-    // Non-primitive: return empty string
-    let arr = rbqn_core::array::BqnArr::new_vec_c32(vec![]);
+    // Non-primitive: return a descriptive string matching CBQN behavior
+    let desc = if x.is_fun() {
+        "(function block)"
+    } else if x.is_md1() {
+        "(1-modifier block)"
+    } else if x.is_md2() {
+        "(2-modifier block)"
+    } else {
+        "(derived function)"
+    };
+    let chars: Vec<u32> = desc.chars().map(|c| c as u32).collect();
+    let arr = rbqn_core::array::BqnArr::new_vec_c32(chars);
     crate::vm::tag_arr(arr)
+}
+
+/// Native repr: format a B value as a BQN source string (char array).
+/// Used as the FN argument to the BQN formatter module (f.bqn) to avoid infinite recursion.
+/// The BQN formatter calls FN for atomic values in ReprAtom; using the BQN-level •Repr
+/// would create a cycle. This native version handles all types directly in Rust.
+fn native_repr_c1(x: B) -> B {
+    let s = native_repr_str(x);
+    let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+    let arr = rbqn_core::array::BqnArr::new_vec_c32(chars);
+    crate::vm::tag_arr(arr)
+}
+
+fn native_repr_str(x: B) -> String {
+    if x.is_f64() {
+        let v = x.o2f();
+        if v.is_nan() { return "NaN".to_string(); }
+        if v.is_infinite() {
+            return if v > 0.0 { "∞".to_string() } else { "¯∞".to_string() };
+        }
+        let neg = v < 0.0;
+        let abs = v.abs();
+        let s = if abs == abs.floor() && abs < 1e15 {
+            format!("{}", abs as i64)
+        } else {
+            format!("{}", abs)
+        };
+        if neg { format!("¯{}", s) } else { s }
+    } else if x.is_c32() {
+        let cp = x.0 as u32;
+        if cp == 0 {
+            "@".to_string()
+        } else if let Some(c) = char::from_u32(cp) {
+            format!("'{}'", c)
+        } else {
+            format!("@+{}", cp)
+        }
+    } else if x.is_arr() {
+        if let Some(arr) = crate::vm::get_arr(x) {
+            native_repr_arr(&arr)
+        } else {
+            "⟨⟩".to_string()
+        }
+    } else if x.q_n() {
+        "·".to_string()
+    } else {
+        "(opaque)".to_string()
+    }
+}
+
+fn native_repr_arr(arr: &rbqn_core::array::BqnArr) -> String {
+    // Rank-1 char array → string literal
+    if arr.rank() == 1 && arr.is_char_arr() {
+        if let Ok(chars) = arr.c32_iter() {
+            let s: String = chars.iter().filter_map(|&c| char::from_u32(c)).collect();
+            // Escape quotes in string
+            let escaped = s.replace('"', "\"\"");
+            return format!("\"{}\"", escaped);
+        }
+    }
+    // Rank-1 list of numbers → strand or list
+    if arr.rank() == 1 {
+        let elems: Vec<String> = (0..arr.ia())
+            .map(|i| arr.get(i).map(native_repr_str).unwrap_or("?".to_string()))
+            .collect();
+        if arr.ia() == 0 {
+            return "⟨⟩".to_string();
+        }
+        // Use strand notation for 2+ element numeric lists
+        return elems.join("‿");
+    }
+    // Higher rank: shape⥊repr_flat
+    let shape_str = arr.shape.iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join("‿");
+    let flat: Vec<String> = (0..arr.ia())
+        .map(|i| arr.get(i).map(native_repr_str).unwrap_or("?".to_string()))
+        .collect();
+    format!("({}⥊{})", shape_str, flat.join("‿"))
 }
 
 /// •PrimInd: return the primitive index (0..63) for a primitive, or 64 for non-primitives.
@@ -2576,7 +2673,7 @@ fn dispatch_sys_bqn_eval(src: &str) -> B {
         Some(a) => a,
         None => rbqn_core::error::throw("•BQN: bc is not an array"),
     };
-    let bc: Vec<i32> = bc_arr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+    let bc: Vec<i32> = bc_arr.i32_iter().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
 
     let objs: Vec<B> = if let Some(objs_arr) = crate::vm::get_arr(objs_b) {
         (0..objs_arr.ia()).map(|i| objs_arr.get(i).unwrap_or(B::SENTINEL)).collect()
