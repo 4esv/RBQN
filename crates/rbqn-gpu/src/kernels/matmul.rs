@@ -47,8 +47,8 @@ pub fn matmul(
     });
 
     // Dispatch: x covers columns (N), y covers rows (M)
-    let workgroups_x = (n + 15) / 16;
-    let workgroups_y = (m + 15) / 16;
+    let workgroups_x = n.div_ceil(16);
+    let workgroups_y = m.div_ceil(16);
 
     let mut encoder = device.create_command_encoder(&Default::default());
     {

@@ -429,12 +429,11 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
                     fill: Some(crate::structural::prototype_of(x)),
                 }));
             }
-            if let Some(xarr) = xa {
-                if xarr.rank() == 0 {
+            if let Some(xarr) = xa
+                && xarr.rank() == 0 {
                     // rank-0 enclosed is a unit: return as-is (the enclosure)
                     return Ok(PrimResult::Array(xarr.clone()));
                 }
-            }
             return Err(BqnError::Domain("𝕨⊑𝕩: 𝕩 must be a unit if 𝕨 is empty enclosed".into()));
         }
         return Err(BqnError::Rank("𝕨⊑𝕩: rank-0 𝕨 must be boxed".into()));
@@ -543,7 +542,7 @@ fn pick_elem(idx: B, x: B) -> Result<B> {
             )));
         }
         let pos = resolve_index(i, arr.ia())?;
-        return Ok(arr.get(pos)?);
+        return arr.get(pos);
     }
 
     if let Some(idx_arr) = get_arr(idx) {
@@ -589,7 +588,7 @@ fn pick_elem(idx: B, x: B) -> Result<B> {
                 if x.is_atom() { return Ok(x); }
                 let xarr = get_arr(x).ok_or_else(|| BqnError::Type("⊑: 𝕩 must be array".into()))?;
                 if xarr.rank() == 0 && xarr.ia() > 0 {
-                    return Ok(xarr.get(0)?);
+                    return xarr.get(0);
                 }
                 if xarr.rank() == 0 && xarr.ia() == 0 {
                     return Ok(x); // empty enclosed unit
@@ -622,7 +621,7 @@ fn pick_elem(idx: B, x: B) -> Result<B> {
             flat_idx += pos * stride;
             stride *= arr.shape[j];
         }
-        return Ok(arr.get(flat_idx)?);
+        return arr.get(flat_idx);
     }
 
     Err(BqnError::Type("𝕨⊑𝕩: index must be a number or array".into()))
@@ -642,7 +641,7 @@ fn deep_pick_one(idx: B, target: B) -> Result<B> {
         let i = validate_integer_index(idx, "𝕨⊑𝕩")?;
         let resolved = resolve_index(i, if arr.rank() <= 1 { arr.ia() } else { arr.shape[0] })?;
         if arr.rank() <= 1 {
-            return Ok(arr.get(resolved)?);
+            return arr.get(resolved);
         }
         // Multi-dimensional: return cell
         let cell_shape = &arr.shape[1..];
@@ -679,7 +678,7 @@ fn deep_pick_one(idx: B, target: B) -> Result<B> {
                 flat_idx += resolved * stride;
                 stride *= arr.shape[j];
             }
-            return Ok(arr.get(flat_idx)?);
+            return arr.get(flat_idx);
         }
         // Rank-1 boxed: path walk
         let wia = idx_arr.ia();

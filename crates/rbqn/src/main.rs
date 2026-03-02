@@ -382,11 +382,11 @@ fn output_raw(val: &B) -> rbqn_core::Result<()> {
 
 fn format_result(rt: &bootstrap::Runtime, val: &B) -> String {
     // Try using the formatter if available
-    if let Some((ref fmt_fn, _)) = rt.formatter {
-        if let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    if let Some((ref fmt_fn, _)) = rt.formatter
+        && let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             c1(*fmt_fn, *val)
-        })) {
-            if let Some(arr) = get_arr(result) {
+        }))
+            && let Some(arr) = get_arr(result) {
                 // Formatter returns a string (char array)
                 let chars: String = (0..arr.ia())
                     .filter_map(|i| arr.get(i).ok())
@@ -402,8 +402,6 @@ fn format_result(rt: &bootstrap::Runtime, val: &B) -> String {
                     return chars;
                 }
             }
-        }
-    }
 
     // Fallback: basic formatting
     format_b(*val)

@@ -27,11 +27,10 @@ fn format_assert_msg(x: B) -> String {
     if x.is_f64() {
         return format!("{}", x.o2f());
     }
-    if x.is_c32() {
-        if let Some(ch) = char::from_u32(x.0 as u32) {
+    if x.is_c32()
+        && let Some(ch) = char::from_u32(x.0 as u32) {
             return ch.to_string();
         }
-    }
     if let Some(arr) = rbqn_core::get_arr(x) {
         // Try to decode as a char array (string)
         if let Ok(chars) = arr.c32_iter() {
@@ -78,10 +77,10 @@ pub fn assert_msg_c2(w: B, wa: Option<&BqnArr>, x: B, _xa: Option<&BqnArr>) -> R
             let s: String = chars.iter().filter_map(|&c| char::from_u32(c)).collect();
             s
         } else {
-            format!("Assertion failed")
+            "Assertion failed".to_string()
         }
     } else {
-        format!("Assertion failed")
+        "Assertion failed".to_string()
     };
     Err(BqnError::Assert(msg))
 }

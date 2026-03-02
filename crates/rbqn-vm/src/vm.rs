@@ -74,7 +74,7 @@ fn sysv_lookup(idx: u32) -> B {
 
 // Thread-local trace buffer for debugging VM crashes
 std::thread_local! {
-    static VM_TRACE: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    static VM_TRACE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 pub fn vm_trace_push(msg: String) {
@@ -344,9 +344,9 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let f = pop!();
                 let x = pop!();
                 // NOTE: Debug trace for FN2C with empty array arguments
-                if vm_debug && x.is_arr() {
-                    if let Some(xa) = get_arr(x) {
-                        if xa.ia() == 0 && w.is_f64() {
+                if vm_debug && x.is_arr()
+                    && let Some(xa) = get_arr(x)
+                        && xa.ia() == 0 && w.is_f64() {
                             let f_tag = (f.0 >> 48) as u16;
                             vm_trace_push(format!(
                                 "FN2C w={} f_tag={:#06x} x=EMPTY_ARR shape={:?} bc_pc={}",
@@ -358,8 +358,6 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                                 vm_trace_push(format!("  f_kind={:?}", d.kind));
                             }
                         }
-                    }
-                }
                 push!(c2(f, w, x));
             }
             Some(Op::FN2O) => {
@@ -536,13 +534,11 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let d = read_u32!();
                 let p = read_u32!();
                 let val = pscs[d as usize].var_get(p as usize);
-                if vm_debug && val.is_arr() {
-                    if let Some(a) = get_arr(val) {
-                        if a.ia() == 0 {
+                if vm_debug && val.is_arr()
+                    && let Some(a) = get_arr(val)
+                        && a.ia() == 0 {
                             vm_trace_push(format!("  VARO d={} p={} → EMPTY_ARR shape={:?}", d, p, a.shape));
                         }
-                    }
-                }
                 if v_check_bad_read(val) {
                     rbqn_core::error::throw("Attempting to read variable which is not yet defined");
                 }
@@ -744,7 +740,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let dy_idx = read_u64!() as usize;
                 if !v_seth(&pscs, s, x) {
                     let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
-                    let is_dyadic = vars.get(2).map_or(false, |b| !b.q_n());
+                    let is_dyadic = vars.get(2).is_some_and(|b| !b.q_n());
                     let next_idx = if is_dyadic { dy_idx } else { mono_idx };
                     let next_body = bl.bodies[next_idx].clone();
                     if !next_body.exists {
@@ -814,7 +810,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 }
                 if !x.o2b() {
                     let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
-                    let is_dyadic = vars.get(2).map_or(false, |b| !b.q_n());
+                    let is_dyadic = vars.get(2).is_some_and(|b| !b.q_n());
                     let next_idx = if is_dyadic { dy_idx } else { mono_idx };
                     let next_body = bl.bodies[next_idx].clone();
                     if !next_body.exists {

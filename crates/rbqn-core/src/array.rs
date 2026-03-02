@@ -176,11 +176,10 @@ impl BqnArr {
             ArrData::F64(v) => Ok(v.clone()),
             other => {
                 // Handle Boxed arrays where all elements are f64 scalars (or empty)
-                if let ArrData::Boxed(v) = other {
-                    if v.is_empty() || v.iter().all(|b| b.is_f64()) {
+                if let ArrData::Boxed(v) = other
+                    && (v.is_empty() || v.iter().all(|b| b.is_f64())) {
                         return Ok(v.iter().map(|b| b.o2f()).collect());
                     }
-                }
                 Err(BqnError::Type("Expected numeric array".into()))
             }
         }
@@ -313,7 +312,7 @@ pub fn squeeze_num(arr: BqnArr) -> BqnArr {
 
     let data = if all_bit {
         let ia = vals.len();
-        let nwords = (ia + 63) / 64;
+        let nwords = ia.div_ceil(64);
         let mut words = vec![0u64; nwords];
         for (i, &v) in vals.iter().enumerate() {
             if v == 1.0 {

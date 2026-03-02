@@ -120,7 +120,7 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
         } else if let Some(warr) = wa {
             // Allow rank-0 (unit) or rank-1 length-1 𝕨
             let c = warr.i32_iter()?;
-            if c.len() == 0 {
+            if c.is_empty() {
                 // empty 𝕨 on atom: return <x (rank-0 enclosure)
                 return Ok(PrimResult::Array(BqnArr {
                     shape: vec![],
@@ -166,8 +166,8 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
 
     // Multi-axis replicate: when 𝕨 is a boxed list with any array/enclosed element,
     // each element replicates along one axis of x.
-    if let Some(warr) = wa {
-        if warr.rank() == 1 {
+    if let Some(warr) = wa
+        && warr.rank() == 1 {
             if warr.ia() == 0 {
                 // ⟨⟩/x = x (no axes to replicate along = identity)
                 return Ok(PrimResult::Array(arr.clone()));
@@ -184,7 +184,6 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
                 }
             }
         }
-    }
 
     // NOTE: BQN / on rank>1 𝕩: replicate along first axis.
     // Scalar 𝕨 replicates each major cell 𝕨 times.

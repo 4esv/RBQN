@@ -31,7 +31,7 @@ fn threshold_for(op: &str) -> usize {
 }
 
 pub fn workgroup_count(len: usize, workgroup_size: u32) -> u32 {
-    ((len as u32) + workgroup_size - 1) / workgroup_size
+    (len as u32).div_ceil(workgroup_size)
 }
 
 pub const WORKGROUP_SIZE: u32 = 256;

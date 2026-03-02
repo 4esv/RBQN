@@ -19,7 +19,7 @@ fn cmp_pervasive_b(w: B, x: B, scalar_fn: fn(B, B) -> i32, name: &str) -> Result
                 results.push(cmp_pervasive_b(w, xv, scalar_fn, name)?);
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
-            let mut out = rbqn_core::array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), result_fill);
+            let out = rbqn_core::array::typed_arr_from_b_vec(results, xa_arr.shape.clone(), result_fill);
             Ok(tag_arr(out))
         }
         (Some(wa_arr), None) => {
@@ -30,7 +30,7 @@ fn cmp_pervasive_b(w: B, x: B, scalar_fn: fn(B, B) -> i32, name: &str) -> Result
                 results.push(cmp_pervasive_b(wv, x, scalar_fn, name)?);
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
-            let mut out = rbqn_core::array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
+            let out = rbqn_core::array::typed_arr_from_b_vec(results, wa_arr.shape.clone(), result_fill);
             Ok(tag_arr(out))
         }
         (Some(wa_arr), Some(xa_arr)) => {
@@ -146,7 +146,7 @@ fn cmp_pervasive(
             let mut result = Vec::with_capacity(ia);
             for i in 0..ia {
                 let xv = xa_arr.get(i)?;
-                result.push(scalar_fn(w, xv) as i32);
+                result.push(scalar_fn(w, xv));
             }
             let mut out = BqnArr::new_vec_i32(result);
             out.shape = xa_arr.shape.clone();
@@ -157,7 +157,7 @@ fn cmp_pervasive(
             let mut result = Vec::with_capacity(ia);
             for i in 0..ia {
                 let wv = wa_arr.get(i)?;
-                result.push(scalar_fn(wv, x) as i32);
+                result.push(scalar_fn(wv, x));
             }
             let mut out = BqnArr::new_vec_i32(result);
             out.shape = wa_arr.shape.clone();
@@ -175,7 +175,7 @@ fn cmp_pervasive(
                 for i in 0..ia {
                     let wv = wa_arr.get(i)?;
                     let xv = xa_arr.get(i)?;
-                    result.push(scalar_fn(wv, xv) as i32);
+                    result.push(scalar_fn(wv, xv));
                 }
                 let mut out = BqnArr::new_vec_i32(result);
                 out.shape = wa_arr.shape.clone();
@@ -188,7 +188,7 @@ fn cmp_pervasive(
                 for i in 0..x_ia {
                     let wv = wa_arr.get(i % w_ia)?;
                     let xv = xa_arr.get(i)?;
-                    result.push(scalar_fn(wv, xv) as i32);
+                    result.push(scalar_fn(wv, xv));
                 }
                 let mut out = BqnArr::new_vec_i32(result);
                 out.shape = xa_arr.shape.clone();
@@ -201,16 +201,16 @@ fn cmp_pervasive(
                 for i in 0..w_ia {
                     let wv = wa_arr.get(i)?;
                     let xv = xa_arr.get(i % x_ia)?;
-                    result.push(scalar_fn(wv, xv) as i32);
+                    result.push(scalar_fn(wv, xv));
                 }
                 let mut out = BqnArr::new_vec_i32(result);
                 out.shape = wa_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else {
-                return Err(BqnError::Shape(format!(
+                Err(BqnError::Shape(format!(
                     "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
                     wa_arr.shape, xa_arr.shape
-                )));
+                )))
             }
         }
     }

@@ -90,7 +90,7 @@ impl B {
 
     pub fn is_callable(self) -> bool {
         let tag = (self.0 >> 48) as u16;
-        tag >= MD1_TAG && tag <= FUN_TAG
+        (MD1_TAG..=FUN_TAG).contains(&tag)
     }
 
     pub fn m_f64(n: f64) -> Self {

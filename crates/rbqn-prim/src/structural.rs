@@ -212,8 +212,8 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         // BQN merge behavior:
         //   - Elements are rank-0 boxes → result is outer-shape, fill = unboxed content
         //   - Elements are rank-n arrays → result shape = outer_shape ++ inner_shape
-        if let Some(fill_b) = arr.fill {
-            if let Some(fill_arr) = get_arr(fill_b) {
+        if let Some(fill_b) = arr.fill
+            && let Some(fill_arr) = get_arr(fill_b) {
                 if fill_arr.shape.is_empty() {
                     // Rank-0 fill: elements would be rank-0 boxed. Merge unboxes one level.
                     // Result shape = outer shape, element fill = content prototype.
@@ -227,7 +227,7 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
                         })
                     } else {
                         // Rank-0 non-boxed: prototype is itself
-                        fill_arr.get(0).ok().map(|b| prototype_of(b))
+                        fill_arr.get(0).ok().map(prototype_of)
                     };
                     let result = BqnArr {
                         shape: arr.shape.clone(),
@@ -244,7 +244,6 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
                     return Ok(PrimResult::Array(result));
                 }
             }
-        }
         // Fallback: keep outer shape, inner shape unknown
         return Ok(PrimResult::Array(arr.clone()));
     }
@@ -298,7 +297,7 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         }
         if inner_shape.is_empty() {
             // Inner content is scalar-like: result is outer_shape array of atoms
-            let mut new_shape = arr.shape.clone();
+            let new_shape = arr.shape.clone();
             return Ok(PrimResult::Array(typed_arr(result_data, new_shape, None)));
         } else {
             // Inner content has shape: combine outer ++ inner
@@ -539,10 +538,10 @@ fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
             total / known_product
         }
         2 => { // ceil+cycle (⌽): ceiling division, cyclic repeat
-            (total + known_product - 1) / known_product
+            total.div_ceil(known_product)
         }
         3 => { // ceil+pad (↑): ceiling division, pad with fill
-            (total + known_product - 1) / known_product
+            total.div_ceil(known_product)
         }
         _ => unreachable!(),
     };
@@ -657,7 +656,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
         }
 
-        let trailing_rank = if inner_rank >= outer_rank { inner_rank - outer_rank } else { 0 };
+        let trailing_rank = inner_rank.saturating_sub(outer_rank);
 
         // Compute outer strides
         let outer_strides: Vec<usize> = {
@@ -1197,20 +1196,18 @@ pub fn prefixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ↑ dyad: take
 pub fn take_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     // Validate: w must have rank at most 1
-    if let Some(warr) = wa {
-        if warr.rank() > 1 {
+    if let Some(warr) = wa
+        && warr.rank() > 1 {
             return Err(BqnError::Rank(format!(
                 "𝕨↑𝕩: 𝕨 must have rank at most 1 ({:?} ≡ ≢𝕨)",
                 warr.shape
             )));
         }
-    }
     // Multi-axis take: when w is an array, each element specifies take along one axis
-    if w.is_arr() {
-        if let Some(warr) = wa {
+    if w.is_arr()
+        && let Some(warr) = wa {
             return take_multi_axis(warr, x, xa);
         }
-    }
     let n = w.to_i32()?;
     let arr = if x.is_atom() {
         typed_arr(vec![x], vec![1], None)
@@ -1437,11 +1434,10 @@ pub fn suffixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ↓ dyad: drop
 pub fn drop_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     // Multi-axis drop: when w is an array, each element specifies drop along one axis
-    if w.is_arr() {
-        if let Some(warr) = wa {
+    if w.is_arr()
+        && let Some(warr) = wa {
             return drop_multi_axis(warr, _x, xa);
         }
-    }
     let n = w.to_i32()?;
     // NOTE: BQN allows scalar x for drop: 0↓atom = <atom (rank-0 result).
     if xa.is_none() {
@@ -1611,11 +1607,10 @@ pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // Result has (len-n+1) windows, each of length n.
 pub fn windows_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     // Multi-axis windows: when w is a list, each element specifies window size along one axis
-    if w.is_arr() {
-        if let Some(warr) = wa {
+    if w.is_arr()
+        && let Some(warr) = wa {
             return windows_multi_axis(warr, x, xa);
         }
-    }
     let n = w.to_usz()?;
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↕𝕩: 𝕩 must be an array".into()))?;
 
@@ -1922,7 +1917,7 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
     }
     // Fill from the end with w elements. When w is longer than x,
     // use the LAST ia elements of w (not the first).
-    let fill_start = if shift > ia { shift - ia } else { 0 };
+    let fill_start = shift.saturating_sub(ia);
     let fill_count = ia - result.len();
     for v in fill_vals.iter().skip(fill_start).take(fill_count) {
         result.push(*v);
