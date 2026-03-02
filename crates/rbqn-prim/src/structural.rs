@@ -36,6 +36,22 @@ fn typed_arr(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
     rbqn_core::array::typed_arr_from_b_vec(elems, shape, fill)
 }
 
+/// Compute major cell size: product of all trailing axis sizes, minimum 1.
+/// For a rank-n array with shape [d0, d1, ..., dn-1]:
+///   cell_size(&shape[1..]) = d1 * d2 * ... * dn-1, or 1 if rank≤1.
+/// Used everywhere we slice along axis 0 to extract/copy major cells.
+#[inline]
+fn cell_size(shape: &[usize]) -> usize {
+    shape.iter().product::<usize>().max(1)
+}
+
+/// Return the length of the first (major) axis.
+/// For rank-0 arrays (scalar arrays), returns 1.
+#[inline]
+fn leading_dim(arr: &BqnArr) -> usize {
+    if arr.shape.is_empty() { 1 } else { arr.shape[0] }
+}
+
 // NOTE: Compute the prototype (fill element) of a BQN value.
 // The prototype replaces all numbers with 0 and all characters with ' '.
 // For arrays: same shape, each element replaced by its prototype.
@@ -1160,9 +1176,9 @@ pub fn prefixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
     let arr = xa.ok_or_else(|| BqnError::Type("↑𝕩: 𝕩 must be an array".into()))?;
 
-    let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
+    let first_dim = leading_dim(arr);
     let cell_shape = &arr.shape[1..];
-    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+    let cell_size: usize = cell_size(cell_shape);
 
     let mut prefixes = Vec::with_capacity(first_dim + 1);
     for i in 0..=first_dim {
@@ -1215,7 +1231,7 @@ pub fn take_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
         xa.ok_or_else(|| BqnError::Type("𝕨↑𝕩: 𝕩 must be an array".into()))?.clone()
     };
 
-    let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
+    let first_dim = leading_dim(&arr);
 
     let fill_val = arr_fill(&arr);
 
@@ -1255,7 +1271,7 @@ pub fn take_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
 
     // Multi-rank take: operates along first axis
     let cell_shape = &arr.shape[1..];
-    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+    let cell_size: usize = cell_size(cell_shape);
     let abs_n = n.unsigned_abs() as usize;
 
     let mut result = Vec::with_capacity(abs_n * cell_size);
@@ -1396,9 +1412,9 @@ pub fn suffixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
     let arr = xa.ok_or_else(|| BqnError::Type("↓𝕩: 𝕩 must be an array".into()))?;
 
-    let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
+    let first_dim = leading_dim(arr);
     let cell_shape = &arr.shape[1..];
-    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+    let cell_size: usize = cell_size(cell_shape);
 
     let mut suffixes = Vec::with_capacity(first_dim + 1);
     for i in 0..=first_dim {
@@ -1452,7 +1468,7 @@ pub fn drop_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
     }
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?;
 
-    let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
+    let first_dim = leading_dim(arr);
 
     if arr.rank() <= 1 {
         let ia = arr.ia() as i32;
@@ -1472,7 +1488,7 @@ pub fn drop_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
 
     // Multi-rank drop: operates along first axis
     let cell_shape = &arr.shape[1..];
-    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+    let cell_size: usize = cell_size(cell_shape);
 
     let fd = first_dim as i32;
     let (start, end) = if n >= 0 {
@@ -1614,7 +1630,7 @@ pub fn windows_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     let n = w.to_usz()?;
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↕𝕩: 𝕩 must be an array".into()))?;
 
-    let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
+    let first_dim = leading_dim(arr);
 
     if n > first_dim + 1 {
         return Err(BqnError::Domain(format!("↕: 𝕨 must be at most 1+≠𝕩 ({} > {})", n, first_dim + 1)));
@@ -1776,7 +1792,7 @@ fn windows_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRe
     if n_axes == 1 {
         let n = axes[0] as usize;
         let dim = arr.shape[0];
-        let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+        let cell_size: usize = cell_size(&arr.shape[1..]);
         let num_windows = dim + 1 - n;
         for w_start in 0..num_windows {
             for row in w_start..w_start + n {
@@ -1805,7 +1821,7 @@ pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];
-        let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+        let cell_size: usize = cell_size(&arr.shape[1..]);
         let mut result = Vec::with_capacity(ia);
         // Copy cells [1..] from original
         for i in 1..first_dim {
@@ -1844,7 +1860,7 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         // Multi-rank: shift major cells along first axis
         let first_dim = arr.shape[0];
         let cell_shape = &arr.shape[1..];
-        let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+        let cell_size: usize = cell_size(cell_shape);
 
         let (shift, w_cells) = match wa {
             Some(warr) if warr.rank() == arr.rank() => {
@@ -1938,7 +1954,7 @@ pub fn shiftb_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];
-        let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+        let cell_size: usize = cell_size(&arr.shape[1..]);
         let mut result = Vec::with_capacity(ia);
         // Fill first cell with type-appropriate fill
         for _ in 0..cell_size {
@@ -1978,7 +1994,7 @@ pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         // Multi-rank: shift major cells along first axis
         let first_dim = arr.shape[0];
         let cell_shape = &arr.shape[1..];
-        let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+        let cell_size: usize = cell_size(cell_shape);
 
         let (shift, w_cells) = match wa {
             Some(warr) if warr.rank() == arr.rank() => {
@@ -2075,7 +2091,7 @@ pub fn reverse_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
     // Multi-rank: reverse major cells
     let first_dim = arr.shape[0];
-    let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+    let cell_size: usize = cell_size(&arr.shape[1..]);
     let mut result = Vec::with_capacity(arr.ia());
     for i in (0..first_dim).rev() {
         for j in 0..cell_size {
@@ -2161,7 +2177,7 @@ pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
                 }
                 return Ok(PrimResult::Array(typed_arr(result, vec![ia], arr.fill)));
             }
-            let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+            let cell_size: usize = cell_size(&arr.shape[1..]);
             let shift = ((n % first_dim as i32) + first_dim as i32) as usize % first_dim;
             let mut result = Vec::with_capacity(arr.ia());
             for i in 0..first_dim {
@@ -2185,7 +2201,7 @@ pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
 
     // Scalar w: rotate first axis
     let n = w.to_i32()?;
-    let first_dim = if arr.shape.is_empty() { 1 } else { arr.shape[0] };
+    let first_dim = leading_dim(arr);
     if first_dim == 0 || arr.ia() == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
@@ -2201,7 +2217,7 @@ pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
     }
 
     // Multi-rank: rotate major cells
-    let cell_size: usize = arr.shape[1..].iter().product::<usize>().max(1);
+    let cell_size: usize = cell_size(&arr.shape[1..]);
     let shift = ((n % first_dim as i32) + first_dim as i32) as usize % first_dim;
     let mut result = Vec::with_capacity(arr.ia());
     for i in 0..first_dim {
