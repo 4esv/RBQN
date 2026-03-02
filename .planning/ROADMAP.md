@@ -143,3 +143,15 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 4. Full Test Suite Green | 9/7 | Complete   | 2026-02-27 |
 | 5. GPU Integration | 6/6 | Complete    | 2026-02-28 |
 | 6. Self-Hosting | 3/3 | Complete   | 2026-03-01 |
+
+### Phase 7: Code Simplification & CBQN Parity — Run code simplifier across all crates, ensure full behavioral parity with CBQN reference implementation
+
+**Goal:** Zero-warning workspace with structurally simplified code and CBQN-matching output for display, repr, errors, and glyph introspection
+**Depends on:** Phase 6
+**Requirements:** SIMP-01, SIMP-02, SIMP-03, PAR-01, PAR-02, PAR-03
+**Plans:** 3 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Clippy auto-fix + manual warning cleanup across all crates (SIMP-01, SIMP-02)
+- [ ] 07-02-PLAN.md — Fix CBQN output parity: •Fmt, •Repr, error format, •Glyph (PAR-01, PAR-02, PAR-03)
+- [ ] 07-03-PLAN.md — Code-simplifier agent sweep on largest files (SIMP-03)

@@ -97,6 +97,16 @@
 - [x] **SELF-04**: build.rs falls back to embedded bytecode when CBQN_PATH absent
 - [x] **SELF-05**: `cargo install rbqn` works with no external dependencies
 
+### SIMP: Code Simplification
+- [ ] **SIMP-01**: All clippy auto-fixable warnings resolved across workspace (143 warnings)
+- [ ] **SIMP-02**: All remaining clippy and compiler warnings manually resolved (66 warnings)
+- [ ] **SIMP-03**: Code-simplifier agent sweep on largest files (derive.rs, modifiers.rs, structural.rs)
+
+### PAR: CBQN Output Parity
+- [ ] **PAR-01**: •Fmt/-p produces box-drawing for multi-dim arrays; •Repr correctly formats numeric arrays
+- [ ] **PAR-02**: Error messages have clean format without double-prefix
+- [ ] **PAR-03**: •Glyph returns descriptive string for non-primitive functions
+
 ## Future Requirements
 
 ### Performance
@@ -193,12 +203,20 @@
 | SELF-03 | Phase 6 | Complete |
 | SELF-04 | Phase 6 | Complete |
 | SELF-05 | Phase 6 | Complete |
+| SIMP-01 | Phase 7 | Planned |
+| SIMP-02 | Phase 7 | Planned |
+| SIMP-03 | Phase 7 | Planned |
+| PAR-01 | Phase 7 | Planned |
+| PAR-02 | Phase 7 | Planned |
+| PAR-03 | Phase 7 | Planned |
 
 **Coverage:**
-- v2.0 requirements: 70 total (note: REQUIREMENTS.md previously stated 57; actual count is 70)
-- Mapped to phases: 70
+- v2.0 requirements: 70 total (phases 1-6)
+- Phase 7 requirements: 6 (post-milestone quality)
+- Total: 76
+- Mapped to phases: 76
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-23*
-*Last updated: 2026-02-23 — traceability filled by roadmapper; all 70 requirements mapped to phases 1-6*
+*Last updated: 2026-03-02 — added Phase 7 SIMP/PAR requirements*
