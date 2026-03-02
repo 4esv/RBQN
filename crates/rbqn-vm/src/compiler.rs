@@ -124,6 +124,7 @@ fn build_all_var_gids(
     gids
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compile_all(
     bc_arr: &[i32],
     objs: Vec<B>,
@@ -199,6 +200,7 @@ struct FixupReq {
     pos2: Option<usize>, // index into body_ps for next dyadic body (None if immediate)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_block(
     block_info: B,
     comp: &Arc<Comp>,
@@ -359,8 +361,8 @@ fn compile_block(
                     c = src_bc_next(bc, c);
                     if c >= bc_ia { break; }
                 }
-                for i in 0..6 {
-                    if arg_used[i] {
+                for (i, &used) in arg_used.iter().enumerate() {
+                    if used {
                         // VARO 0 i, VARM 0 vam+i, SETN, POPS
                         new_bc.extend_from_slice(&[
                             Op::VARO as i32, 0, i as i32,
@@ -547,8 +549,8 @@ fn compile_block(
                     }
                     Some(op_e) => {
                         // Default: copy verbatim
-                        for i in c..n {
-                            new_bc.push(bc[i] as i32);
+                        for &v in &bc[c..n] {
+                            new_bc.push(v as i32);
                         }
                         let sc_val = crate::bytecode::stack_diff(op_e);
                         h += sc_val;

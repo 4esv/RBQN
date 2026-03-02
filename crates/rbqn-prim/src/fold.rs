@@ -38,5 +38,5 @@ pub fn insert_numeric(arr: &BqnArr, f: ScalarDyadFn, identity: Option<f64>) -> R
     if arr.rank() < 2 {
         return fold_numeric(arr, f, identity);
     }
-    Err(error::throw_nyi("˝: rank>1 insert not yet implemented"))
+    error::throw_nyi("˝: rank>1 insert not yet implemented")
 }

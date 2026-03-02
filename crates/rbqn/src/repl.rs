@@ -51,8 +51,8 @@ pub fn run_repl(rt: &Runtime, silent: bool) {
 
 fn eval_line(rt: &Runtime, line: &str, silent: bool, state: &mut ReplState) {
     // Handle REPL commands
-    if line.starts_with(')') {
-        let cmd = line[1..].trim();
+    if let Some(stripped) = line.strip_prefix(')') {
+        let cmd = stripped.trim();
         if cmd == "exit" || cmd == "off" {
             std::process::exit(0);
         }
