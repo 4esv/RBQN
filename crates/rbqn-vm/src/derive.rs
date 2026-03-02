@@ -47,10 +47,7 @@ pub static SYS_NAME: std::sync::LazyLock<Mutex<Option<B>>> =
 /// Set •args from a slice of strings.
 pub fn set_sys_args(args: &[String]) {
     let arr = rbqn_core::array::BqnArr::from_b_vec(
-        args.iter().map(|s| {
-            let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
-            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
-        }).collect()
+        args.iter().map(|s| str_to_b(s)).collect()
     );
     *SYS_ARGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::vm::tag_arr(arr));
 }
@@ -62,18 +59,14 @@ static IMPORT_CACHE: std::sync::LazyLock<Mutex<HashMap<String, B>>> =
 
 /// Set •path and •name from the executing file path.
 pub fn set_sys_path(path: &str) {
-    let path_chars: Vec<u32> = path.chars().map(|c| c as u32).collect();
-    let path_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(path_chars));
-    *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(path_b);
+    *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(str_to_b(path));
 
     // Compute name as basename
     let name = std::path::Path::new(path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    let name_chars: Vec<u32> = name.chars().map(|c| c as u32).collect();
-    let name_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(name_chars));
-    *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()) = Some(name_b);
+    *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()) = Some(str_to_b(name));
 }
 
 // NOTE: BQN primitive glyphs in fruntime order (0-63).
@@ -1061,6 +1054,24 @@ fn prim_result_to_b(r: rbqn_prim::PrimResult) -> B {
     }
 }
 
+/// Unwrap a prim Result, converting errors to BQN panics.
+/// Eliminates the repeated `match r { Ok(pr) => prim_result_to_b(pr), Err(e) => throw_bqn(e) }` pattern.
+#[inline]
+fn call_prim(r: rbqn_core::Result<rbqn_prim::PrimResult>) -> B {
+    match r {
+        Ok(pr) => prim_result_to_b(pr),
+        Err(e) => rbqn_core::error::throw_bqn(e),
+    }
+}
+
+/// Convert a Rust &str to a BQN character array (B value).
+/// Eliminates the repeated `chars: Vec<u32> = s.chars().map... / tag_arr(BqnArr::new_vec_c32(chars))` pattern.
+#[inline]
+fn str_to_b(s: &str) -> B {
+    let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
 fn dispatch_native_md1_c1(prim_idx: usize, operand: B, self_val: B, x: B) -> B {
     crate::modifiers::native_md1_c1(prim_idx, operand, self_val, x)
 }
@@ -1097,11 +1108,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
     let x_arr = crate::vm::get_arr(x);
     match idx {
         0 => { // •Type
-            let r = rbqn_prim::sysfn::type_fn(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::sysfn::type_fn(x, x_arr.as_ref()))
         }
         1 => { // •Decompose
             dispatch_sys_decompose_c1(x)
@@ -1113,11 +1120,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             dispatch_sys_primind_c1(x)
         }
         7 => { // •Fill / •FillFn
-            let r = rbqn_prim::sysfn::fill_fn(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::sysfn::fill_fn(x, x_arr.as_ref()))
         }
         8 => { // setInvReg: stores x (a BQN function) as the inverse-reg resolver,
                // returns nativeInvReg (sys_idx=10)
@@ -1157,18 +1160,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             m_lazy_inv_swap(x)
         }
         22 => { // •_groupLen
-            let r = rbqn_prim::group::group_len(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::group::group_len(x, x_arr.as_ref()))
         }
         23 => { // •_groupOrd
-            let r = rbqn_prim::group::group_ord(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::group::group_ord(x, x_arr.as_ref()))
         }
         // NOTE: •ReBQN (alias for •BQN for now)
         31 => {
@@ -1198,16 +1193,12 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         // NOTE: •Fmt
         34 => {
             // c1: format x as a BQN value string, return as char array.
-            let s = format_b_for_show(x);
-            let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
-            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+            str_to_b(&format_b_for_show(x))
         }
         // NOTE: •Repr
         35 => {
             // c1: return the BQN source representation of x (quoted string for strings, etc.)
-            let s = format_b_repr(x);
-            let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
-            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+            str_to_b(&format_b_repr(x))
         }
         // NOTE: •Exit
         36 => {
@@ -1243,8 +1234,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             let wd = std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let chars: Vec<u32> = wd.chars().map(|c| c as u32).collect();
-            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+            str_to_b(&wd)
         }
         // NOTE: •state (placeholder namespace)
         41 => {
@@ -1328,40 +1318,20 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             native_repr_c1(x)
         }
         201 => { // Internal: /⁼ (inverse of indices)
-            let r = rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref()))
         }
         // NOTE: Internal inverse functions registered in native_inverse_reg
         202 => { // ⋆⁼ = ln(x) — natural logarithm
-            let r = rbqn_prim::arith_monad::log_c1(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::arith_monad::log_c1(x, x_arr.as_ref()))
         }
         203 => { // √⁼ = x^2 — square
-            let r = rbqn_prim::arith_monad::square_c1(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::arith_monad::square_c1(x, x_arr.as_ref()))
         }
         204 => { // +˜⁼ = x÷2 — halve
-            let r = rbqn_prim::arith_monad::halve_c1(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::arith_monad::halve_c1(x, x_arr.as_ref()))
         }
         205 => { // ⍉⁼ = inverse transpose (rank≤2: same as ⍉; rank>2: move first axis to last)
-            let r = rbqn_prim::structural::transpose_inv_c1(x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::structural::transpose_inv_c1(x, x_arr.as_ref()))
         }
         206 => { // <⁼ = unbox: extract content from rank-0 array
             if let Some(ref arr) = x_arr {
@@ -1501,11 +1471,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             B::SENTINEL
         }
         201 => { // Internal: w /⁼ x (dyadic inverse of indices)
-            let r = rbqn_prim::slash::indices_inverse_c2(w, w_arr.as_ref(), x, x_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::slash::indices_inverse_c2(w, w_arr.as_ref(), x, x_arr.as_ref()))
         }
         202 => { // Dyadic ⋆⁼: w⋆⁼x = log_w(x) = ln(x)/ln(w) — apply to each element pair
             // For numeric scalar args:
@@ -1598,20 +1564,12 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         145 => sh_exec_c2(w, x),
         // NOTE: w(+˜)⁼x = x - w  (dyadic: +˜ swaps: w +˜ y = y+w, inverse = y = x - w)
         204 => {
-            let r = rbqn_prim::arith_dyad::sub_c2(x, x_arr.as_ref(), w, w_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::arith_dyad::sub_c2(x, x_arr.as_ref(), w, w_arr.as_ref()))
         }
         // NOTE: w√⁼x = x^w (dyadic sqrt-inverse = power with args swapped)
         // √⁼ monadic is x^2 (sys 203 c1); dyadic is x raised to the power w.
         203 => {
-            let r = rbqn_prim::arith_dyad::pow_c2(x, x_arr.as_ref(), w, w_arr.as_ref());
-            match r {
-                Ok(pr) => prim_result_to_b(pr),
-                Err(e) => rbqn_core::error::throw_bqn(e),
-            }
+            call_prim(rbqn_prim::arith_dyad::pow_c2(x, x_arr.as_ref(), w, w_arr.as_ref()))
         }
         205 => { // w⍉⁼x = inverse-permutation(w)⍉x
             // For a bijective permutation p, inv_perm[j] = i where p[i] = j.
@@ -1647,11 +1605,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                             let inv_arr = rbqn_core::array::BqnArr::new_vec_i32(inv_perm);
                             let inv_b = crate::vm::tag_arr(inv_arr);
                             let inv_b_arr = crate::vm::get_arr(inv_b);
-                            let r = rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref());
-                            return match r {
-                                Ok(pr) => prim_result_to_b(pr),
-                                Err(e) => rbqn_core::error::throw_bqn(e),
-                            };
+                            return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref()));
                         }
                     }
             // Partial permutation (len(w) < rank(x)): extend to full permutation, then invert.
@@ -1695,11 +1649,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                     let inv_arr = rbqn_core::array::BqnArr::new_vec_i32(inv_perm);
                     let inv_b = crate::vm::tag_arr(inv_arr);
                     let inv_b_arr = crate::vm::get_arr(inv_b);
-                    let r = rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref());
-                    return match r {
-                        Ok(pr) => prim_result_to_b(pr),
-                        Err(e) => rbqn_core::error::throw_bqn(e),
-                    };
+                    return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref()));
                 }
             }
             rbqn_core::error::throw("⍉⁼: cannot compute inverse for given permutation")
@@ -1823,18 +1773,14 @@ fn dispatch_sys_decompose_c1(x: B) -> B {
 
 /// •Glyph: return the glyph character for a primitive, or empty string
 fn dispatch_sys_glyph_c1(x: B) -> B {
+    let prims = rbqn_prim::get_runtime();
     if x.is_fun() {
         let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
-        if let DerivedKind::NativeFn { prim_idx } = d.kind {
-            let prims = rbqn_prim::get_runtime();
-            if prim_idx < prims.len() {
-                let glyph = prims[prim_idx].glyph;
-                let chars: Vec<u32> = glyph.chars().map(|c| c as u32).collect();
-                let arr = rbqn_core::array::BqnArr::new_vec_c32(chars);
-                return crate::vm::tag_arr(arr);
+        if let DerivedKind::NativeFn { prim_idx } = d.kind
+            && prim_idx < prims.len() {
+                return str_to_b(prims[prim_idx].glyph);
             }
-        }
     } else if x.is_md1() || x.is_md2() {
         let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
@@ -1843,15 +1789,10 @@ fn dispatch_sys_glyph_c1(x: B) -> B {
             DerivedKind::NativeMd2 { prim_idx } => Some(prim_idx),
             _ => None,
         };
-        if let Some(idx) = prim_idx {
-            let prims = rbqn_prim::get_runtime();
-            if idx < prims.len() {
-                let glyph = prims[idx].glyph;
-                let chars: Vec<u32> = glyph.chars().map(|c| c as u32).collect();
-                let arr = rbqn_core::array::BqnArr::new_vec_c32(chars);
-                return crate::vm::tag_arr(arr);
+        if let Some(idx) = prim_idx
+            && idx < prims.len() {
+                return str_to_b(prims[idx].glyph);
             }
-        }
     }
     // Non-primitive: return a descriptive string matching CBQN behavior
     let desc = if x.is_fun() {
@@ -1863,9 +1804,7 @@ fn dispatch_sys_glyph_c1(x: B) -> B {
     } else {
         "(derived function)"
     };
-    let chars: Vec<u32> = desc.chars().map(|c| c as u32).collect();
-    let arr = rbqn_core::array::BqnArr::new_vec_c32(chars);
-    crate::vm::tag_arr(arr)
+    str_to_b(desc)
 }
 
 /// Native repr: format a B value as a BQN source string (char array).
@@ -1873,10 +1812,7 @@ fn dispatch_sys_glyph_c1(x: B) -> B {
 /// The BQN formatter calls FN for atomic values in ReprAtom; using the BQN-level •Repr
 /// would create a cycle. This native version handles all types directly in Rust.
 fn native_repr_c1(x: B) -> B {
-    let s = native_repr_str(x);
-    let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
-    let arr = rbqn_core::array::BqnArr::new_vec_c32(chars);
-    crate::vm::tag_arr(arr)
+    str_to_b(&native_repr_str(x))
 }
 
 fn native_repr_str(x: B) -> String {
@@ -1918,14 +1854,13 @@ fn native_repr_str(x: B) -> String {
 
 fn native_repr_arr(arr: &rbqn_core::array::BqnArr) -> String {
     // Rank-1 char array → string literal
-    if arr.rank() == 1 && arr.is_char_arr() {
-        if let Ok(chars) = arr.c32_iter() {
+    if arr.rank() == 1 && arr.is_char_arr()
+        && let Ok(chars) = arr.c32_iter() {
             let s: String = chars.iter().filter_map(|&c| char::from_u32(c)).collect();
             // Escape quotes in string
             let escaped = s.replace('"', "\"\"");
             return format!("\"{}\"", escaped);
         }
-    }
     // Rank-1 list of numbers → strand or list
     if arr.rank() == 1 {
         let elems: Vec<String> = (0..arr.ia())
@@ -2062,8 +1997,7 @@ pub fn dispatch_sys_env(idx: u32) -> B {
             let wd = std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let chars: Vec<u32> = wd.chars().map(|c| c as u32).collect();
-            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+            str_to_b(&wd)
         }
         41 => B::SENTINEL, // •state placeholder
         _ => B::SENTINEL,
@@ -2148,10 +2082,7 @@ fn file_lines_c1(x: B) -> B {
     let content = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         rbqn_core::error::throw(format!("•file.Lines: cannot read {path}: {e}"))
     });
-    let lines: Vec<B> = content.lines().map(|line| {
-        let chars: Vec<u32> = line.chars().map(|c| c as u32).collect();
-        crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
-    }).collect();
+    let lines: Vec<B> = content.lines().map(str_to_b).collect();
     crate::vm::b_vec_to_arr(lines)
 }
 
@@ -2172,10 +2103,7 @@ fn file_list_c1(x: B) -> B {
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
     names.sort();
-    let bqn_names: Vec<B> = names.iter().map(|name| {
-        let chars: Vec<u32> = name.chars().map(|c| c as u32).collect();
-        crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
-    }).collect();
+    let bqn_names: Vec<B> = names.iter().map(|name| str_to_b(name)).collect();
     crate::vm::b_vec_to_arr(bqn_names)
 }
 
@@ -2185,8 +2113,7 @@ fn file_chars_c1(x: B) -> B {
     let content = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         rbqn_core::error::throw(format!("•FChars: cannot read {path}: {e}"))
     });
-    let chars: Vec<u32> = content.chars().map(|c| c as u32).collect();
-    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+    str_to_b(&content)
 }
 
 /// •FChars dyadic / •file.Chars dyadic: write string w to file x.
@@ -2222,10 +2149,7 @@ fn file_bytes_c2(w: B, x: B) -> B {
 /// •file.At monadic: returns x unchanged (identity for absolute paths).
 fn file_at_c1(x: B) -> B {
     // Monadic: just resolve relative to •path
-    let path_str = b_to_string(x);
-    let resolved = resolve_path(path_str);
-    let chars: Vec<u32> = resolved.chars().map(|c| c as u32).collect();
-    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+    str_to_b(&resolve_path(b_to_string(x)))
 }
 
 /// •file.At dyadic: resolve name x relative to base path w.
@@ -2233,9 +2157,7 @@ fn file_at_c2(w: B, x: B) -> B {
     let base = b_to_string(w);
     let name = b_to_string(x);
     let result = std::path::Path::new(&base).join(&name);
-    let result_str = result.to_string_lossy().into_owned();
-    let chars: Vec<u32> = result_str.chars().map(|c| c as u32).collect();
-    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+    str_to_b(&result.to_string_lossy())
 }
 
 /// •file.Name: extract filename (basename) from path.
@@ -2245,8 +2167,7 @@ fn file_name_c1(x: B) -> B {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    let chars: Vec<u32> = name.chars().map(|c| c as u32).collect();
-    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+    str_to_b(name)
 }
 
 /// •file.Parent: extract parent directory from path (includes trailing slash).
@@ -2262,8 +2183,7 @@ fn file_parent_c1(x: B) -> B {
             s
         })
         .unwrap_or_default();
-    let chars: Vec<u32> = parent.chars().map(|c| c as u32).collect();
-    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+    str_to_b(&parent)
 }
 
 /// •file.Exists: check if file or directory exists. Returns 0 or 1.
@@ -2451,8 +2371,7 @@ fn sys_fromutf8_c1(x: B) -> B {
     let s = String::from_utf8(bytes).unwrap_or_else(|e| {
         rbqn_core::error::throw(format!("•FromUTF8: invalid UTF-8: {e}"))
     });
-    let chars: Vec<u32> = s.chars().map(|c| c as u32).collect();
-    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+    str_to_b(&s)
 }
 
 /// •ToUTF8: convert character array to UTF-8 byte array.
@@ -2650,8 +2569,7 @@ fn dispatch_sys_bqn_eval(src: &str) -> B {
         vec![rt_arr, sys_fn, var_names, var_depths]
     ));
 
-    let src_chars: Vec<u32> = src.chars().map(|c| c as u32).collect();
-    let src_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(src_chars));
+    let src_b = str_to_b(src);
 
     // Call compiler: compiler(comp_args, src_b) → ⟨bc, objs, blocks, bodies, ...⟩
     let comp_result = c2(compiler, comp_args, src_b);
@@ -2687,8 +2605,7 @@ fn dispatch_sys_bqn_eval(src: &str) -> B {
         (0..bodies_arr.ia()).map(|i| bodies_arr.get(i).unwrap_or(B::SENTINEL)).collect()
     } else { vec![] };
 
-    let src_chars2: Vec<u32> = src.chars().map(|c| c as u32).collect();
-    let src_b2 = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(src_chars2));
+    let src_b2 = str_to_b(src);
 
     let block = rbqn_vm_compile_all(
         &bc, objs, &blocks, &bodies,
@@ -3170,20 +3087,10 @@ fn make_platform_namespace() -> B {
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
 
-    // Build os string as immediate value
-    let os_str = std::env::consts::OS; // "linux", "macos", "windows", etc.
-    let os_chars: Vec<u32> = os_str.chars().map(|c| c as u32).collect();
-    let os_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(os_chars));
-
-    // arch string
-    let arch_str = std::env::consts::ARCH;
-    let arch_chars: Vec<u32> = arch_str.chars().map(|c| c as u32).collect();
-    let arch_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(arch_chars));
-
-    // impl string
-    let impl_str = "RBQN";
-    let impl_chars: Vec<u32> = impl_str.chars().map(|c| c as u32).collect();
-    let impl_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(impl_chars));
+    // Build os, arch, impl strings as immediate values
+    let os_b = str_to_b(std::env::consts::OS); // "linux", "macos", "windows", etc.
+    let arch_b = str_to_b(std::env::consts::ARCH);
+    let impl_b = str_to_b("RBQN");
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
@@ -3209,14 +3116,8 @@ fn platform_env_c1(x: B) -> B {
     // •platform.environment "VAR" — look up environment variable
     let name = b_to_string(x);
     match std::env::var(&name) {
-        Ok(val) => {
-            let chars: Vec<u32> = val.chars().map(|c| c as u32).collect();
-            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
-        }
-        Err(_) => {
-            // Return empty string if not found
-            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(vec![]))
-        }
+        Ok(val) => str_to_b(&val),
+        Err(_) => str_to_b(""), // Return empty string if not found
     }
 }
 
@@ -3233,20 +3134,12 @@ fn sh_exec_c1(x: B) -> B {
         .unwrap_or_else(|e| rbqn_core::error::throw(format!("•SH: failed to run command: {e}")));
 
     let exit_code = output.status.code().unwrap_or(-1) as f64;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let stdout_b = str_to_b(&String::from_utf8_lossy(&output.stdout));
+    let stderr_b = str_to_b(&String::from_utf8_lossy(&output.stderr));
 
-    let stdout_chars: Vec<u32> = stdout.chars().map(|c| c as u32).collect();
-    let stderr_chars: Vec<u32> = stderr.chars().map(|c| c as u32).collect();
-    let stdout_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(stdout_chars));
-    let stderr_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(stderr_chars));
-
-    let result = rbqn_core::array::BqnArr::from_b_vec(vec![
-        B::m_f64(exit_code),
-        stdout_b,
-        stderr_b,
-    ]);
-    crate::vm::tag_arr(result)
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::from_b_vec(vec![
+        B::m_f64(exit_code), stdout_b, stderr_b,
+    ]))
 }
 
 fn sh_exec_c2(_w: B, x: B) -> B {
@@ -3264,16 +3157,11 @@ fn sh_exec_c2(_w: B, x: B) -> B {
                 let output = proc.output()
                     .unwrap_or_else(|e| rbqn_core::error::throw(format!("•SH: failed to run: {e}")));
                 let exit_code = output.status.code().unwrap_or(-1) as f64;
-                let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-                let stdout_chars: Vec<u32> = stdout.chars().map(|c| c as u32).collect();
-                let stderr_chars: Vec<u32> = stderr.chars().map(|c| c as u32).collect();
-                let stdout_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(stdout_chars));
-                let stderr_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(stderr_chars));
-                let result = rbqn_core::array::BqnArr::from_b_vec(vec![
+                let stdout_b = str_to_b(&String::from_utf8_lossy(&output.stdout));
+                let stderr_b = str_to_b(&String::from_utf8_lossy(&output.stderr));
+                return crate::vm::tag_arr(rbqn_core::array::BqnArr::from_b_vec(vec![
                     B::m_f64(exit_code), stdout_b, stderr_b,
-                ]);
-                return crate::vm::tag_arr(result);
+                ]));
             }
     // Fall back to monadic form with x as string command
     sh_exec_c1(x)
@@ -3415,11 +3303,7 @@ fn ns_keys_c1(x: B) -> B {
         rbqn_core::error::throw("•ns.Keys: 𝕩 must be a namespace");
     }
     let ns = crate::namespace::get_ns(x);
-    let names: Vec<B> = ns.desc.exp_gids.iter().map(|&gid| {
-        let name = crate::namespace::gid2str(gid);
-        let chars: Vec<u32> = name.chars().map(|c| c as u32).collect();
-        crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
-    }).collect();
+    let names: Vec<B> = ns.desc.exp_gids.iter().map(|&gid| str_to_b(&crate::namespace::gid2str(gid))).collect();
     crate::vm::b_vec_to_arr(names)
 }
 
