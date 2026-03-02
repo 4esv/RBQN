@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-23)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 7 — Code Simplification & CBQN Parity (in progress)
+**Current focus:** Phase 7 — Code Simplification & CBQN Parity (COMPLETE)
 
 ## Current Position
 
-Phase: 7 of 7 (Code Simplification & CBQN Parity) — IN PROGRESS
-Plan: 2 of 3 in Phase 7 complete (07-01, 07-02 complete)
-Status: 07-02 complete — CBQN parity: box-drawing formatter, clean error messages, •Glyph descriptive strings
-Last activity: 2026-03-02 - Completed 07-02: box-drawing for rank-2+ arrays, •Repr for numeric arrays, clean errors
+Phase: 7 of 7 (Code Simplification & CBQN Parity) — COMPLETE
+Plan: 3 of 3 in Phase 7 complete (07-01, 07-02, 07-03 complete)
+Status: 07-03 complete — structural simplification: 6 shared helpers, -118 lines, 0 warnings, 1316 tests green
+Last activity: 2026-03-02 - Completed 07-03: simplified derive.rs, modifiers.rs, structural.rs, arith_dyad.rs
 
-Progress: [██████████] 100% (Phase 6 complete + Phase 7 started)
+Progress: [██████████] 100% (All phases complete)
 
 ## Performance Metrics
 
@@ -46,6 +46,7 @@ Progress: [██████████] 100% (Phase 6 complete + Phase 7 star
 | Phase 06 P03 | 45min | 2 tasks | 2 files |
 | Phase 07 P01 | 35min | 2 tasks | 13 files |
 | Phase 07 P02 | 24min | 2 tasks | 7 files |
+| Phase 07 P03 | 35min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -123,6 +124,10 @@ Progress: [██████████] 100% (Phase 6 complete + Phase 7 star
 - [Phase 07]: Native repr function (sys_fn 200) for BQN formatter: m_sys_fn(35) causes infinite recursion because ReprAtom calls FN on numbers; native Rust repr avoids this
 - [Phase 07]: throw_bqn(BqnError) via panic_any preserves error variant through catch_unwind; panic_to_bqn_error() downcasts directly, eliminating Domain error double-prefix
 
+- [07-03]: native_prim_idx() helper extracts prim_idx from fun/md1/md2 B value — shared by dispatch_sys_glyph_c1 and dispatch_sys_primind_c1
+- [07-03]: typed_arr_from_b_vec + override fill = simplified results_to_arr_fill without changing None fill semantics
+- [07-03]: strides_from_shape() goes in structural.rs (not rbqn-core) — only needed internally in join/rotate computations
+
 ### Pending Todos
 
 None yet.
@@ -147,5 +152,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 07-01-PLAN.md (zero-warning workspace, all 1316 tests green — ready for Phase 7 Plans 02 and 03)
+Stopped at: Completed 07-03-PLAN.md (structural simplification — all Phase 7 plans done, 1316 tests green, 0 warnings)
 Resume file: None

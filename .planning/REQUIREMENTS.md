@@ -100,7 +100,7 @@
 ### SIMP: Code Simplification
 - [x] **SIMP-01**: All clippy auto-fixable warnings resolved across workspace (143 warnings)
 - [x] **SIMP-02**: All remaining clippy and compiler warnings manually resolved (66 warnings)
-- [ ] **SIMP-03**: Code-simplifier agent sweep on largest files (derive.rs, modifiers.rs, structural.rs)
+- [x] **SIMP-03**: Code-simplifier agent sweep on largest files (derive.rs, modifiers.rs, structural.rs)
 
 ### PAR: CBQN Output Parity
 - [x] **PAR-01**: •Fmt/-p produces box-drawing for multi-dim arrays; •Repr correctly formats numeric arrays
