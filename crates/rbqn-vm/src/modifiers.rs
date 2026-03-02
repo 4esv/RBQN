@@ -362,7 +362,7 @@ fn normalize_cell_result(result: B, cell_shape: &[usize], cell_size: usize) -> B
 }
 
 fn get_elem(arr: &BqnArr, i: usize) -> B {
-    arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
+    arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e))
 }
 
 /// Extract major cell `cell_idx` from a higher-rank array.
@@ -1458,7 +1458,7 @@ fn take_under(f: B, k: B, x: B, drop: bool) -> B {
         let mut take_starts: Vec<usize> = Vec::with_capacity(rank);
         let mut take_lens: Vec<usize> = Vec::with_capacity(rank);
         for i in 0..rank {
-            let ki = ka.get(i).unwrap_or_else(|e| rbqn_core::error::throw(e.to_string())).o2f();
+            let ki = ka.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f();
             let si = xa.shape[i];
             let abs_ki = ki.abs() as usize;
             if abs_ki > si {
@@ -2074,7 +2074,7 @@ fn repeat_c1(f: B, g: B, x: B) -> B {
         return repeat_c1_arr(f, &garr, x);
     }
     let n = if g.is_f64() {
-        g.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
+        g.to_i32().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e))
     } else {
         // g is a function: compute count by calling g(x)
         let n_b = c1(g, x);
@@ -2082,7 +2082,7 @@ fn repeat_c1(f: B, g: B, x: B) -> B {
             let narr = arr_of(n_b);
             return repeat_c1_arr(f, &narr, x);
         }
-        n_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
+        n_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e))
     };
     if n < 0 {
         // NOTE: Negative repeat: apply inverse n times
@@ -2115,7 +2115,7 @@ fn repeat_c1_arr(f: B, counts: &rbqn_core::BqnArr, x: B) -> B {
     let mut count_vals: Vec<i32> = Vec::with_capacity(n);
     for i in 0..n {
         let count_b = get_elem(counts, i);
-        let count = count_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+        let count = count_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
         count_vals.push(count);
     }
     // If all counts are negative, or mixed, fall back to independent evaluation
@@ -2162,7 +2162,7 @@ fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
         return repeat_c2_arr(f, &garr, w, x);
     }
     let n = if g.is_f64() {
-        g.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
+        g.to_i32().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e))
     } else {
         // g is a function: compute count by calling g(w, x) or g(x)
         let n_b = c2(g, w, x);
@@ -2170,7 +2170,7 @@ fn repeat_c2(f: B, g: B, w: B, x: B) -> B {
             let narr = arr_of(n_b);
             return repeat_c2_arr(f, &narr, w, x);
         }
-        n_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()))
+        n_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e))
     };
     if n < 0 {
         let f_inv = crate::derive::inv_reg(f);
@@ -2196,7 +2196,7 @@ fn repeat_c2_arr(f: B, counts: &rbqn_core::BqnArr, w: B, x: B) -> B {
     let mut count_vals: Vec<i32> = Vec::with_capacity(n);
     for i in 0..n {
         let count_b = get_elem(counts, i);
-        let count = count_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw(e.to_string()));
+        let count = count_b.to_i32().unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
         count_vals.push(count);
     }
     let all_nonneg = count_vals.iter().all(|&c| c >= 0);
