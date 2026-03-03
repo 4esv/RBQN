@@ -27,6 +27,11 @@ name = "rbqn-gen"
 path = "src/bin/rbqn_gen.rs"
 required-features = ["gen-tools"]
 
+[[bin]]
+name = "inspect-compiler"
+path = "src/bin/inspect_compiler.rs"
+required-features = ["gen-tools"]
+
 [[bench]]
 name = "gpu_bench"
 harness = false

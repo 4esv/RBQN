@@ -45,8 +45,9 @@ pub fn derived_equal(w: B, x: B, depth: u32) -> bool {
 }
 
 // Thread-local function for derived equality comparison (set by rbqn-vm)
+type DerivedEqualFn = Box<dyn Fn(B, B, u32) -> bool>;
 std::thread_local! {
-    static DERIVED_EQUAL_FN: std::cell::RefCell<Option<Box<dyn Fn(B, B, u32) -> bool>>> =
+    static DERIVED_EQUAL_FN: std::cell::RefCell<Option<DerivedEqualFn>> =
         std::cell::RefCell::new(None);
 }
 

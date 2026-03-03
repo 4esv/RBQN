@@ -7,6 +7,7 @@ use crate::pipeline::{PipelineCache, PipelineKey};
 const SHADER_F32: &str = include_str!("../shaders/matmul_f32.wgsl");
 
 /// Multiply A (M x K) by B (K x N) producing C (M x N).
+#[allow(clippy::too_many_arguments)]
 pub fn matmul(
     device: &Arc<wgpu::Device>,
     queue: &wgpu::Queue,

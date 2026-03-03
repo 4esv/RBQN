@@ -185,8 +185,6 @@ pub fn sort_i32(
     cache: &mut PipelineCache,
     input: &GpuBuffer,
 ) -> GpuBuffer {
-    let n = input.len();
-
     // Download i32 data from GPU.
     let i32_data = pollster::block_on(
         crate::buffer::download_i32(device, queue, input)

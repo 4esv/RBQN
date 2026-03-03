@@ -1,0 +1,113 @@
+=== prim ===
+FAIL|0|71
+"1≡{a‿b←⟨+´,+´⟩⋄a=b}": expected 1 but received 0
+"(=¨⟜(⥊⟜(↕×´)3‿4)≡(↕4)=⌜˜4|⊢)1‿6‿8": expected 1 but evaluation failed
+"⟨⟩⊑↕10": expected to fail but received ‿‿‿‿‿‿‿‿‿
+"2⊑3+⌜○↕4": expected to fail but received ‿‿‿
+"⟨2,⟨3⟩⟩⊑↕4": expected to fail but received ‿
+"(<2)⊑↕4": expected to fail but received (<)
+"(≍≍2)⊑↕4": expected to fail but received (‿⥊⟨⟩)
+"⟨≍1‿2⟩⊑↕5‿5": expected to fail but received ⟨(‿⥊⟨⟨‿,‿,‿,‿,‿⟩,⟨‿,‿,‿,‿,‿⟩⟩)⟩
+"≡´⟨2‿⌽‿4,2‿3‿4⟩⥊¨<↕19": expected 1 but evaluation failed
+"2‿3≡>⟨<2,3⟩": expected 1 but evaluation failed
+"⌽⎉1.1 ↕4": expected to fail but received ‿‿‿
+"(<1)≡≡˘<0": expected 1 but received 0
+"(2⥊<<"ab") ≡ ⋈˜˘<"ab"": expected 1 but received 0
+"(2×↕7)≡2+⍟(¯3+↕7)6": expected 1 but evaluation failed
+"(3⌊↕5)≡{i←0⋄r←{i+↩1⋄1+𝕩}⍟(↕4)𝕩⋄r∾i}0": expected 1 but received 0
+"(+⌜˜≡·>1+⍟⊢⊢)↕5": expected 1 but evaluation failed
+"(+˝≡·<+´)¯8‿4‿¯38‿'!'‿21": expected 1 but received 0
+"(⋈˝˘≡<¨)3‿2⥊"abcdef"": expected 1 but received 0
+"((0∾¨↕3)≍3⥊0)≡≡`↕2‿3": expected 1 but evaluation failed
+"≡⟜(!∘0`)3‿0‿2⥊""": expected 1 but evaluation failed
+"⟨3‿0,2‿1‿2⟩(×⟜5⊸+⌜´∘⊣≡⊏)⥊⟜(↕×´)6‿5": expected 1 but received 0
+"(2‿0⥊0)≡⟨3‿¯1,⟨⟩⟩⊏4‿3⥊0": expected 1 but received 0
+"5‿1(<⊸⊏≡⊏)↕6‿2": expected 1 but evaluation failed
+"⟨4‿0,1‿2‿3‿2‿1‿0⟩(+⌜´⊸(×⌜)≡⊏⟜(×⌜˜))+⌜˜↕5": expected 1 but received 0
+"∧´1=≡¨(<⟨⟩)(↑¨∾↓¨)⟨@,+,<@,↕3⟩": expected 1 but evaluation failed
+"(↑⟜4≡⥊⟜0)↕3": expected 1 but evaluation failed
+"(≍"abc")≡(<1)↑2‿3↑"abcd"": expected 1 but evaluation failed
+"(6⥊1)(↑≡⥊⟜⊑)2‿3⥊↕6": expected 1 but evaluation failed
+"(↑≡((↕4)≍¨2)⥊¨<)3‿2⥊"abcdef"": expected 1 but evaluation failed
+"1‿1‿3‿2‿1≡≢(5⥊0)↓↕3‿2‿1": expected 1 but evaluation failed
+"⟨⟩(↕≡⊢)4‿3⥊"abcd"": expected 1 but evaluation failed
+"(<≡⟨⟩⊸↕){×}": expected 1 but evaluation failed
+""d"≡"abcd"«⟨4⟩": expected 1 but received 0
+"(1⊸⌽≡⊏⊸«)'a'+⥊⟜(↕×´)4‿2": expected 1 but received 0
+"¯2(⌽≡↑»⊢)'a'+⥊⟜(↕×´)4‿2": expected 1 but received 0
+"«˜⊸≡2‿3⥊"abcdef"": expected 1 but received 0
+"∧´5(⌽≡⊢)¨⟨"",⥊∞,↕5,↕0‿4,2‿0‿3⥊""⟩": expected 1 but evaluation failed
+"∧´⟨1,0‿2,¯1‿1‿3⟩(⊑∘⌽≡(3⊸↑)⊸⊑)⚇¯1‿∞ 2‿3‿5⥊"abcdef"": expected 1 but evaluation failed
+"(6‿0⥊"")≡⟨5,1⟩‿⟨⟩/2‿0⥊""": expected 1 but evaluation failed
+"(≍1∾¨1‿2‿2)≡(↕¨/↕)2‿3": expected 1 but evaluation failed
+"(⟨⟩⊸/≡<)'a'": expected 1 but received 0
+"⟨⟩(/≡⊢)↕10": expected 1 but evaluation failed
+"⟨⟩(/≡⊢)≍"ab"": expected 1 but evaluation failed
+"⟨2,<3⟩(/≡⥊˜¨⟜≢/⊢)'a'+4‿2⥊↕8": expected 1 but evaluation failed
+"(≡⟜∾∧≡⟜(∾<))<4": expected 1 but evaluation failed
+"⟨1‿4,⥊2⟩((∾⋆⌜⌜)≡⋆⌜○∾)⟨2‿3‿4,⟨⟩,⥊5⟩": expected 1 but evaluation failed
+"(6‿3⥊0)≡∾⟨2‿3,3,3‿3⟩⥊¨0": expected 1 but evaluation failed
+"(↕4‿3)≡(↕3‿3)∾3∾¨↕3": expected 1 but evaluation failed
+"(∾´≡∾)⟨3‿2‿1,0‿2‿1⟩⥊¨<↕6": expected 1 but evaluation failed
+"(⊔≡·≍⍟2∘<·∾⌜´/∘(0⊸=)¨)⟨0‿¯1‿0‿0,¯1‿0‿0⟩": expected 1 but evaluation failed
+"(0‿0‿1↑⌜≍⍟2∘<∘⥊¨1‿0)≡⊔⟨2,1‿0⟩": expected 1 but received 0
+"(0‿0‿1↑⌜≍⍟2∘(<0‿0‿0⊸∾)¨1‿0)≡⊔0‿0⊸↓¨⟨2,1‿0⟩": expected 1 but evaluation failed
+"(≍˘1‿1‿4<∘⥊⎉1 16‿4+⌜↕4)≡2↓⟨3‿2,¯1‿0‿¯1⟩⊔2‿3‿4⥊↕24": expected 1 but evaluation failed
+"(∾↕¨∘≢⊸⊔)⊸≡ 3‿2‿4⥊↕24": expected 1 but evaluation failed
+"-⟜'a'⊸(⊔≡⊔○⥊)"acc"≍"bac"": expected 1 but evaluation failed
+"(2‿1/⟨↕0‿1,1‿1⥊3⟩)≡2⊔⥊3": expected 1 but evaluation failed
+"((<=·↕1⊸+)≡·≢¨<¨⊸⊔⟜(<@))2‿1‿3": expected 1 but evaluation failed
+"(≍1‿1‿0≍∘/⟜≍¨"bac")≡⟨0,1‿0‿3⟩⊔"ab"": expected 1 but evaluation failed
+"(⌽˘≡·∾⟨2‿2,1‿0‿1⟩⊸⊔)"ab"≍"cd"": expected 1 but evaluation failed
+"(↕5)∊1": expected to fail but received ‿‿‿‿
+"(<1)≡3‿4‿5∊4+⌜○↕3": expected 1 but received 0
+"(↕3‿0)≡⍷⟜(≍˘)"abc"": expected 1 but evaluation failed
+"'a'(=≡⍷)"abc"": expected 1 but evaluation failed
+"⟨⟩(⍉≡⊢)<4": expected 1 but evaluation failed
+"(↕1‿2‿0‿3)≡2<⊸⍉↕↕4": expected 1 but evaluation failed
+"(⍒≡⌽∘↕∘≠)(<∾⟨↕0,1,1‿1,2‿1‿1,2‿1,2,1‿2,2‿2,3⟩⥊¨<)'a'": expected 1 but evaluation failed
+"⟨1,2,3,1‿2,2‿1,1‿3,2‿2,3‿1⟩(⥊⊸(≠∘⊣∾˜¯1⊸⊑⊸(⌊∾⊣)∾×´⊸⌊)⌜≡○(⍋⥊)⥊⌜⟜(+`∘≠⟜(↕6)¨))↕4": expected 1 but evaluation failed
+"⟨1‿3‿1,1‿3‿2⟩⍒⟨1‿3‿{𝕩}⟩": expected to fail but received ⟨⟩
+"(<∘⌈≡(↕6)⊸⍋)2.5": expected 1 but evaluation failed
+"(<1)≡(↕2‿3)⍋1+↕3": expected 1 but received 0
+"(2‿3‿0≍3‿1‿3)≡"cca"⊒○(≍˜⎉0)3↕"abcd"": expected 1 but received 0
+
+=== fill ===
+FAIL|0|6
+"∧´ (2⊸↑ ≡ 1‿0⊸×)∘<¨ ⟨π, ↕3, "", 2+⌜○↕3, ≍˘⟨2‿1,↕4‿2⟩⟩": expected 1 but evaluation failed
+"(↑ ≡○(⊑¯7⊸↑) ↓) ≍˘⟨↕3,"ab"⟩": expected 1 but received 0
+"' '‿0 ≡ ⊑»1‿2‿0⍉3↕(<'a'‿1)+↕4‿5": expected 1 but evaluation failed
+"(3⥊0) ≡ ⊑» ⟨2‿0,<1,≍1‿3⟩⊏↕3‿2‿4": expected 1 but evaluation failed
+"0‿' ' ≡ ⊑» <` (↕3) + <0‿'x'": expected 1 but evaluation failed
+"≡○(⊑»)⟜(∾↑) (↕3) + <⟨0,'a'‿2⟩": expected 1 but evaluation failed
+
+=== header ===
+FAIL|0|8
+"{-÷}≡1-{𝕨𝕗_𝕣_𝕘𝕩:𝔽𝔾}÷2": expected 1 but received 0
+"1-{𝕗_𝕣_𝕘𝕩:𝔽𝔾}÷2": expected to fail but received -÷
+"{2 ? 3;4}": expected to fail but received 4
+"⟨0‿1,2⟩≡{1‿b:b;𝕊:𝕩}¨+⟜<↕2": expected 1 but evaluation failed
+"0‿1‿'c'‿3 ≡ {S a‿2:a;S a‿b:b}¨"abcd"∾¨↕4": expected 1 but evaluation failed
+"2{⟨a,b⟩_r:a+b;a _r: a‿a _r}": expected 4 but evaluation failed
+"{b⇐3} ÷○{⟨a⟩:a+1; 𝕤,8} {a⇐3}": expected 2 but received 1
+"{⟨al⇐a⟩:al+1; 𝕊:0} {a⇐5}": expected 6 but received 0
+
+=== under ===
+FAIL|0|9
+"7(⥊⌾(<˘)≡·<˘⁼⥊⟜(<˘))3‿3⥊↕9": expected 1 but received 0
+""abcd" (⊣≡»⌾≍) ↕4": expected 1 but received 0
+"1 ≡ "cd"‿"ab"⊸⊐⌾< "ab"": expected 1 but received 0
+"1⊸⌽⌾(1‿3‿3‿0⊸⊏)"abcd"": expected to fail but received "bdca"
+"("bac"≍"def") ≡ ⌽˘⌾((-⟜1¨≢)⊸↑) "abc"≍"def"": expected 1 but evaluation failed
+"("aef"≍"dbc") ≡ ⌽⌾(2‿1⊏⎉1⊢) "abc"≍"def"": expected 1 but evaluation failed
+"("abe"≍"dcf") ≡ ⌽⌾(2‿1⊏⎉¯1⊢) "abc"≍"def"": expected 1 but evaluation failed
+"("aef"≍"dbc") ≡ ⌽⌾(2‿1⊏⎉(-˜○=)⊢) "abc"≍"def"": expected 1 but evaluation failed
+"⌽⌾(1↓4↑⊢)"abc"": expected to fail but received "b c"
+
+=== undo ===
+FAIL|0|4
+"(<⁼<)¨⊸≡⟨0,⟨⟩,"abc"⟩": expected 1 but received 0
+"∧´ {6(𝕎˜⁼≡𝕎⁼)𝕩}⟜¯0.8‿0‿3¨ +‿×‿∧": expected 1 but received 0
+"16√˜⁼2": expected 4 but received 65536
+"(∾˜ ≡ ·(<⌜⁼∾<¨⁼)<¨) "abcd"": expected 1 but received 0
+

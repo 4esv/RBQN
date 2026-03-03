@@ -79,7 +79,7 @@ impl FusionBuilder {
         ));
         src.push_str("    let idx = id.x;\n");
 
-        let out_binding = if needs_b { "output" } else { "output" };
+        let out_binding = "output";
         src.push_str(&format!(
             "    if (idx >= arrayLength(&{out_binding})) {{ return; }}\n"
         ));
