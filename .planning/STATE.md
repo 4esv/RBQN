@@ -5,15 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-03-03)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Planning next milestone (v2.0 complete — archived 2026-03-03)
+**Current focus:** Milestone v3.0 — True Self-Hosting & CBQN Parity (defining requirements)
 
 ## Current Position
 
-Milestone v2.0 COMPLETE — archived to .planning/milestones/v2.0-ROADMAP.md
-All 7 phases, 33 plans, 76 requirements complete.
-Ready for: /gsd:new-milestone to plan v3.0
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements for v3.0
+Last activity: 2026-03-03 — Milestone v3.0 started
 
-Progress: [██████████] 100% — Milestone shipped
+Progress: [░░░░░░░░░░] 0% — New milestone
 
 ## Performance Metrics
 

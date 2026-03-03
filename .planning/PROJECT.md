@@ -23,17 +23,27 @@ Correct BQN execution with identical behavior to CBQN — if it runs in CBQN, it
 - ✓ Zero-warning workspace (0 clippy + 0 compiler warnings) — v2.0
 - ✓ CBQN output parity: •Fmt box-drawing, •Repr, clean errors, •Glyph — v2.0
 
+## Current Milestone: v3.0 — True Self-Hosting & CBQN Parity
+
+**Goal:** RBQN with zero dependency on CBQN at any point — RBQN compiles its own bootstrap bytecode — plus full behavioral parity fixing all known stubs and edge cases.
+
+**Target features:**
+- Complete CBQN-free self-hosting: RBQN compiles its own .bin files, no CBQN tool needed at any point
+- Full •FFI, •bit, •term namespace implementations (currently stubs)
+- Fix •math edge cases (Comb monadic, LCM monadic)
+- Portable test infrastructure (remove hardcoded paths)
+- Systematic parity validation: run CBQN and RBQN on large corpus, fix all divergences
+
 ### Active
 
-*(Planning for v3.0)*
-
-- [ ] SIMD-accelerated primitive dispatch for CPU path (PERF-01)
-- [ ] Type-specialized array dispatch (avoid boxing for homogeneous arrays) (PERF-02)
-- [ ] Full •FFI implementation (currently stubs NotImplemented)
-- [ ] Full •bit/•term namespace implementation (currently partial stubs)
-- [ ] Self-compiled bytecode human verification (SELF-02 swap test)
-- [ ] Portable test scripts (remove hardcoded /Users/axel/ paths)
-- [ ] •math.Comb monadic / •math.LCM monadic correct implementations
+- [ ] RBQN-compiled .bin files committed (no CBQN-compiled bytecode in repo) (SELF3-01)
+- [ ] Build chain verified: `cargo build` and `cargo install` work with zero CBQN involvement (SELF3-02)
+- [ ] •FFI: call native shared libraries from BQN (PARITY-01)
+- [ ] •bit namespace fully implemented (bitwise ops matching CBQN) (PARITY-02)
+- [ ] •term namespace: RawMode, CharB, Flush matching CBQN (PARITY-03)
+- [ ] •math.Comb monadic (binomial coefficient), •math.LCM monadic correct (PARITY-04)
+- [ ] Portable test scripts (no hardcoded paths) (QUAL-01)
+- [ ] Systematic parity validation corpus (QUAL-02)
 
 ### Out of Scope
 
@@ -81,4 +91,4 @@ Correct BQN execution with identical behavior to CBQN — if it runs in CBQN, it
 | Code simplification as milestone phase | -88 lines in VM dispatch, shared helpers, zero warnings | ✓ Worth it |
 
 ---
-*Last updated: 2026-03-03 after v2.0 milestone*
+*Last updated: 2026-03-03 after v3.0 milestone planning*
