@@ -63,6 +63,7 @@ Fix all known behavioral gaps to achieve 1:1 parity with CBQN.
 | SELF3-03 | Phase 8 | Pending |
 | SELF3-04 | Phase 8 | Pending |
 | SELF3-05 | Phase 8 | Pending |
+| QUAL-03 | Phase 8 | Pending |
 | PAR3-01 | Phase 9 | Pending |
 | PAR3-02 | Phase 9 | Pending |
 | PAR3-03 | Phase 9 | Pending |
@@ -71,12 +72,11 @@ Fix all known behavioral gaps to achieve 1:1 parity with CBQN.
 | PAR3-06 | Phase 9 | Pending |
 | QUAL-01 | Phase 10 | Pending |
 | QUAL-02 | Phase 10 | Pending |
-| QUAL-03 | Phase 8 | Pending |
 
 **Coverage:**
 - v3.0 requirements: 14 total
 - Mapped to phases: 14
-- Unmapped: 0 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-03*
