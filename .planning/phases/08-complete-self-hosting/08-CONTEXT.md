@@ -27,7 +27,7 @@ RBQN compiles its own `.bin` files via `rbqn-gen --self`. After this phase, `car
 ### Verification rigor
 - Full verification suite required before Phase 8 can be called done:
   1. All 1316 official BQN tests pass with RBQN-compiled bins
-  2. RBQN-compiled bins must be **byte-for-byte identical** to CBQN-compiled bins (hard requirement)
+  2. RBQN-compiled bins must be **literally byte-for-byte identical to CBQN-compiled bins** (hard requirement — a byte diff, not just semantic equivalence). Rationale: if RBQN correctly executes `c.bqn` (the BQN compiler), it must produce the exact same bytecode output as CBQN executing `c.bqn` against the same source. Any difference indicates a bug in RBQN. A reference copy of the CBQN-compiled bins must be preserved and diffed against the RBQN output.
   3. Swap test runs automatically until fixpoint: compile with RBQN → recompile with those bins → repeat until round N and round N-1 bins are identical; report iteration count
 - Verification results published as CI artifact (not committed to repo)
 - Goal: results shareable with Marshall and Dzaima as proof of correctness
