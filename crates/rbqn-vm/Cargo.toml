@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 rbqn-core.workspace = true
 rbqn-prim.workspace = true
+libloading = "0.8"
+libffi = { version = "3.2", features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["term", "fs"] }

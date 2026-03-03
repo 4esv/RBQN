@@ -105,6 +105,7 @@ pub enum DerivedKind {
     InvMd1Block,  // 1-modifier block inverse: bl=modifier block, f=operand fn
     InvMd2Block,  // 2-modifier block inverse: bl=modifier block, f=left operand, h=right operand
     ScanInv,      // Scan inverse (F`⁼): f=F (the scan operand), c1/c2 compute scan undone
+    FfiFn { spec_id: usize },  // FFI function: calls a C function via libffi
 }
 
 #[derive(Debug)]
@@ -561,6 +562,15 @@ pub fn m_sys_fn(idx: u32) -> B {
     tagu64(id << 3, FUN_TAG)
 }
 
+pub fn m_ffi_fn(spec_id: usize) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::FfiFn { spec_id },
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: None, sc: None,
+    });
+    tagu64(id << 3, FUN_TAG)
+}
+
 pub fn m1_d(m: B, f: B) -> B {
     if m.is_md1() {
         // NOTE: For immediate 1-modifier blocks (imm=true), execute the block
@@ -788,6 +798,9 @@ pub fn c1(f: B, x: B) -> B {
                     rbqn_core::error::throw("2-modifier block has no inverse header")
                 }
             }
+            DerivedKind::FfiFn { spec_id } => {
+                crate::ffi::ffi_call(spec_id, &[x])
+            }
             _ => rbqn_core::error::throw("c1: unhandled derived kind"),
         }
     } else if f.is_md() {
@@ -1004,6 +1017,17 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, f_operand, g_operand])
                 } else {
                     rbqn_core::error::throw("2-modifier block has no dyadic inverse header")
+                }
+            }
+            DerivedKind::FfiFn { spec_id } => {
+                // Dyadic: x is a list of arguments for multi-arg C functions
+                if let Some(arr) = crate::vm::get_arr(x) {
+                    let args: Vec<B> = (0..arr.ia()).map(|i| {
+                        arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e))
+                    }).collect();
+                    crate::ffi::ffi_call(spec_id, &args)
+                } else {
+                    crate::ffi::ffi_call(spec_id, &[x])
                 }
             }
             _ => rbqn_core::error::throw("c2: unhandled derived kind"),
@@ -1382,8 +1406,8 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         145 => { // •SH — execute shell command, return ⟨exit_code, stdout, stderr⟩
             sh_exec_c1(x)
         }
-        // NOTE: •FFI — always throws
-        160 => rbqn_core::error::throw("•FFI is not supported in RBQN"),
+        // NOTE: •FFI monadic — requires left argument
+        160 => rbqn_core::error::throw("•FFI: requires path as left argument (path •FFI spec)"),
         // NOTE: •term.RawMode — enable/disable raw terminal mode
         163 => {
             #[cfg(unix)]
@@ -1732,8 +1756,8 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             }
             B::m_f64(wf.ln() / xf.ln())
         }
-        // NOTE: •FFI dyadic — always throws
-        160 => rbqn_core::error::throw("•FFI is not supported in RBQN"),
+        // NOTE: •FFI dyadic — load library and return callable function
+        160 => crate::ffi::ffi_load(w, x),
         // NOTE: •ns.Has dyadic: name •ns.Has ns → 0 or 1
         182 => ns_has_c2(w, x),
         // NOTE: •ns.Get dyadic: name •ns.Get ns → value
