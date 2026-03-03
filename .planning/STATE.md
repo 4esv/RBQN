@@ -2,19 +2,18 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-23)
+See: .planning/PROJECT.md (updated 2026-03-03)
 
 **Core value:** Correct BQN execution with identical behavior to CBQN
-**Current focus:** Phase 7 — Code Simplification & CBQN Parity (COMPLETE)
+**Current focus:** Planning next milestone (v2.0 complete — archived 2026-03-03)
 
 ## Current Position
 
-Phase: 7 of 7 (Code Simplification & CBQN Parity) — COMPLETE
-Plan: 4 of 4 in Phase 7 complete (07-01, 07-02, 07-03, 07-04 complete)
-Status: 07-04 complete — gap closure: fixed dispatch_sys_glyph_c1 for SysFn/NativeFn, •Glyph matches CBQN byte-for-byte
-Last activity: 2026-03-02 - Completed 07-04: fixed •Glyph for system functions and primitives, all tests green
+Milestone v2.0 COMPLETE — archived to .planning/milestones/v2.0-ROADMAP.md
+All 7 phases, 33 plans, 76 requirements complete.
+Ready for: /gsd:new-milestone to plan v3.0
 
-Progress: [██████████] 100% (All phases complete)
+Progress: [██████████] 100% — Milestone shipped
 
 ## Performance Metrics
 

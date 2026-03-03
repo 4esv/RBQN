@@ -2,82 +2,83 @@
 
 ## What This Is
 
-A GPU-accelerated Rust implementation of BQN that is a 1:1 drop-in replacement for CBQN. Standalone binary, no external dependencies. Built to run real BQN workloads — numeric, scripting, ML pipelines — with automatic GPU dispatch for large arrays via wgpu compute shaders.
+A GPU-accelerated Rust implementation of BQN that is a 1:1 drop-in replacement for CBQN. Standalone binary via `cargo install rbqn` — no external dependencies. Runs real BQN workloads — numeric, scripting, ML pipelines — with automatic GPU dispatch for large arrays via wgpu compute shaders on Apple Silicon and other GPU backends.
 
 ## Core Value
 
 Correct BQN execution with identical behavior to CBQN — if it runs in CBQN, it runs in RBQN.
 
-## Current Milestone: v2.0 — CBQN Drop-in with GPU Acceleration
-
-**Goal:** Standalone `rbqn` binary that passes the full official BQN test suite, with GPU-accelerated primitives for large arrays.
-
-**Target features:**
-- Bypass broken runtime0 overrides — populate runtime from native Rust primitives (Option B)
-- Working compiler pipeline (compile and execute arbitrary BQN)
-- All 44 primitives + all 20 modifiers
-- Essential system functions for real-world use
-- Pass all 13 official BQN test files
-- Self-hosted compiler (no CBQN build dependency)
-- GPU integration into primitive dispatch (threshold-gated, 50K+ elements)
-- Shareable with Marshall as a standalone `cargo install`
-
 ## Requirements
 
 ### Validated
 
-- VM: 31 opcodes + 18 optimized variants implemented
-- Primitives: 43/44 functions (monadic + dyadic)
-- Modifiers: 16/20 working
-- GPU infrastructure: wgpu context, buffer pool, pipeline cache, matmul/softmax kernels
-- Bootstrap: runtime0 executes, provide array filled (23 basic + 17 extended)
-- System functions: Type, Decompose, Fill, GroupLen, GroupOrd
+- ✓ Runtime bypass (Option B): native Rust primitives serve as runtime — v2.0
+- ✓ Working compiler pipeline: compile and execute arbitrary BQN programs — v2.0
+- ✓ All 44 primitives + all 20 modifiers — v2.0
+- ✓ Essential system functions (~50: file I/O, math, rand, platform, SH, Import, introspection) — v2.0
+- ✓ All 13 official BQN test files passing (1316 tests, 0 failures) — v2.0
+- ✓ Self-hosted compiler: embedded bytecode, `cargo install rbqn` with no CBQN dependency — v2.0
+- ✓ GPU dispatch: wired into arithmetic, sort/grade, fold/scan, matmul, softmax — v2.0
+- ✓ Precision guard: f64 arrays fall back to CPU; integer-valued dispatch to GPU — v2.0
+- ✓ Zero-warning workspace (0 clippy + 0 compiler warnings) — v2.0
+- ✓ CBQN output parity: •Fmt box-drawing, •Repr, clean errors, •Glyph — v2.0
 
 ### Active
 
-- [ ] Runtime bypass (Option B): build runtime from native Rust primitives
-- [ ] Working compiler: compile and execute arbitrary BQN programs
-- [ ] Missing modifiers: Undo (⁼), Under (⌾), Rank (⎉), Depth (⚇)
-- [ ] Essential system functions (~44 remaining)
-- [ ] Pass all 13 official BQN test files
-- [ ] Self-hosted compiler: embed bytecode, remove CBQN dependency
-- [ ] GPU dispatch: wire rbqn-gpu into primitive execution for large arrays
-- [ ] Standalone binary: `cargo install rbqn` works
+*(Planning for v3.0)*
+
+- [ ] SIMD-accelerated primitive dispatch for CPU path (PERF-01)
+- [ ] Type-specialized array dispatch (avoid boxing for homogeneous arrays) (PERF-02)
+- [ ] Full •FFI implementation (currently stubs NotImplemented)
+- [ ] Full •bit/•term namespace implementation (currently partial stubs)
+- [ ] Self-compiled bytecode human verification (SELF-02 swap test)
+- [ ] Portable test scripts (remove hardcoded /Users/axel/ paths)
+- [ ] •math.Comb monadic / •math.LCM monadic correct implementations
 
 ### Out of Scope
 
-- FFI (•FFI) — complex, defer to later
-- •HashMap — not in core BQN spec
-- •term namespace — terminal UI, not needed for drop-in
-- Multi-threaded execution — global mutex stores prevent this; future work
-- Custom GPU kernels API — internal optimization only
+| Feature | Reason |
+|---------|--------|
+| Multi-threaded execution | Global mutex stores (ARR_STORE, DERIVED_STORE, NS_STORE) prevent this; architectural change needed |
+| Custom GPU kernel API | Internal optimization only — no user-facing GPU interface |
+| JIT compilation | Premature optimization — correctness first |
+| GUI/IDE integration | Not part of CLI drop-in replacement |
+| Package manager | Not in CBQN, not needed for drop-in |
 
 ## Context
 
-- Existing codebase: ~8.3K lines Rust across 5 workspace crates (rbqn, rbqn-core, rbqn-prim, rbqn-vm, rbqn-gpu)
-- NaN-boxing: B type = tagged u64, load-bearing architecture
-- 19 iterations of debugging VM runtime0 overrides failed — Option B (bypass) is the path forward
+**Shipped v2.0:** 2026-03-03
+
+- ~127K lines Rust across 5 workspace crates: rbqn (CLI+REPL), rbqn-core (types/NaN-boxing), rbqn-vm (bytecode VM), rbqn-prim (44 primitives + 20 modifiers), rbqn-gpu (wgpu compute)
+- NaN-boxing: B type = tagged u64 — load-bearing, cannot change without rewriting everything
 - GPU uses f32 (wgpu SHADER_F64 not universal) with CPU fallback for f64 precision
-- Official BQN test suite: mlochbaum/BQN/test/cases/ (13 files)
-- Build-time CBQN dependency exists until self-hosting phase
+- GPU dispatch thresholds: Metal ~1.5ms overhead; crossover at 30M–100M elements (official test suite arrays are too small to exercise GPU path)
+- Self-hosting: four .bin files committed (runtime0.bin, runtime1x.bin, compiler.bin, formatter.bin), compiled from BQN source by Marshall Lochbaum
+
+**Attribution:**
+- BQN language and compiler source: Marshall Lochbaum (ISC License)
+- CBQN reference implementation: dzaima and contributors (LGPL/GPL/MPL)
 
 ## Constraints
 
-- **Precision**: BQN uses f64 natively; GPU path uses f32 — must validate accuracy or fall back
-- **NaN-boxing**: All values are tagged u64 (B type) — cannot change without rewriting everything
-- **Global stores**: ARR_STORE, DERIVED_STORE, NS_STORE behind Mutex — single-threaded only
-- **CBQN dependency**: Required at build time until self-hosting milestone achieved
+- **Precision**: BQN uses f64 natively; GPU path uses f32 — precision guard required
+- **NaN-boxing**: All values are tagged u64 (B type) — cannot change without full rewrite
+- **Global stores**: ARR_STORE, DERIVED_STORE, NS_STORE behind Mutex — single-threaded only for now
+- **CBQN dependency**: Required at build time only for regenerating .bin files (rbqn-gen), not for normal build/install
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Option B: bypass runtime0 overrides | 19 debug iterations failed; native Rust primitives already work correctly | — Pending |
-| NaN-boxing (B = tagged u64) | Load-bearing architecture, too costly to change | ✓ Good |
+| Option B: bypass runtime0 overrides | 19 debug iterations failed; native Rust primitives already work correctly | ✓ Correct — unblocked everything |
+| NaN-boxing (B = tagged u64) | Load-bearing architecture, too costly to change mid-milestone | ✓ Good |
 | GPU via wgpu compute shaders | Cross-platform, no CUDA dependency | ✓ Good |
-| f32 GPU with CPU f64 fallback | SHADER_F64 not universal | ✓ Good |
-| Threshold-gated GPU dispatch (50K+) | GPU overhead not worth it for small arrays | ✓ Good |
-| Scrap M1 roadmap, replan from scratch | Old roadmap built on dead strategy (debug VM) | — Pending |
+| f32 GPU with CPU f64 fallback | SHADER_F64 not universal on all GPUs | ✓ Good |
+| Threshold-gated GPU dispatch (30M–100M elements) | GPU overhead not worth it for small arrays | ✓ Good (but thresholds mean GPU path not exercised by test suite) |
+| Embed bytecode in binary (.bin committed to repo) | Eliminates CBQN build dependency for users | ✓ Good |
+| 5-crate workspace (core/vm/prim/gpu/bin) | Separation of concerns; gpu crate optional | ✓ Good |
+| runtime1x over runtime1 in provide array | Extended provide (40 entries) gives more primitives at bootstrap | ✓ Correct |
+| Code simplification as milestone phase | -88 lines in VM dispatch, shared helpers, zero warnings | ✓ Worth it |
 
 ---
-*Last updated: 2026-02-23 after milestone v2.0 planning*
+*Last updated: 2026-03-03 after v2.0 milestone*
