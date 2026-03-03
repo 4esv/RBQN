@@ -50,6 +50,18 @@ git add crates/rbqn/src/embedded/*.bin && git commit
 
 The `rbqn-gen` tool requires `CBQN_PATH` pointing to a built CBQN directory. It is not compiled during normal `cargo build` — only when the `gen-tools` feature is enabled.
 
+## Acknowledgements
+
+**BQN** was designed by [Marshall Lochbaum](https://mlochbaum.github.io/). The language spec, compiler source (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`), and reference test suite are his work and are licensed under the ISC License. RBQN embeds bytecode compiled from those source files — the language itself is Marshall's creation.
+
+**CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN uses CBQN as a build-time tool to bootstrap its embedded bytecode. CBQN's internals — particularly the bytecode format, provide array layout, and runtime structure documented in `load.c` — were essential reference material during development.
+
+Thank you both for building something worth implementing.
+
+- BQN: https://mlochbaum.github.io/BQN/
+- CBQN: https://github.com/dzaima/CBQN
+- BQN community: https://mlochbaum.github.io/BQN/community/
+
 ## Version
 
 `rbqn --version` shows the version and bytecode source:
