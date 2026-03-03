@@ -44,13 +44,13 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
   3. All 1316 official BQN tests pass using only the RBQN-compiled .bin files committed to the repo
   4. The RBQN-compiled .bin files are committed and replace all CBQN-compiled bytecode; no CBQN-compiled file remains in the repo
   5. The SELF3-02 human verification is documented: swap test result recorded and RBQN-compiled .bin committed
-**Plans**: TBD
+**Plans**: 4 plans
 
 Plans:
-- [ ] 08-01: Implement `rbqn-gen --self` mode — drive .bin compilation through RBQN pipeline, no CBQN_PATH
-- [ ] 08-02: Compile and commit compiler.bin and formatter.bin from RBQN; verify test suite still passes
-- [ ] 08-03: Compile and commit runtime0.bin and runtime1x.bin from RBQN; verify test suite still passes
-- [ ] 08-04: Document SELF3-02 verification; update CI/build docs; close QUAL-03
+- [ ] 08-01-PLAN.md — Move .bin files to git-lfs bins/ dir; update build.rs with CBQN_PATH deprecation warning
+- [ ] 08-02-PLAN.md — Implement rbqn-gen --self mode; fix r1.bqn compilation; compile all 4 bins without CBQN_PATH
+- [ ] 08-03-PLAN.md — Fixpoint swap test; compile and commit RBQN-self bins; verify 1316 tests pass
+- [ ] 08-04-PLAN.md — Document SELF3-02 verification (VERIFICATION.md); update README with CBQN acknowledgement
 
 ### Phase 9: CBQN Behavioral Parity
 **Goal**: All known system function stubs and behavioral gaps are fixed to match CBQN 1:1
