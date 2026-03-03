@@ -12,3 +12,4 @@ pub mod modifiers;
 pub mod namespace;
 pub mod compiler;
 pub mod vm;
+pub mod ffi;
