@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 rbqn-core.workspace = true
 rbqn-prim.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["term", "fs"] }

@@ -1384,12 +1384,97 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         }
         // NOTE: •FFI — always throws
         160 => rbqn_core::error::throw("•FFI is not supported in RBQN"),
-        // NOTE: •term stubs
-        163 => rbqn_core::error::throw("•term.RawMode is not implemented in RBQN"),
-        164 => rbqn_core::error::throw("•term.CharB is not implemented in RBQN"),
-        165 => rbqn_core::error::throw("•term.Flush is not implemented in RBQN"),
-        // NOTE: •bit stubs — all throw on call
-        161 => rbqn_core::error::throw("•bit operations are not implemented in RBQN"),
+        // NOTE: •term.RawMode — enable/disable raw terminal mode
+        163 => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsFd;
+                let stdin = std::io::stdin();
+                let fd = stdin.as_fd();
+                let mut term = nix::sys::termios::tcgetattr(fd)
+                    .unwrap_or_else(|_| rbqn_core::error::throw("•term.RawMode: not a terminal"));
+                if x.o2f() == 1.0 {
+                    term.local_flags.remove(
+                        nix::sys::termios::LocalFlags::ICANON | nix::sys::termios::LocalFlags::ECHO
+                    );
+                } else {
+                    term.local_flags.insert(
+                        nix::sys::termios::LocalFlags::ICANON | nix::sys::termios::LocalFlags::ECHO
+                    );
+                }
+                nix::sys::termios::tcsetattr(fd, nix::sys::termios::SetArg::TCSAFLUSH, &term)
+                    .unwrap_or_else(|_| rbqn_core::error::throw("•term.RawMode: tcsetattr failed"));
+                x
+            }
+            #[cfg(not(unix))]
+            rbqn_core::error::throw("•term.RawMode: not available on this platform")
+        }
+        // NOTE: •term.CharB — blocking character read from stdin
+        164 => {
+            use std::io::Read;
+            let mut buf = [0u8; 1];
+            match std::io::stdin().read(&mut buf) {
+                Ok(1) => B::m_c32(buf[0] as u32),
+                _ => B::m_c32(0), // EOF → @ (NUL char)
+            }
+        }
+        // NOTE: •term.Flush — flush stdout and stderr, return x
+        165 => {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            x
+        }
+        // NOTE: •term.CharN — non-blocking character read from stdin
+        166 => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsRawFd;
+                use nix::fcntl::{fcntl, FcntlArg, OFlag};
+                let fd = std::io::stdin().as_raw_fd();
+                let old_flags = fcntl(fd, FcntlArg::F_GETFL).unwrap_or(0);
+                let _ = fcntl(fd, FcntlArg::F_SETFL(OFlag::from_bits_truncate(old_flags) | OFlag::O_NONBLOCK));
+                use std::io::Read;
+                let mut buf = [0u8; 1];
+                let result = match std::io::stdin().read(&mut buf) {
+                    Ok(1) => B::m_c32(buf[0] as u32),
+                    _ => B::m_c32(0), // no data or EOF → @
+                };
+                let _ = fcntl(fd, FcntlArg::F_SETFL(OFlag::from_bits_truncate(old_flags)));
+                result
+            }
+            #[cfg(not(unix))]
+            rbqn_core::error::throw("•term.CharN: not available on this platform")
+        }
+        // NOTE: •term.OutRaw — write raw bytes to stdout, return x
+        167 => {
+            use std::io::Write;
+            if let Some(arr) = crate::vm::get_arr(x) {
+                let bytes: Vec<u8> = (0..arr.ia()).map(|i| {
+                    arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() as u8
+                }).collect();
+                std::io::stdout().write_all(&bytes)
+                    .unwrap_or_else(|_| rbqn_core::error::throw("•term.OutRaw: write failed"));
+            } else {
+                rbqn_core::error::throw("•term.OutRaw: 𝕩 must be a list");
+            }
+            x
+        }
+        // NOTE: •term.ErrRaw — write raw bytes to stderr, return x
+        168 => {
+            use std::io::Write;
+            if let Some(arr) = crate::vm::get_arr(x) {
+                let bytes: Vec<u8> = (0..arr.ia()).map(|i| {
+                    arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() as u8
+                }).collect();
+                std::io::stderr().write_all(&bytes)
+                    .unwrap_or_else(|_| rbqn_core::error::throw("•term.ErrRaw: write failed"));
+            } else {
+                rbqn_core::error::throw("•term.ErrRaw: 𝕩 must be a list");
+            }
+            x
+        }
+        // NOTE: •bit operations are now 1-modifiers (native_md1 idx 70-78), no sys_fn dispatch needed
         // NOTE: •HashMap constructor
         170 => make_hashmap_instance(x),
         // NOTE: •HashMap method stubs
@@ -1807,6 +1892,12 @@ fn sys_fn_name(sys_idx: u32) -> &'static str {
         142 => "•Delay",
         145 => "•SH",
         160 => "•FFI",
+        163 => "•term.RawMode",
+        164 => "•term.CharB",
+        165 => "•term.Flush",
+        166 => "•term.CharN",
+        167 => "•term.OutRaw",
+        168 => "•term.ErrRaw",
         170 => "•HashMap",
         200 => "•_nativeRepr_",
         _   => "(system function)",
@@ -3210,11 +3301,18 @@ fn make_bit_namespace() -> B {
 
     use crate::namespace::{str2gid, NSDesc, NS};
 
+    // NOTE: CBQN has 9 fields, all 1-modifiers. The BQN compiler strips
+    // underscores from modifier names, so register without _ prefix.
     let gids = vec![
-        str2gid("_and_"),
-        str2gid("_or_"),
-        str2gid("_xor_"),
-        str2gid("_not"),
+        str2gid("cast"),  // 0
+        str2gid("not"),   // 1
+        str2gid("neg"),   // 2
+        str2gid("and"),   // 3
+        str2gid("or"),    // 4
+        str2gid("xor"),   // 5
+        str2gid("add"),   // 6
+        str2gid("sub"),   // 7
+        str2gid("mul"),   // 8
     ];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
@@ -3226,10 +3324,15 @@ fn make_bit_namespace() -> B {
         None,
         var_am_u16,
         &[
-            m_sys_fn(161), // _and_
-            m_sys_fn(161), // _or_
-            m_sys_fn(161), // _xor_
-            m_sys_fn(161), // _not
+            m_native_md1(70),  // _cast
+            m_native_md1(71),  // _not
+            m_native_md1(72),  // _neg
+            m_native_md1(73),  // _and
+            m_native_md1(74),  // _or
+            m_native_md1(75),  // _xor
+            m_native_md1(76),  // _add
+            m_native_md1(77),  // _sub
+            m_native_md1(78),  // _mul
         ],
     ));
 
@@ -3255,9 +3358,12 @@ fn make_term_namespace() -> B {
     use crate::namespace::{str2gid, NSDesc, NS};
 
     let gids = vec![
+        str2gid("flush"),
         str2gid("rawmode"),
         str2gid("charb"),
-        str2gid("flush"),
+        str2gid("charn"),
+        str2gid("outraw"),
+        str2gid("errraw"),
     ];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
@@ -3269,9 +3375,12 @@ fn make_term_namespace() -> B {
         None,
         var_am_u16,
         &[
+            m_sys_fn(165), // Flush
             m_sys_fn(163), // RawMode
             m_sys_fn(164), // CharB
-            m_sys_fn(165), // Flush
+            m_sys_fn(166), // CharN
+            m_sys_fn(167), // OutRaw
+            m_sys_fn(168), // ErrRaw
         ],
     ));
 
