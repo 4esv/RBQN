@@ -2183,11 +2183,48 @@ fn repeat_c2_arr(f: B, counts: &rbqn_core::BqnArr, w: B, x: B) -> B {
 // 2-modifier: ⎊ Catch
 // ============================================================
 
+use std::cell::RefCell;
+
+thread_local! {
+    /// Current error message for •CurrentError, set by catch (⎊) handlers.
+    /// Stack discipline: save/restore when entering/leaving catch handler G.
+    static CURRENT_ERROR: RefCell<Option<B>> = const { RefCell::new(None) };
+}
+
+/// Get the current error message (called by •CurrentError dispatch).
+pub fn get_current_error() -> Option<B> {
+    CURRENT_ERROR.with(|ce| *ce.borrow())
+}
+
+/// Extract error message from a panic payload and convert to BQN character array.
+fn panic_to_error_string(panic: &Box<dyn std::any::Any + Send>) -> B {
+    let msg = if let Some(e) = panic.downcast_ref::<rbqn_core::error::BqnError>() {
+        e.to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = panic.downcast_ref::<&str>() {
+        s.to_string()
+    } else {
+        "Unknown error".to_string()
+    };
+    let chars: Vec<u32> = msg.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
 fn catch_c1(f: B, g: B, x: B) -> B {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(f, x)));
     match result {
         Ok(v) => v,
-        Err(_) => c1(g, x),
+        Err(panic) => {
+            let msg_b = panic_to_error_string(&panic);
+            let old = CURRENT_ERROR.with(|ce| ce.borrow_mut().replace(msg_b));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(g, x)));
+            CURRENT_ERROR.with(|ce| *ce.borrow_mut() = old);
+            match r {
+                Ok(v) => v,
+                Err(e) => std::panic::resume_unwind(e),
+            }
+        }
     }
 }
 
@@ -2195,6 +2232,15 @@ fn catch_c2(f: B, g: B, w: B, x: B) -> B {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c2(f, w, x)));
     match result {
         Ok(v) => v,
-        Err(_) => c2(g, w, x),
+        Err(panic) => {
+            let msg_b = panic_to_error_string(&panic);
+            let old = CURRENT_ERROR.with(|ce| ce.borrow_mut().replace(msg_b));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c2(g, w, x)));
+            CURRENT_ERROR.with(|ce| *ce.borrow_mut() = old);
+            match r {
+                Ok(v) => v,
+                Err(e) => std::panic::resume_unwind(e),
+            }
+        }
     }
 }

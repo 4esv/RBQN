@@ -1284,8 +1284,16 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         78 => sys_fromutf8_c1(x),
         // NOTE: •ToUTF8 — character array to byte array
         79 => sys_toutf8_c1(x),
-        // NOTE: •CurrentError — current error in catch context (stub)
-        80 => B::SENTINEL,
+        // NOTE: •CurrentError — current error in catch context
+        80 => {
+            if x.is_nsp() {
+                rbqn_core::error::throw("•CurrentError: namespace argument reserved for future use");
+            }
+            match crate::modifiers::get_current_error() {
+                Some(msg) => msg,
+                None => rbqn_core::error::throw("Not currently within any ⎊"),
+            }
+        }
         200 => {
             // NOTE: Native repr function used by the BQN formatter.
             // The BQN formatter (f.bqn) takes ⟨Type,Decompose,Glyph,Repr⟩ and uses Repr
@@ -1514,7 +1522,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         1108 => { // hypot: w •math.Hypot x
             B::m_f64(w.o2f().hypot(x.o2f()))
         }
-        1110 => { // comb: w •math.Comb x = C(x, w) = binomial coefficient
+        1110 => { // comb: w •math.Comb x = C(w, x) = w choose x
             math_comb_c2(w, x)
         }
         1112 => { // gcd: w •math.GCD x
@@ -2016,7 +2024,13 @@ pub fn dispatch_sys_env(idx: u32) -> B {
                 .unwrap_or_default();
             str_to_b(&wd)
         }
-        41 => B::SENTINEL, // •state placeholder
+        41 => {
+            // •state = ⟨•path, •name, •args⟩
+            let path = dispatch_sys_env(38);
+            let name = dispatch_sys_env(39);
+            let args = dispatch_sys_env(37);
+            crate::vm::b_vec_to_arr(vec![path, name, args])
+        }
         _ => B::SENTINEL,
     }
 }
@@ -2804,14 +2818,13 @@ fn lgamma_approx(x: f64) -> f64 {
 }
 
 fn math_comb_c1(_x: B) -> B {
-    // Monadic: C(x, 0) = 1
-    B::m_f64(1.0)
+    rbqn_core::error::throw("This function can't be called monadically")
 }
 
 fn math_comb_c2(w: B, x: B) -> B {
-    // w •math.Comb x = C(x, w) = x! / (w! * (x-w)!)
-    let n = x.o2f().round() as i64;
-    let k = w.o2f().round() as i64;
+    // w •math.Comb x = C(w, x) = w choose x
+    let n = w.o2f().round() as i64;
+    let k = x.o2f().round() as i64;
     if k < 0 || k > n {
         return B::m_f64(0.0);
     }
@@ -2823,9 +2836,8 @@ fn math_comb_c2(w: B, x: B) -> B {
     B::m_f64(result.round())
 }
 
-fn math_gcd_c1(x: B) -> B {
-    // Monadic: gcd(x, 0) = |x|
-    B::m_f64(x.o2f().abs())
+fn math_gcd_c1(_x: B) -> B {
+    rbqn_core::error::throw("This function can't be called monadically")
 }
 
 fn math_gcd_c2(w: B, x: B) -> B {
@@ -2842,8 +2854,7 @@ fn math_gcd_c2(w: B, x: B) -> B {
 }
 
 fn math_lcm_c1(_x: B) -> B {
-    // Monadic: lcm(x, 0) = 0
-    B::m_f64(0.0)
+    rbqn_core::error::throw("This function can't be called monadically")
 }
 
 fn math_lcm_c2(w: B, x: B) -> B {
