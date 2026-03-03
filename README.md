@@ -1,6 +1,6 @@
 # RBQN
 
-A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language.
+A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language that attempts to get the GPU involved.
 
 ## Usage
 
@@ -54,9 +54,7 @@ The `rbqn-gen` tool requires `CBQN_PATH` pointing to a built CBQN directory. It 
 
 **BQN** was designed by [Marshall Lochbaum](https://mlochbaum.github.io/). The language spec, compiler source (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`), and reference test suite are his work and are licensed under the ISC License. RBQN embeds bytecode compiled from those source files — the language itself is Marshall's creation.
 
-**CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN uses CBQN as a build-time tool to bootstrap its embedded bytecode. CBQN's internals — particularly the bytecode format, provide array layout, and runtime structure documented in `load.c` — were essential reference material during development.
-
-Thank you both for building something worth implementing.
+**CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN currently uses CBQN as a build-time tool to bootstrap its embedded bytecode. CBQN's internals particularly the bytecode format, provide array layout, and runtime structure documented in `load.c` were essential reference material during development.
 
 - BQN: https://mlochbaum.github.io/BQN/
 - CBQN: https://github.com/dzaima/CBQN
