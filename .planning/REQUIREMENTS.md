@@ -203,12 +203,12 @@
 | SELF-03 | Phase 6 | Complete |
 | SELF-04 | Phase 6 | Complete |
 | SELF-05 | Phase 6 | Complete |
-| SIMP-01 | Phase 7 | Planned |
-| SIMP-02 | Phase 7 | Planned |
-| SIMP-03 | Phase 7 | Planned |
-| PAR-01 | Phase 7 | Planned |
-| PAR-02 | Phase 7 | Planned |
-| PAR-03 | Phase 7 | Planned |
+| SIMP-01 | Phase 7 | Complete |
+| SIMP-02 | Phase 7 | Complete |
+| SIMP-03 | Phase 7 | Complete |
+| PAR-01 | Phase 7 | Complete |
+| PAR-02 | Phase 7 | Complete |
+| PAR-03 | Phase 7 | Complete |
 
 **Coverage:**
 - v2.0 requirements: 70 total (phases 1-6)
