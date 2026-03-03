@@ -57,6 +57,10 @@ impl ArrData {
             ArrData::Boxed(v) => v.len(),
         }
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl BqnArr {

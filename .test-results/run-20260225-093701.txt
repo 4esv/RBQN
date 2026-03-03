@@ -1,0 +1,11 @@
+# RBQN Test Results — run-20260225-093701
+# commit: 48f4971
+# date: 2026-02-25T14:37:01Z
+
+prim         FAIL|0|71
+fill         FAIL|0|6
+header       FAIL|0|8
+under        FAIL|0|9
+undo         FAIL|0|4
+
+# total_fail: 98

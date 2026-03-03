@@ -30,12 +30,14 @@ impl GpuContext {
 
         let adapter_info = adapter.get_info();
 
-        let mut required_limits = wgpu::Limits::default();
-        required_limits.max_storage_buffer_binding_size =
-            adapter.limits().max_storage_buffer_binding_size;
-        required_limits.max_buffer_size = adapter.limits().max_buffer_size;
-        required_limits.max_compute_workgroups_per_dimension =
-            adapter.limits().max_compute_workgroups_per_dimension;
+        let required_limits = wgpu::Limits {
+            max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
+            max_buffer_size: adapter.limits().max_buffer_size,
+            max_compute_workgroups_per_dimension: adapter
+                .limits()
+                .max_compute_workgroups_per_dimension,
+            ..Default::default()
+        };
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
