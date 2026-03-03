@@ -1763,14 +1763,67 @@ fn native_prim_idx(x: B) -> Option<usize> {
     }
 }
 
+/// Map a SysFn sys_idx to its display name (used by •Glyph for system functions).
+fn sys_fn_name(sys_idx: u32) -> &'static str {
+    match sys_idx {
+        0   => "•Type",
+        1   => "•Decompose",
+        4   => "•Glyph",
+        5   => "•PrimInd",
+        7   => "•Fill",
+        8   => "•setInvReg",
+        9   => "•setInvSwap",
+        10  => "•nativeInvReg",
+        11  => "•nativeInvSwap",
+        22  => "•GroupLen",
+        23  => "•GroupOrd",
+        30  => "•BQN",
+        31  => "•ReBQN",
+        32  => "•Out",
+        33  => "•Show",
+        34  => "•Fmt",
+        35  => "•Repr",
+        36  => "•Exit",
+        50  => "•FLines",
+        52  => "•FChars",
+        53  => "•FBytes",
+        70  => "•Import",
+        75  => "•ParseFloat",
+        76  => "•Hash",
+        78  => "•FromUTF8",
+        79  => "•ToUTF8",
+        80  => "•CurrentError",
+        100 => "•_sys_",
+        140 => "•UnixTime",
+        141 => "•MonoTime",
+        142 => "•Delay",
+        145 => "•SH",
+        160 => "•FFI",
+        170 => "•HashMap",
+        200 => "•_nativeRepr_",
+        _   => "(system function)",
+    }
+}
+
 /// •Glyph: return the glyph character for a primitive, or descriptive string for blocks.
 fn dispatch_sys_glyph_c1(x: B) -> B {
     let prims = rbqn_prim::get_runtime();
     if let Some(idx) = native_prim_idx(x)
         && idx < prims.len() {
-            return str_to_b(prims[idx].glyph);
+            // NOTE: Return scalar char (m_c32), not char array (str_to_b).
+            // CBQN uses m_c32(glyph_char) for primitives, matching BQN type semantics.
+            let glyph_char = prims[idx].glyph.chars().next().unwrap_or('+');
+            return B::m_c32(glyph_char as u32);
         }
-    // Non-primitive: return a descriptive string matching CBQN behavior
+    // System functions: return the •Name string
+    if x.is_fun() {
+        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
+        let d = get_derived(id);
+        if let DerivedKind::SysFn { sys_idx } = d.kind {
+            return str_to_b(sys_fn_name(sys_idx));
+        }
+    }
+    // Non-primitive blocks and derived values: return descriptive string matching CBQN
     let desc = if x.is_fun() {
         "(function block)"
     } else if x.is_md1() {
