@@ -52,25 +52,46 @@ pub fn compile_string(
     rt: &bootstrap::Runtime,
     code: &str,
 ) -> rbqn_core::Result<CompilerOutput> {
-    if rt.compiler.q_n() || rt.compiler.0 == B::SENTINEL.0 {
+    compile_string_with(rt, code, rt.compiler)
+}
+
+/// Compile BQN source code using a specific compiler instance.
+/// Used for runtime compilation with extended glyph sets.
+pub fn compile_string_with(
+    rt: &bootstrap::Runtime,
+    code: &str,
+    compiler: B,
+) -> rbqn_core::Result<CompilerOutput> {
+    compile_string_with_rt(code, compiler, &rt.runtime)
+}
+
+/// Compile BQN source with a specific compiler and custom runtime/provide array.
+/// For runtime compilation, `comp_runtime` is the extended provide array.
+pub fn compile_string_with_rt(
+    code: &str,
+    compiler: B,
+    comp_runtime: &[B],
+) -> rbqn_core::Result<CompilerOutput> {
+    if compiler.q_n() || compiler.0 == B::SENTINEL.0 {
         return Err(BqnError::Nyi(
             "compiler not available (bootstrap failed?)".into(),
         ));
     }
 
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compile_string_inner(rt, code)
+        compile_string_inner_with(code, compiler, comp_runtime)
     })) {
         Ok(result) => result,
         Err(panic) => Err(panic_to_bqn_error(panic)),
     }
 }
 
-fn compile_string_inner(
-    rt: &bootstrap::Runtime,
+fn compile_string_inner_with(
     code: &str,
+    compiler: B,
+    comp_runtime: &[B],
 ) -> rbqn_core::Result<CompilerOutput> {
-    let rt_arr = tag_arr(BqnArr::from_b_vec(rt.runtime.clone()));
+    let rt_arr = tag_arr(BqnArr::from_b_vec(comp_runtime.to_vec()));
     let sys_fn = rbqn_vm::derive::m_sys_fn(100);
     let var_names = tag_arr(BqnArr::empty_harr());
     let var_depths = tag_arr(BqnArr::new_vec_i32(vec![]));
@@ -79,7 +100,7 @@ fn compile_string_inner(
     let src_chars: Vec<u32> = code.chars().map(|c| c as u32).collect();
     let src_b = tag_arr(BqnArr::new_vec_c32(src_chars));
 
-    let comp_result = c2(rt.compiler, comp_args, src_b);
+    let comp_result = c2(compiler, comp_args, src_b);
 
     let comp_arr = get_arr(comp_result)
         .ok_or_else(|| BqnError::Domain("compiler did not return an array".into()))?;
