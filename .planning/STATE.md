@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-23)
 ## Current Position
 
 Phase: 7 of 7 (Code Simplification & CBQN Parity) — COMPLETE
-Plan: 3 of 3 in Phase 7 complete (07-01, 07-02, 07-03 complete)
-Status: 07-03 complete — structural simplification: 6 shared helpers, -118 lines, 0 warnings, 1316 tests green
-Last activity: 2026-03-02 - Completed 07-03: simplified derive.rs, modifiers.rs, structural.rs, arith_dyad.rs
+Plan: 4 of 4 in Phase 7 complete (07-01, 07-02, 07-03, 07-04 complete)
+Status: 07-04 complete — gap closure: fixed dispatch_sys_glyph_c1 for SysFn/NativeFn, •Glyph matches CBQN byte-for-byte
+Last activity: 2026-03-02 - Completed 07-04: fixed •Glyph for system functions and primitives, all tests green
 
 Progress: [██████████] 100% (All phases complete)
 
@@ -47,6 +47,7 @@ Progress: [██████████] 100% (All phases complete)
 | Phase 07 P01 | 35min | 2 tasks | 13 files |
 | Phase 07 P02 | 24min | 2 tasks | 7 files |
 | Phase 07 P03 | 35min | 2 tasks | 4 files |
+| Phase 07 P04 | 5min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -127,6 +128,9 @@ Progress: [██████████] 100% (All phases complete)
 - [07-03]: native_prim_idx() helper extracts prim_idx from fun/md1/md2 B value — shared by dispatch_sys_glyph_c1 and dispatch_sys_primind_c1
 - [07-03]: typed_arr_from_b_vec + override fill = simplified results_to_arr_fill without changing None fill semantics
 - [07-03]: strides_from_shape() goes in structural.rs (not rbqn-core) — only needed internally in join/rotate computations
+- [07-04]: sys_fn_name uses sparse match table (not array) — sys_idx values are non-contiguous (0..200 with gaps)
+- [07-04]: SysFn check uses (x.0 & 0xFFFFFFFFFFFF) >> 3 id extraction pattern matching native_prim_idx
+- [07-04]: NativeFn glyph returns B::m_c32(first char) — CBQN returns scalar char, not char array
 
 ### Pending Todos
 
@@ -152,5 +156,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 07-03-PLAN.md (structural simplification — all Phase 7 plans done, 1316 tests green, 0 warnings)
+Stopped at: Completed 07-04-PLAN.md (gap closure — •Glyph fixed for SysFn/NativeFn, all 4 Phase 7 plans done, 1316 tests green)
 Resume file: None
