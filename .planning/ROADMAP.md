@@ -57,19 +57,19 @@ Plans:
 **Depends on**: Phase 8
 **Requirements**: PAR3-01, PAR3-02, PAR3-03, PAR3-04, PAR3-05, PAR3-06
 **Success Criteria** (what must be TRUE):
-  1. `•bit.And`, `•bit.Or`, `•bit.Xor`, `•bit.Not`, `•bit.Shift` return results matching CBQN for integer array inputs
-  2. `•term.RawMode`, `•term.CharB`, `•term.Flush` work matching CBQN terminal I/O behavior
-  3. `•math.Comb n` returns the correct binomial coefficient C(n,2) and `•math.LCM n` returns the correct LCM value
-  4. `•state` returns meaningful execution state rather than SENTINEL; `•CurrentError` returns the current error inside catch blocks rather than SENTINEL
+  1. `•bit._and`, `•bit._or`, `•bit._xor`, `•bit._not` and all 9 bit modifiers return results matching CBQN for integer array inputs
+  2. `•term.RawMode`, `•term.CharB`, `•term.Flush`, `•term.CharN`, `•term.OutRaw`, `•term.ErrRaw` work matching CBQN terminal I/O behavior
+  3. `•math.Comb`, `•math.LCM`, `•math.GCD` monadic forms error (matching CBQN); `w •math.Comb x` computes C(w,x)
+  4. `•state` returns `(path, name, args)` triple; `•CurrentError` returns the current error inside catch blocks
   5. `•FFI "type"‿"libname"‿"funcname"` loads a shared library and calls a C function (basic pattern working)
-**Plans**: TBD
+**Plans**: 5 plans
 
 Plans:
-- [ ] 09-01: Implement `•bit` namespace — And, Or, Xor, Not, Shift matching CBQN
-- [ ] 09-02: Implement `•term` namespace — RawMode, CharB, Flush
-- [ ] 09-03: Fix `•math.Comb` monadic and `•math.LCM` monadic
-- [ ] 09-04: Fix `•state` and `•CurrentError` to return real values
-- [ ] 09-05: Implement `•FFI` basic pattern (stretch: full type coverage)
+- [x] 09-01-PLAN.md — Fix math monadic errors (Comb/LCM/GCD), fix Comb argument order, fix state return value
+- [x] 09-02-PLAN.md — Implement term namespace (6 fields: Flush, RawMode, CharB, CharN, OutRaw, ErrRaw)
+- [x] 09-03-PLAN.md — Implement bit namespace (9 1-modifier operations matching CBQN)
+- [x] 09-04-PLAN.md — Implement CurrentError with catch handler plumbing
+- [x] 09-05-PLAN.md — Implement FFI basic pattern (load shared library, call C functions)
 
 ### Phase 10: Quality & Validation
 **Goal**: Test infrastructure is portable and a systematic parity corpus validates RBQN matches CBQN
@@ -99,5 +99,5 @@ Plans:
 | 6. Self-Hosting | v2.0 | 3/3 | Complete | 2026-03-01 |
 | 7. Code Simplification & CBQN Parity | v2.0 | 4/4 | Complete | 2026-03-03 |
 | 8. Complete Self-Hosting | v3.0 | 0/4 | Not started | - |
-| 9. CBQN Behavioral Parity | v3.0 | 0/5 | Not started | - |
+| 9. CBQN Behavioral Parity | v3.0 | 5/5 | Complete | 2026-03-03 |
 | 10. Quality & Validation | v3.0 | 0/2 | Not started | - |
