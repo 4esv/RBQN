@@ -1,0 +1,2 @@
+# term namespace (non-interactive only)
+•term.Flush @
