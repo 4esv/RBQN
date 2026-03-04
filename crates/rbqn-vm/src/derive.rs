@@ -105,6 +105,7 @@ pub enum DerivedKind {
     InvMd1Block,  // 1-modifier block inverse: bl=modifier block, f=operand fn
     InvMd2Block,  // 2-modifier block inverse: bl=modifier block, f=left operand, h=right operand
     ScanInv,      // Scan inverse (F`⁼): f=F (the scan operand), c1/c2 compute scan undone
+    FfiFn { spec_id: usize },  // FFI function: calls a C function via libffi
 }
 
 #[derive(Debug)]
@@ -561,6 +562,15 @@ pub fn m_sys_fn(idx: u32) -> B {
     tagu64(id << 3, FUN_TAG)
 }
 
+pub fn m_ffi_fn(spec_id: usize) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::FfiFn { spec_id },
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: None, sc: None,
+    });
+    tagu64(id << 3, FUN_TAG)
+}
+
 pub fn m1_d(m: B, f: B) -> B {
     if m.is_md1() {
         // NOTE: For immediate 1-modifier blocks (imm=true), execute the block
@@ -788,6 +798,9 @@ pub fn c1(f: B, x: B) -> B {
                     rbqn_core::error::throw("2-modifier block has no inverse header")
                 }
             }
+            DerivedKind::FfiFn { spec_id } => {
+                crate::ffi::ffi_call(spec_id, &[x])
+            }
             _ => rbqn_core::error::throw("c1: unhandled derived kind"),
         }
     } else if f.is_md() {
@@ -1004,6 +1017,17 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, f_operand, g_operand])
                 } else {
                     rbqn_core::error::throw("2-modifier block has no dyadic inverse header")
+                }
+            }
+            DerivedKind::FfiFn { spec_id } => {
+                // Dyadic: x is a list of arguments for multi-arg C functions
+                if let Some(arr) = crate::vm::get_arr(x) {
+                    let args: Vec<B> = (0..arr.ia()).map(|i| {
+                        arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e))
+                    }).collect();
+                    crate::ffi::ffi_call(spec_id, &args)
+                } else {
+                    crate::ffi::ffi_call(spec_id, &[x])
                 }
             }
             _ => rbqn_core::error::throw("c2: unhandled derived kind"),
@@ -1284,8 +1308,16 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         78 => sys_fromutf8_c1(x),
         // NOTE: •ToUTF8 — character array to byte array
         79 => sys_toutf8_c1(x),
-        // NOTE: •CurrentError — current error in catch context (stub)
-        80 => B::SENTINEL,
+        // NOTE: •CurrentError — current error in catch context
+        80 => {
+            if x.is_nsp() {
+                rbqn_core::error::throw("•CurrentError: namespace argument reserved for future use");
+            }
+            match crate::modifiers::get_current_error() {
+                Some(msg) => msg,
+                None => rbqn_core::error::throw("Not currently within any ⎊"),
+            }
+        }
         200 => {
             // NOTE: Native repr function used by the BQN formatter.
             // The BQN formatter (f.bqn) takes ⟨Type,Decompose,Glyph,Repr⟩ and uses Repr
@@ -1374,14 +1406,99 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         145 => { // •SH — execute shell command, return ⟨exit_code, stdout, stderr⟩
             sh_exec_c1(x)
         }
-        // NOTE: •FFI — always throws
-        160 => rbqn_core::error::throw("•FFI is not supported in RBQN"),
-        // NOTE: •term stubs
-        163 => rbqn_core::error::throw("•term.RawMode is not implemented in RBQN"),
-        164 => rbqn_core::error::throw("•term.CharB is not implemented in RBQN"),
-        165 => rbqn_core::error::throw("•term.Flush is not implemented in RBQN"),
-        // NOTE: •bit stubs — all throw on call
-        161 => rbqn_core::error::throw("•bit operations are not implemented in RBQN"),
+        // NOTE: •FFI monadic — requires left argument
+        160 => rbqn_core::error::throw("•FFI: requires path as left argument (path •FFI spec)"),
+        // NOTE: •term.RawMode — enable/disable raw terminal mode
+        163 => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsFd;
+                let stdin = std::io::stdin();
+                let fd = stdin.as_fd();
+                let mut term = nix::sys::termios::tcgetattr(fd)
+                    .unwrap_or_else(|_| rbqn_core::error::throw("•term.RawMode: not a terminal"));
+                if x.o2f() == 1.0 {
+                    term.local_flags.remove(
+                        nix::sys::termios::LocalFlags::ICANON | nix::sys::termios::LocalFlags::ECHO
+                    );
+                } else {
+                    term.local_flags.insert(
+                        nix::sys::termios::LocalFlags::ICANON | nix::sys::termios::LocalFlags::ECHO
+                    );
+                }
+                nix::sys::termios::tcsetattr(fd, nix::sys::termios::SetArg::TCSAFLUSH, &term)
+                    .unwrap_or_else(|_| rbqn_core::error::throw("•term.RawMode: tcsetattr failed"));
+                x
+            }
+            #[cfg(not(unix))]
+            rbqn_core::error::throw("•term.RawMode: not available on this platform")
+        }
+        // NOTE: •term.CharB — blocking character read from stdin
+        164 => {
+            use std::io::Read;
+            let mut buf = [0u8; 1];
+            match std::io::stdin().read(&mut buf) {
+                Ok(1) => B::m_c32(buf[0] as u32),
+                _ => B::m_c32(0), // EOF → @ (NUL char)
+            }
+        }
+        // NOTE: •term.Flush — flush stdout and stderr, return x
+        165 => {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            x
+        }
+        // NOTE: •term.CharN — non-blocking character read from stdin
+        166 => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::AsRawFd;
+                use nix::fcntl::{fcntl, FcntlArg, OFlag};
+                let fd = std::io::stdin().as_raw_fd();
+                let old_flags = fcntl(fd, FcntlArg::F_GETFL).unwrap_or(0);
+                let _ = fcntl(fd, FcntlArg::F_SETFL(OFlag::from_bits_truncate(old_flags) | OFlag::O_NONBLOCK));
+                use std::io::Read;
+                let mut buf = [0u8; 1];
+                let result = match std::io::stdin().read(&mut buf) {
+                    Ok(1) => B::m_c32(buf[0] as u32),
+                    _ => B::m_c32(0), // no data or EOF → @
+                };
+                let _ = fcntl(fd, FcntlArg::F_SETFL(OFlag::from_bits_truncate(old_flags)));
+                result
+            }
+            #[cfg(not(unix))]
+            rbqn_core::error::throw("•term.CharN: not available on this platform")
+        }
+        // NOTE: •term.OutRaw — write raw bytes to stdout, return x
+        167 => {
+            use std::io::Write;
+            if let Some(arr) = crate::vm::get_arr(x) {
+                let bytes: Vec<u8> = (0..arr.ia()).map(|i| {
+                    arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() as u8
+                }).collect();
+                std::io::stdout().write_all(&bytes)
+                    .unwrap_or_else(|_| rbqn_core::error::throw("•term.OutRaw: write failed"));
+            } else {
+                rbqn_core::error::throw("•term.OutRaw: 𝕩 must be a list");
+            }
+            x
+        }
+        // NOTE: •term.ErrRaw — write raw bytes to stderr, return x
+        168 => {
+            use std::io::Write;
+            if let Some(arr) = crate::vm::get_arr(x) {
+                let bytes: Vec<u8> = (0..arr.ia()).map(|i| {
+                    arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() as u8
+                }).collect();
+                std::io::stderr().write_all(&bytes)
+                    .unwrap_or_else(|_| rbqn_core::error::throw("•term.ErrRaw: write failed"));
+            } else {
+                rbqn_core::error::throw("•term.ErrRaw: 𝕩 must be a list");
+            }
+            x
+        }
+        // NOTE: •bit operations are now 1-modifiers (native_md1 idx 70-78), no sys_fn dispatch needed
         // NOTE: •HashMap constructor
         170 => make_hashmap_instance(x),
         // NOTE: •HashMap method stubs
@@ -1514,7 +1631,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         1108 => { // hypot: w •math.Hypot x
             B::m_f64(w.o2f().hypot(x.o2f()))
         }
-        1110 => { // comb: w •math.Comb x = C(x, w) = binomial coefficient
+        1110 => { // comb: w •math.Comb x = C(w, x) = w choose x
             math_comb_c2(w, x)
         }
         1112 => { // gcd: w •math.GCD x
@@ -1639,8 +1756,8 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             }
             B::m_f64(wf.ln() / xf.ln())
         }
-        // NOTE: •FFI dyadic — always throws
-        160 => rbqn_core::error::throw("•FFI is not supported in RBQN"),
+        // NOTE: •FFI dyadic — load library and return callable function
+        160 => crate::ffi::ffi_load(w, x),
         // NOTE: •ns.Has dyadic: name •ns.Has ns → 0 or 1
         182 => ns_has_c2(w, x),
         // NOTE: •ns.Get dyadic: name •ns.Get ns → value
@@ -1799,6 +1916,12 @@ fn sys_fn_name(sys_idx: u32) -> &'static str {
         142 => "•Delay",
         145 => "•SH",
         160 => "•FFI",
+        163 => "•term.RawMode",
+        164 => "•term.CharB",
+        165 => "•term.Flush",
+        166 => "•term.CharN",
+        167 => "•term.OutRaw",
+        168 => "•term.ErrRaw",
         170 => "•HashMap",
         200 => "•_nativeRepr_",
         _   => "(system function)",
@@ -2016,7 +2139,13 @@ pub fn dispatch_sys_env(idx: u32) -> B {
                 .unwrap_or_default();
             str_to_b(&wd)
         }
-        41 => B::SENTINEL, // •state placeholder
+        41 => {
+            // •state = ⟨•path, •name, •args⟩
+            let path = dispatch_sys_env(38);
+            let name = dispatch_sys_env(39);
+            let args = dispatch_sys_env(37);
+            crate::vm::b_vec_to_arr(vec![path, name, args])
+        }
         _ => B::SENTINEL,
     }
 }
@@ -2471,8 +2600,9 @@ fn resolve_path(path: String) -> String {
         let path_str = b_to_string(path_b);
         if !path_str.is_empty() {
             let base = std::path::Path::new(&path_str);
-            // •path is the directory (not the file), so join directly
-            let joined = base.join(&path);
+            // •path stores the file path; get its parent directory for relative resolution
+            let base_dir = base.parent().unwrap_or(base);
+            let joined = base_dir.join(&path);
             return joined.to_string_lossy().into_owned();
         }
     }
@@ -2804,14 +2934,13 @@ fn lgamma_approx(x: f64) -> f64 {
 }
 
 fn math_comb_c1(_x: B) -> B {
-    // Monadic: C(x, 0) = 1
-    B::m_f64(1.0)
+    rbqn_core::error::throw("This function can't be called monadically")
 }
 
 fn math_comb_c2(w: B, x: B) -> B {
-    // w •math.Comb x = C(x, w) = x! / (w! * (x-w)!)
-    let n = x.o2f().round() as i64;
-    let k = w.o2f().round() as i64;
+    // w •math.Comb x = C(w, x) = w choose x
+    let n = w.o2f().round() as i64;
+    let k = x.o2f().round() as i64;
     if k < 0 || k > n {
         return B::m_f64(0.0);
     }
@@ -2823,9 +2952,8 @@ fn math_comb_c2(w: B, x: B) -> B {
     B::m_f64(result.round())
 }
 
-fn math_gcd_c1(x: B) -> B {
-    // Monadic: gcd(x, 0) = |x|
-    B::m_f64(x.o2f().abs())
+fn math_gcd_c1(_x: B) -> B {
+    rbqn_core::error::throw("This function can't be called monadically")
 }
 
 fn math_gcd_c2(w: B, x: B) -> B {
@@ -2842,8 +2970,7 @@ fn math_gcd_c2(w: B, x: B) -> B {
 }
 
 fn math_lcm_c1(_x: B) -> B {
-    // Monadic: lcm(x, 0) = 0
-    B::m_f64(0.0)
+    rbqn_core::error::throw("This function can't be called monadically")
 }
 
 fn math_lcm_c2(w: B, x: B) -> B {
@@ -3199,11 +3326,18 @@ fn make_bit_namespace() -> B {
 
     use crate::namespace::{str2gid, NSDesc, NS};
 
+    // NOTE: CBQN has 9 fields, all 1-modifiers. The BQN compiler strips
+    // underscores from modifier names, so register without _ prefix.
     let gids = vec![
-        str2gid("_and_"),
-        str2gid("_or_"),
-        str2gid("_xor_"),
-        str2gid("_not"),
+        str2gid("cast"),  // 0
+        str2gid("not"),   // 1
+        str2gid("neg"),   // 2
+        str2gid("and"),   // 3
+        str2gid("or"),    // 4
+        str2gid("xor"),   // 5
+        str2gid("add"),   // 6
+        str2gid("sub"),   // 7
+        str2gid("mul"),   // 8
     ];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
@@ -3215,10 +3349,15 @@ fn make_bit_namespace() -> B {
         None,
         var_am_u16,
         &[
-            m_sys_fn(161), // _and_
-            m_sys_fn(161), // _or_
-            m_sys_fn(161), // _xor_
-            m_sys_fn(161), // _not
+            m_native_md1(70),  // _cast
+            m_native_md1(71),  // _not
+            m_native_md1(72),  // _neg
+            m_native_md1(73),  // _and
+            m_native_md1(74),  // _or
+            m_native_md1(75),  // _xor
+            m_native_md1(76),  // _add
+            m_native_md1(77),  // _sub
+            m_native_md1(78),  // _mul
         ],
     ));
 
@@ -3244,9 +3383,12 @@ fn make_term_namespace() -> B {
     use crate::namespace::{str2gid, NSDesc, NS};
 
     let gids = vec![
+        str2gid("flush"),
         str2gid("rawmode"),
         str2gid("charb"),
-        str2gid("flush"),
+        str2gid("charn"),
+        str2gid("outraw"),
+        str2gid("errraw"),
     ];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
@@ -3258,9 +3400,12 @@ fn make_term_namespace() -> B {
         None,
         var_am_u16,
         &[
+            m_sys_fn(165), // Flush
             m_sys_fn(163), // RawMode
             m_sys_fn(164), // CharB
-            m_sys_fn(165), // Flush
+            m_sys_fn(166), // CharN
+            m_sys_fn(167), // OutRaw
+            m_sys_fn(168), // ErrRaw
         ],
     ));
 

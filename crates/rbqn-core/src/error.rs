@@ -23,6 +23,17 @@ impl fmt::Display for BqnError {
     }
 }
 
+impl BqnError {
+    /// Raw message for •CurrentError: Assert returns just the user string,
+    /// other variants include their prefix (matching CBQN behavior).
+    pub fn current_error_msg(&self) -> String {
+        match self {
+            BqnError::Assert(s) => s.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
 impl std::error::Error for BqnError {}
 
 pub type Result<T> = std::result::Result<T, BqnError>;

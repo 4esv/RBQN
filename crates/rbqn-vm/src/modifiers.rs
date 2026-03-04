@@ -105,6 +105,11 @@ pub fn native_md1_c1(prim_idx: usize, operand: B, _self_val: B, x: B) -> B {
         MD1_FOLD => fold_c1(operand, x),
         MD1_INSERT => insert_c1(operand, x),
         MD1_SCAN => scan_c1(operand, x),
+        // •bit namespace 1-modifiers (monadic)
+        70 => bit_cast_c1(operand, x),
+        71 => bit_not_c1(operand, x),
+        72 => bit_neg_c1(operand, x),
+        73..=78 => rbqn_core::error::throw("•bit: this operation requires two arguments"),
         _ => rbqn_core::error::throw(format!(
             "native 1-modifier idx {} c1 not implemented", prim_idx
         )),
@@ -126,6 +131,16 @@ pub fn native_md1_c2(prim_idx: usize, operand: B, _self_val: B, w: B, x: B) -> B
         MD1_FOLD => fold_c2(operand, w, x),
         MD1_INSERT => insert_c2(operand, w, x),
         MD1_SCAN => scan_c2(operand, w, x),
+        // •bit namespace 1-modifiers (dyadic)
+        70 => bit_cast_c1(operand, x),  // _cast is monadic-only, dyadic = ignore w
+        71 => bit_not_c1(operand, x),   // _not is monadic-only
+        72 => bit_neg_c1(operand, x),   // _neg is monadic-only
+        73 => bit_binop_c2(operand, w, x, |a, b| a & b),  // _and
+        74 => bit_binop_c2(operand, w, x, |a, b| a | b),  // _or
+        75 => bit_binop_c2(operand, w, x, |a, b| a ^ b),  // _xor
+        76 => bit_arith_c2(operand, w, x, |a, b| a.wrapping_add(b)),  // _add
+        77 => bit_arith_c2(operand, w, x, |a, b| a.wrapping_sub(b)),  // _sub
+        78 => bit_arith_c2(operand, w, x, |a, b| a.wrapping_mul(b)),  // _mul
         _ => rbqn_core::error::throw(format!(
             "native 1-modifier idx {} c2 not implemented", prim_idx
         )),
@@ -2183,11 +2198,48 @@ fn repeat_c2_arr(f: B, counts: &rbqn_core::BqnArr, w: B, x: B) -> B {
 // 2-modifier: ⎊ Catch
 // ============================================================
 
+use std::cell::RefCell;
+
+thread_local! {
+    /// Current error message for •CurrentError, set by catch (⎊) handlers.
+    /// Stack discipline: save/restore when entering/leaving catch handler G.
+    static CURRENT_ERROR: RefCell<Option<B>> = const { RefCell::new(None) };
+}
+
+/// Get the current error message (called by •CurrentError dispatch).
+pub fn get_current_error() -> Option<B> {
+    CURRENT_ERROR.with(|ce| *ce.borrow())
+}
+
+/// Extract error message from a panic payload and convert to BQN character array.
+fn panic_to_error_string(panic: &Box<dyn std::any::Any + Send>) -> B {
+    let msg = if let Some(e) = panic.downcast_ref::<rbqn_core::error::BqnError>() {
+        e.current_error_msg()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = panic.downcast_ref::<&str>() {
+        s.to_string()
+    } else {
+        "Unknown error".to_string()
+    };
+    let chars: Vec<u32> = msg.chars().map(|c| c as u32).collect();
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(chars))
+}
+
 fn catch_c1(f: B, g: B, x: B) -> B {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(f, x)));
     match result {
         Ok(v) => v,
-        Err(_) => c1(g, x),
+        Err(panic) => {
+            let msg_b = panic_to_error_string(&panic);
+            let old = CURRENT_ERROR.with(|ce| ce.borrow_mut().replace(msg_b));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(g, x)));
+            CURRENT_ERROR.with(|ce| *ce.borrow_mut() = old);
+            match r {
+                Ok(v) => v,
+                Err(e) => std::panic::resume_unwind(e),
+            }
+        }
     }
 }
 
@@ -2195,6 +2247,229 @@ fn catch_c2(f: B, g: B, w: B, x: B) -> B {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c2(f, w, x)));
     match result {
         Ok(v) => v,
-        Err(_) => c2(g, w, x),
+        Err(panic) => {
+            let msg_b = panic_to_error_string(&panic);
+            let old = CURRENT_ERROR.with(|ce| ce.borrow_mut().replace(msg_b));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c2(g, w, x)));
+            CURRENT_ERROR.with(|ce| *ce.borrow_mut() = old);
+            match r {
+                Ok(v) => v,
+                Err(e) => std::panic::resume_unwind(e),
+            }
+        }
     }
+}
+
+// ============================================================
+// •bit namespace — bitwise 1-modifier operations
+// ============================================================
+
+/// Parse width operand: scalar N → all same; array extends by repeating last.
+fn bit_parse_widths(operand: B, _is_dyadic: bool) -> (usize, usize, usize, usize) {
+    if operand.is_f64() {
+        let w = operand.o2f() as usize;
+        return (w, w, w, w);
+    }
+    if let Some(arr) = crate::vm::get_arr(operand) {
+        let n = arr.ia();
+        let vals: Vec<usize> = (0..n).map(|i| {
+            arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() as usize
+        }).collect();
+        match n {
+            1 => (vals[0], vals[0], vals[0], vals[0]),
+            2 => (vals[0], vals[1], vals[1], vals[1]),
+            3 => (vals[0], vals[1], vals[2], vals[2]),
+            4 => (vals[0], vals[1], vals[2], vals[3]),
+            _ => rbqn_core::error::throw("•bit: operand must have 1-4 elements"),
+        }
+    } else {
+        rbqn_core::error::throw("•bit: operand must be a number or array")
+    }
+}
+
+/// Convert a BQN array to bytes treating elements as `width`-bit values.
+fn bit_arr_to_bytes(arr: &rbqn_core::array::BqnArr, width: usize) -> Vec<u8> {
+    match width {
+        1 => {
+            let n = arr.ia();
+            let byte_count = (n + 7) / 8;
+            let mut bytes = vec![0u8; byte_count];
+            for i in 0..n {
+                if arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() != 0.0 {
+                    bytes[i / 8] |= 1 << (i % 8);
+                }
+            }
+            bytes
+        }
+        8 => (0..arr.ia()).map(|i| {
+            arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() as i8 as u8
+        }).collect(),
+        16 => {
+            let mut bytes = Vec::with_capacity(arr.ia() * 2);
+            for i in 0..arr.ia() {
+                bytes.extend_from_slice(&(arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() as i16).to_le_bytes());
+            }
+            bytes
+        }
+        32 => {
+            let mut bytes = Vec::with_capacity(arr.ia() * 4);
+            for i in 0..arr.ia() {
+                bytes.extend_from_slice(&(arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() as i32).to_le_bytes());
+            }
+            bytes
+        }
+        64 => {
+            let mut bytes = Vec::with_capacity(arr.ia() * 8);
+            for i in 0..arr.ia() {
+                bytes.extend_from_slice(&arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f().to_le_bytes());
+            }
+            bytes
+        }
+        _ => rbqn_core::error::throw(&format!("•bit: unsupported width {}", width)),
+    }
+}
+
+/// Convert bytes back to a BQN array with `width`-bit elements.
+fn bit_bytes_to_arr(bytes: &[u8], width: usize, total_bits: usize) -> B {
+    let elem_count = total_bits / width;
+    match width {
+        1 => {
+            let elems: Vec<f64> = (0..elem_count)
+                .map(|i| ((bytes[i / 8] >> (i % 8)) & 1) as f64)
+                .collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
+        }
+        8 => {
+            let elems: Vec<f64> = bytes.iter().take(elem_count).map(|&b| b as i8 as f64).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
+        }
+        16 => {
+            let elems: Vec<f64> = bytes.chunks_exact(2).take(elem_count)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f64).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
+        }
+        32 => {
+            let elems: Vec<f64> = bytes.chunks_exact(4).take(elem_count)
+                .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
+        }
+        64 => {
+            let elems: Vec<f64> = bytes.chunks_exact(8).take(elem_count)
+                .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])).collect();
+            crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
+        }
+        _ => rbqn_core::error::throw(&format!("•bit: unsupported result width {}", width)),
+    }
+}
+
+/// Read a signed integer of `ow` bits from bytes at byte offset.
+fn bit_read_signed(bytes: &[u8], offset: usize, ow: usize) -> i64 {
+    match ow {
+        1 => ((bytes[offset / 8] >> (offset % 8)) & 1) as i64,
+        8 => bytes[offset] as i8 as i64,
+        16 => i16::from_le_bytes([bytes[offset], bytes[offset + 1]]) as i64,
+        32 => i32::from_le_bytes([
+            bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
+        ]) as i64,
+        64 => i64::from_le_bytes([
+            bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
+            bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7],
+        ]),
+        _ => rbqn_core::error::throw(&format!("•bit: unsupported width {}", ow)),
+    }
+}
+
+/// Write a signed integer of `ow` bits to bytes at byte offset.
+fn bit_write_signed(bytes: &mut [u8], offset: usize, ow: usize, val: i64) {
+    match ow {
+        1 => {
+            if val & 1 != 0 {
+                bytes[offset / 8] |= 1 << (offset % 8);
+            } else {
+                bytes[offset / 8] &= !(1 << (offset % 8));
+            }
+        }
+        8 => bytes[offset] = val as u8,
+        16 => bytes[offset..offset + 2].copy_from_slice(&(val as i16).to_le_bytes()),
+        32 => bytes[offset..offset + 4].copy_from_slice(&(val as i32).to_le_bytes()),
+        64 => bytes[offset..offset + 8].copy_from_slice(&val.to_le_bytes()),
+        _ => rbqn_core::error::throw(&format!("•bit: unsupported width {}", ow)),
+    }
+}
+
+/// •bit._cast: reinterpret bits (monadic)
+fn bit_cast_c1(operand: B, x: B) -> B {
+    let (_, rw, xw, _) = bit_parse_widths(operand, false);
+    let x_arr = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("•bit._cast: 𝕩 must be an array"));
+    let bytes = bit_arr_to_bytes(&x_arr, xw);
+    let total_bits = x_arr.ia() * xw;
+    bit_bytes_to_arr(&bytes, rw, total_bits)
+}
+
+/// •bit._not: bitwise NOT (monadic)
+fn bit_not_c1(operand: B, x: B) -> B {
+    let (_, rw, xw, _) = bit_parse_widths(operand, false);
+    let x_arr = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("•bit._not: 𝕩 must be an array"));
+    let bytes = bit_arr_to_bytes(&x_arr, xw);
+    let result: Vec<u8> = bytes.iter().map(|&b| !b).collect();
+    let total_bits = x_arr.ia() * xw;
+    bit_bytes_to_arr(&result, rw, total_bits)
+}
+
+/// •bit._neg: two's complement negate (monadic)
+fn bit_neg_c1(operand: B, x: B) -> B {
+    let (ow, rw, xw, _) = bit_parse_widths(operand, false);
+    let x_arr = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("•bit._neg: 𝕩 must be an array"));
+    let bytes = bit_arr_to_bytes(&x_arr, xw);
+    let unit_bytes = (ow / 8).max(1);
+    let n_units = bytes.len() / unit_bytes;
+    let mut result = vec![0u8; bytes.len()];
+    for i in 0..n_units {
+        let offset = i * unit_bytes;
+        let val = bit_read_signed(&bytes, offset, ow);
+        bit_write_signed(&mut result, offset, ow, val.wrapping_neg());
+    }
+    let total_bits = x_arr.ia() * xw;
+    bit_bytes_to_arr(&result, rw, total_bits)
+}
+
+/// Dyadic bitwise binary operation (AND, OR, XOR) — operates on raw bytes.
+fn bit_binop_c2(operand: B, w: B, x: B, op: impl Fn(u8, u8) -> u8) -> B {
+    let (_ow, rw, xw, ww) = bit_parse_widths(operand, true);
+    let x_arr = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("•bit: 𝕩 must be an array"));
+    let w_arr = crate::vm::get_arr(w)
+        .unwrap_or_else(|| rbqn_core::error::throw("•bit: 𝕨 must be an array"));
+    let xb = bit_arr_to_bytes(&x_arr, xw);
+    let wb = bit_arr_to_bytes(&w_arr, ww);
+    let n = xb.len().min(wb.len());
+    let result: Vec<u8> = (0..n).map(|i| op(wb[i], xb[i])).collect();
+    let min_total_bits = (x_arr.ia() * xw).min(w_arr.ia() * ww);
+    bit_bytes_to_arr(&result, rw, min_total_bits)
+}
+
+/// Dyadic arithmetic operation (_add, _sub, _mul) — operates on width-sized units.
+fn bit_arith_c2(operand: B, w: B, x: B, op: impl Fn(i64, i64) -> i64) -> B {
+    let (ow, rw, xw, ww) = bit_parse_widths(operand, true);
+    let x_arr = crate::vm::get_arr(x)
+        .unwrap_or_else(|| rbqn_core::error::throw("•bit: 𝕩 must be an array"));
+    let w_arr = crate::vm::get_arr(w)
+        .unwrap_or_else(|| rbqn_core::error::throw("•bit: 𝕨 must be an array"));
+    let xb = bit_arr_to_bytes(&x_arr, xw);
+    let wb = bit_arr_to_bytes(&w_arr, ww);
+    let unit_bytes = (ow / 8).max(1);
+    let n_units = (xb.len().min(wb.len())) / unit_bytes;
+    let mut result = vec![0u8; n_units * unit_bytes];
+    for i in 0..n_units {
+        let offset = i * unit_bytes;
+        let a = bit_read_signed(&wb, offset, ow);
+        let b = bit_read_signed(&xb, offset, ow);
+        let c = op(a, b);
+        bit_write_signed(&mut result, offset, ow, c);
+    }
+    let total_bits = n_units * ow;
+    bit_bytes_to_arr(&result, rw, total_bits)
 }

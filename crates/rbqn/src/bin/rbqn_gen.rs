@@ -1,9 +1,13 @@
-// NOTE: rbqn-gen — dev tool to regenerate embedded .bin bytecode files from CBQN gen/ dir.
-// Run with: CBQN_PATH=/path/to/cbqn cargo run --bin rbqn-gen --features gen-tools
-// Run with --verify to also test RBQN's ability to compile its own BQN sources.
+// NOTE: rbqn-gen — dev tool to regenerate embedded .bin bytecode files.
 //
-// This binary contains the full CBQN gen/ parser originally in build.rs.
-// It is NOT compiled during normal `cargo build` — only when gen-tools feature is enabled.
+// Modes:
+//   --self           Compile all 4 BQN sources using RBQN (no CBQN needed).
+//                    Requires BQN_SRC=/path/to/BQN/src. Writes to bins/.
+//   --fixpoint-check Run --self twice and verify byte-for-byte identical output.
+//   --verify         (Legacy) Test self-compilation, write to embedded/self-compiled/.
+//   (default)        Parse CBQN gen/ files. Requires CBQN_PATH.
+//
+// This binary is NOT compiled during normal `cargo build` — only with gen-tools feature.
 
 use std::env;
 use std::fs;
@@ -11,8 +15,45 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let self_mode = args.iter().any(|a| a == "--self");
+    let fixpoint_mode = args.iter().any(|a| a == "--fixpoint-check");
     let verify_mode = args.iter().any(|a| a == "--verify");
 
+    if self_mode || fixpoint_mode {
+        // --self mode: compile all 4 BQN sources using RBQN's own compiler
+        if env::var("CBQN_PATH").is_ok() {
+            eprintln!("rbqn-gen: --self mode: CBQN_PATH ignored");
+        }
+
+        let bqn_src = match env::var("BQN_SRC") {
+            Ok(p) => {
+                let path = PathBuf::from(p);
+                if !path.join("c.bqn").is_file() {
+                    eprintln!("rbqn-gen: BQN_SRC does not contain c.bqn");
+                    std::process::exit(1);
+                }
+                path
+            }
+            Err(_) => {
+                eprintln!("rbqn-gen: --self requires BQN_SRC=/path/to/mlochbaum/BQN/src");
+                std::process::exit(1);
+            }
+        };
+
+        let bins_dir = find_bins_dir();
+
+        if fixpoint_mode {
+            run_fixpoint_check(&bqn_src, &bins_dir);
+        } else {
+            self_compile_all(&bqn_src, &bins_dir);
+            println!();
+            println!("rbqn-gen: --self: All 4 bins compiled and written to bins/");
+            println!("rbqn-gen: --self: Commit bins/ to replace CBQN-compiled bytecode.");
+        }
+        return;
+    }
+
+    // Legacy CBQN gen/ mode
     let cbqn_path = match env::var("CBQN_PATH") {
         Ok(p) => {
             let path = PathBuf::from(&p);
@@ -23,9 +64,9 @@ fn main() {
             path
         }
         Err(_) => {
-            eprintln!("rbqn-gen: CBQN_PATH environment variable is required");
-            eprintln!("  Set it to the root of your CBQN source directory.");
+            eprintln!("rbqn-gen: CBQN_PATH environment variable is required (or use --self)");
             eprintln!("  Example: CBQN_PATH=/path/to/cbqn cargo run --bin rbqn-gen --features gen-tools");
+            eprintln!("  Or: BQN_SRC=/path/to/BQN/src cargo run --bin rbqn-gen --features gen-tools -- --self");
             std::process::exit(1);
         }
     };
@@ -41,12 +82,9 @@ fn main() {
 
     println!("rbqn-gen: Using gen/ from {}", gen_dir.display());
 
-    // Find the target embedded/ directory
-    let embedded_dir = find_embedded_dir();
+    let bins_dir = find_bins_dir();
+    println!("rbqn-gen: Writing .bin files to {}", bins_dir.display());
 
-    println!("rbqn-gen: Writing .bin files to {}", embedded_dir.display());
-
-    // Parse and write all 4 components
     let runtime1_file = if gen_dir.join("runtime1x").is_file() { "runtime1x" } else { "runtime1" };
     println!("rbqn-gen: Using {} for runtime1", runtime1_file);
 
@@ -62,7 +100,7 @@ fn main() {
         if !src_path.is_file() {
             eprintln!("rbqn-gen: Warning: {} not found, writing empty .bin", src_path.display());
             let empty = encode_empty("cbqn");
-            let out = embedded_dir.join(bin_name);
+            let out = bins_dir.join(bin_name);
             fs::write(&out, &empty).unwrap_or_else(|e| {
                 eprintln!("rbqn-gen: Failed to write {}: {e}", out.display());
                 std::process::exit(1);
@@ -76,11 +114,9 @@ fn main() {
         });
 
         let parsed = parse_cbqn_gen(&src);
-        // NOTE: Tag all CBQN-generated .bin files as "cbqn" (not the gen/ filename).
-        // Self-compiled bytecode uses "rbqn-self" (written by --verify mode).
         let bytes = encode_bytecode(&parsed, "cbqn");
 
-        let out = embedded_dir.join(bin_name);
+        let out = bins_dir.join(bin_name);
         fs::write(&out, &bytes).unwrap_or_else(|e| {
             eprintln!("rbqn-gen: Failed to write {}: {e}", out.display());
             std::process::exit(1);
@@ -92,27 +128,335 @@ fn main() {
     println!("rbqn-gen: Done. Commit the .bin files to enable CBQN-free builds.");
 
     if verify_mode {
-        verify_self_compilation(&cbqn_path, &embedded_dir);
+        verify_self_compilation(&cbqn_path);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Self-compilation verification (--verify mode)
+// --self mode: compile all 4 BQN sources using RBQN
 // ---------------------------------------------------------------------------
-//
-// Bootstraps RBQN from the committed .bin files, then attempts to compile
-// the BQN compiler/runtime sources using RBQN's own compiler. This verifies
-// SELF-01 (can compile c.bqn) and produces .bin files tagged "rbqn-self" for
-// SELF-02 behavioral equivalence testing.
-//
-// BQN source path: BQN_SRC env var, or CBQN_PATH/../BQN/src (sibling repo).
 
-fn verify_self_compilation(cbqn_path: &Path, embedded_dir: &Path) {
+/// Bootstrap RBQN and return the Runtime.
+fn bootstrap_rbqn() -> rbqn::bootstrap::Runtime {
+    // Use catch_unwind instead of panic hook suppression so we can see errors
+    let rt = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rbqn::bootstrap::bootstrap()
+    })) {
+        Ok(Ok(rt)) => rt,
+        Ok(Err(e)) => {
+            eprintln!("rbqn-gen: Bootstrap failed: {e}");
+            std::process::exit(1);
+        }
+        Err(panic) => {
+            let msg = panic.downcast_ref::<String>().map(|s| s.as_str())
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            eprintln!("rbqn-gen: Bootstrap panicked: {msg}");
+            std::process::exit(1);
+        }
+    };
+    // Suppress BQN runtime panics from here on (compilation errors use panic-based throw())
+    std::panic::set_hook(Box::new(|_| {}));
+    rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
+    rbqn_vm::derive::set_sys_args(&[]);
+    rbqn_vm::derive::set_sys_path("");
+    rt
+}
+
+/// Create a compiler instance with extended glyphs for runtime compilation.
+/// The extended set adds aliases: &=Type, ∩=Fill, ⍣=Log, $=GroupLen, %=GroupOrd (fns) + ⍝=_fillBy_ (md2)
+fn make_rt_compiler(rt: &rbqn::bootstrap::Runtime) -> Result<rbqn_core::B, String> {
+    use rbqn_core::array::BqnArr;
+    use rbqn_vm::vm::tag_arr;
+    use rbqn_vm::derive::c1;
+
+    if rt.compgen.0 == rbqn_core::B::SENTINEL.0 {
+        return Err("compgen not available".to_string());
+    }
+
+    // Extended glyph lists: standard glyphs + aliases
+    let fn_ext: Vec<u32> = "+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥≡≢⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/⍋⍒⊏⊑⊐⊒∊⍷⊔!&∩⍣$%"
+        .chars().map(|c| c as u32).collect();
+    let md1_ext: Vec<u32> = "˙˜˘¨⌜⁼´˝`"
+        .chars().map(|c| c as u32).collect();
+    let md2_ext: Vec<u32> = "∘○⊸⟜⌾⊘◶⎉⚇⍟⎊⍝"
+        .chars().map(|c| c as u32).collect();
+
+    let glyphs_b = {
+        let fn_arr = tag_arr(BqnArr::new_vec_c32(fn_ext));
+        let md1_arr = tag_arr(BqnArr::new_vec_c32(md1_ext));
+        let md2_arr = tag_arr(BqnArr::new_vec_c32(md2_ext));
+        tag_arr(BqnArr::from_b_vec(vec![fn_arr, md1_arr, md2_arr]))
+    };
+
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        c1(rt.compgen, glyphs_b)
+    })) {
+        Ok(c) => Ok(c),
+        Err(p) => {
+            let msg = p.downcast_ref::<String>().map(|s| s.as_str())
+                .or_else(|| p.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            Err(format!("compgen panicked: {msg}"))
+        }
+    }
+}
+
+/// Build the "compiler runtime" array for runtime compilation with extended glyphs.
+/// This array has one entry per glyph position (49 fn + 9 md1 + 12 md2 = 70 entries).
+/// Standard glyphs map to fruntime[n], aliases REUSE B values from the standard provide
+/// so that compiler_output_to_owned can match them by B value identity.
+fn build_rt_compiler_runtime(fruntime: &[rbqn_core::B], provide: &[rbqn_core::B]) -> Vec<rbqn_core::B> {
+    let mut rt = Vec::with_capacity(70);
+
+    // 49 function glyphs: standard 44 + 5 aliases
+    // Standard fn: "+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥≡≢⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/⍋⍒⊏⊑⊐⊒∊⍷⊔!" → fruntime[0..43]
+    for i in 0..44 {
+        rt.push(fruntime[i]);
+    }
+    // Aliases: reuse B values from the standard provide so identity matching works
+    rt.push(provide[0]);      // 44: & = •Type (provide[0])
+    rt.push(provide[1]);      // 45: ∩ = Fill (provide[1])
+    rt.push(fruntime[4]);     // 46: ⍣ = Log (= ⋆, same fruntime entry)
+    rt.push(provide[3]);      // 47: $ = •GroupLen (provide[3])
+    rt.push(provide[4]);      // 48: % = •GroupOrd (provide[4])
+
+    // 9 md1 glyphs: "˙˜˘¨⌜⁼´˝`" → fruntime[44..52]
+    for i in 44..53 {
+        rt.push(fruntime[i]);
+    }
+
+    // 12 md2 glyphs: standard 11 + 1 alias
+    // "∘○⊸⟜⌾⊘◶⎉⚇⍟⎊" → fruntime[53..63]
+    for i in 53..64 {
+        rt.push(fruntime[i]);
+    }
+    // ⍝ = _fillBy_ — reuse from provide[20]
+    rt.push(provide[20]); // 69: ⍝
+
+    rt
+}
+
+/// Build extended provide array for compiler_output_to_owned identity matching.
+/// Same layout as build_rt_compiler_runtime — used to match Runtime(n) back to Provide(n).
+fn build_rt_provide(fruntime: &[rbqn_core::B], provide: &[rbqn_core::B]) -> Vec<rbqn_core::B> {
+    build_rt_compiler_runtime(fruntime, provide)
+}
+
+/// Compile a single BQN source file and return the .bin bytes.
+fn compile_bqn_source(
+    rt: &rbqn::bootstrap::Runtime,
+    provide: &[rbqn_core::B],
+    rt_provide: &[rbqn_core::B],
+    rt_compiler: rbqn_core::B,
+    bqn_file: &str,
+    src: &str,
+    needs_wrap: bool,
+    preprocessed_dir: Option<&Path>,
+) -> Result<Vec<u8>, String> {
+    // For r0.bqn/r1.bqn: use preprocessed source + extended compiler
+    let (code, use_compiler, use_provide) = if bqn_file == "r0.bqn" || bqn_file == "r1.bqn" {
+        let pp_name = if bqn_file == "r0.bqn" { "r0.bqn" } else { "r1.bqn" };
+        let pp_dir = preprocessed_dir
+            .ok_or_else(|| format!("preprocessed source required for {bqn_file}"))?;
+        let pp_path = pp_dir.join(pp_name);
+        let pp_src = fs::read_to_string(&pp_path)
+            .map_err(|e| format!("failed to read {}: {e}", pp_path.display()))?;
+        (pp_src, rt_compiler, rt_provide)
+    } else if needs_wrap {
+        // c.bqn: replace •args with 𝕩, wrap in function block
+        let args_pattern = "•args";
+        let first_line = src.lines().next().unwrap_or("");
+        let body_rest = src.lines().skip(1).collect::<Vec<_>>().join("\n");
+        let new_first = if first_line.ends_with(args_pattern) {
+            let prefix_len = first_line.len() - args_pattern.len();
+            format!("{}𝕩", &first_line[..prefix_len])
+        } else {
+            "func‿mod1‿mod2 ← 𝕩".to_string()
+        };
+        (format!("{{\n{}\n{}\n}}", new_first, body_rest), rt.compiler, provide)
+    } else {
+        (src.to_string(), rt.compiler, provide)
+    };
+
+    // For runtime sources, pass the provide array as the compiler's runtime arg
+    let comp_runtime: &[rbqn_core::B] = if bqn_file == "r0.bqn" || bqn_file == "r1.bqn" {
+        use_provide
+    } else {
+        &rt.runtime
+    };
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        rbqn::exec::compile_string_with_rt(&code, use_compiler, comp_runtime)
+    }));
+
+    match result {
+        Ok(Ok(output)) => {
+            // For serialization, use the STANDARD 40-entry provide (not the extended
+            // 70-entry rt_provide). The bootstrap reconstructs objects using the 40-entry
+            // provide, so function references must be mapped to those indices.
+            // The extended rt_provide is only needed for the compiler's runtime arg.
+            let serial_provide = if bqn_file == "r0.bqn" || bqn_file == "r1.bqn" {
+                provide
+            } else {
+                use_provide
+            };
+
+            let (runtime_prev, runtime_ref) = if bqn_file == "r0.bqn" {
+                (None, None)
+            } else if bqn_file == "r1.bqn" {
+                (Some(rt.runtime_0.as_slice()), None)
+            } else {
+                (None, Some(rt.runtime.as_slice()))
+            };
+
+            let owned = rbqn::exec::compiler_output_to_owned(
+                &output,
+                serial_provide,
+                runtime_prev,
+                runtime_ref,
+            );
+            Ok(rbqn::embedded::encode_owned_bytecode(&owned, "rbqn-self"))
+        }
+        Ok(Err(e)) => Err(format!("compile error: {e}")),
+        Err(panic) => {
+            let msg = panic.downcast_ref::<String>().map(|s| s.as_str())
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            Err(format!("panic: {msg}"))
+        }
+    }
+}
+
+/// Compile all 4 BQN sources and write to output_dir.
+/// Panics (exit 1) on any compilation failure.
+fn self_compile_all(bqn_src: &Path, output_dir: &Path) {
+    println!("rbqn-gen: Bootstrapping RBQN...");
+    let rt = bootstrap_rbqn();
+    println!("rbqn-gen: Bootstrap OK");
+
+    let provide = rbqn::bootstrap::build_provide(&rt.fruntime);
+    let rt_provide = build_rt_provide(&rt.fruntime, &provide);
+
+    println!("rbqn-gen: Creating runtime compiler (extended glyphs)...");
+    let rt_compiler = match make_rt_compiler(&rt) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("rbqn-gen: --self: Failed to create runtime compiler: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    // Preprocessed sources for r0/r1 are in src/preprocessed/ (repo root)
+    let pp_dir = find_preprocessed_dir();
+
+    let sources: &[(&str, &str, bool)] = &[
+        ("r0.bqn", "runtime0.bin", false),
+        ("r1.bqn", "runtime1x.bin", false),
+        ("c.bqn", "compiler.bin", true),
+        ("f.bqn", "formatter.bin", false),
+    ];
+
+    for &(bqn_file, bin_name, needs_wrap) in sources {
+        let src_path = bqn_src.join(bqn_file);
+        let src = match fs::read_to_string(&src_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("rbqn-gen: --self: Failed to read {}: {e}", src_path.display());
+                std::process::exit(1);
+            }
+        };
+
+        match compile_bqn_source(&rt, &provide, &rt_provide, rt_compiler, bqn_file, &src, needs_wrap, Some(&pp_dir)) {
+            Ok(bin_bytes) => {
+                let out = output_dir.join(bin_name);
+                fs::write(&out, &bin_bytes).unwrap_or_else(|e| {
+                    eprintln!("rbqn-gen: --self: Failed to write {}: {e}", out.display());
+                    std::process::exit(1);
+                });
+                println!("rbqn-gen: --self: {} compiled OK ({} bytes)", bqn_file, bin_bytes.len());
+            }
+            Err(e) => {
+                eprintln!("rbqn-gen: --self: {} FAILED: {e}", bqn_file);
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn find_preprocessed_dir() -> PathBuf {
+    // Look for src/preprocessed/ at repo root
+    if let Ok(manifest) = env::var("CARGO_MANIFEST_DIR") {
+        let p = PathBuf::from(manifest).join("../../src/preprocessed");
+        if p.is_dir() {
+            return p;
+        }
+    }
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut dir = cwd.as_path();
+    loop {
+        let candidate = dir.join("src/preprocessed");
+        if candidate.is_dir() {
+            return candidate;
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => break,
+        }
+    }
+    PathBuf::from("src/preprocessed")
+}
+
+// ---------------------------------------------------------------------------
+// --fixpoint-check: compile twice, compare output
+// ---------------------------------------------------------------------------
+
+fn run_fixpoint_check(bqn_src: &Path, bins_dir: &Path) {
+    println!("rbqn-gen: --- Fixpoint swap test ---");
+
+    let bin_names = ["runtime0.bin", "runtime1x.bin", "compiler.bin", "formatter.bin"];
+    let mut prev_bins: Option<[Vec<u8>; 4]> = None;
+
+    for round in 1..=5 {
+        println!("rbqn-gen: fixpoint round {round}...");
+        self_compile_all(bqn_src, bins_dir);
+
+        // Read back the written bins
+        let current_bins: [Vec<u8>; 4] = bin_names.map(|name| {
+            fs::read(bins_dir.join(name)).unwrap_or_default()
+        });
+
+        if let Some(ref prev) = prev_bins {
+            if *prev == current_bins {
+                println!();
+                println!("rbqn-gen: FIXPOINT reached at round {round} — self-hosting is stable.");
+                println!("rbqn-gen: Bins are byte-for-byte reproducible.");
+                return;
+            } else {
+                for (i, name) in bin_names.iter().enumerate() {
+                    if prev[i] != current_bins[i] {
+                        println!("rbqn-gen: round {round}: {name} differs ({} vs {} bytes)",
+                            prev[i].len(), current_bins[i].len());
+                    }
+                }
+            }
+        }
+        prev_bins = Some(current_bins);
+    }
+
+    eprintln!("rbqn-gen: WARNING: fixpoint not reached after 5 rounds.");
+    std::process::exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// --verify mode (legacy, writes to embedded/self-compiled/)
+// ---------------------------------------------------------------------------
+
+fn verify_self_compilation(cbqn_path: &Path) {
     println!();
     println!("rbqn-gen: --- Self-compilation verification ---");
 
-    // Find BQN source directory
-    let bqn_src = find_bqn_src(cbqn_path);
+    let bqn_src = find_bqn_src(Some(cbqn_path));
     let bqn_src = match bqn_src {
         Some(p) => {
             println!("rbqn-gen: BQN sources: {}", p.display());
@@ -120,230 +464,129 @@ fn verify_self_compilation(cbqn_path: &Path, embedded_dir: &Path) {
         }
         None => {
             eprintln!("rbqn-gen: WARNING: BQN source directory not found.");
-            eprintln!("  Set BQN_SRC=/path/to/mlochbaum/BQN/src or clone the BQN repo");
-            eprintln!("  next to CBQN: git clone https://github.com/mlochbaum/BQN");
-            eprintln!("  Expected path: {}", cbqn_path.parent().unwrap_or(cbqn_path).join("BQN/src").display());
+            eprintln!("  Set BQN_SRC=/path/to/mlochbaum/BQN/src");
             eprintln!("rbqn-gen: SELF-01: SKIPPED (no BQN sources)");
             return;
         }
     };
 
-    // Bootstrap RBQN
     println!("rbqn-gen: Bootstrapping RBQN...");
-    // Suppress panic output during bootstrap (BQN errors use panic-based throw())
-    std::panic::set_hook(Box::new(|_| {}));
-    let rt = match rbqn::bootstrap::bootstrap() {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("rbqn-gen: Bootstrap failed: {e}");
-            eprintln!("rbqn-gen: SELF-01: FAILED (bootstrap error)");
-            return;
-        }
-    };
-    // Initialize sys runtime so •BQN etc. work during compilation
-    rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
-    rbqn_vm::derive::set_sys_args(&[]);
-    rbqn_vm::derive::set_sys_path("");
+    let rt = bootstrap_rbqn();
     println!("rbqn-gen: Bootstrap OK");
 
-    // Glyph arrays needed to wrap c.bqn (from CBQN cc.bqn / BQN build/cc.bqn)
-    let func_glyphs = "+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥≡≢⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/⍋⍒⊏⊑⊐⊒∊⍷⊔!";
-    let mod1_glyphs = "˙˜˘¨⌜⁼´˝`";
-    let mod2_glyphs = "∘○⊸⟜⌾⊘◶⎉⚇⍟⎊";
+    let provide = rbqn::bootstrap::build_provide(&rt.fruntime);
+    let rt_provide = build_rt_provide(&rt.fruntime, &provide);
+    let rt_compiler = make_rt_compiler(&rt).unwrap_or(rbqn_core::B::SENTINEL);
 
-    // Compile each BQN source file and write a self-compiled .bin
-    let sources = [
-        ("c.bqn",  "compiler.bin",  true,  "SELF-01"),
-        ("r0.bqn", "runtime0.bin",  false, "SELF-01"),
-        ("r1.bqn", "runtime1x.bin", false, "SELF-01"),
-        ("f.bqn",  "formatter.bin", false, "SELF-01"),
+    let sources: &[(&str, &str, bool)] = &[
+        ("r0.bqn", "runtime0.bin", false),
+        ("r1.bqn", "runtime1x.bin", false),
+        ("c.bqn", "compiler.bin", true),
+        ("f.bqn", "formatter.bin", false),
     ];
 
-    let mut any_ok = false;
-    let mut self_bin_dir = embedded_dir.to_path_buf();
-    // Write self-compiled .bin files to a subdirectory to avoid overwriting
-    self_bin_dir.push("self-compiled");
+    let embedded_dir = find_embedded_dir();
+    let self_bin_dir = embedded_dir.join("self-compiled");
     if let Err(e) = fs::create_dir_all(&self_bin_dir) {
         eprintln!("rbqn-gen: Failed to create {}: {e}", self_bin_dir.display());
     }
 
-    // Build the provide array for object identity lookup in compiler_output_to_owned
-    let provide = rbqn::bootstrap::build_provide(&rt.fruntime);
+    let pp_dir = find_preprocessed_dir();
+    let mut any_ok = false;
 
-    for (bqn_file, bin_name, needs_wrap, req_tag) in &sources {
+    for &(bqn_file, bin_name, needs_wrap) in sources {
         let src_path = bqn_src.join(bqn_file);
-        if !src_path.is_file() {
-            println!("rbqn-gen: {req_tag}: {bqn_file} not found at {}", src_path.display());
-            continue;
-        }
-
         let src = match fs::read_to_string(&src_path) {
             Ok(s) => s,
             Err(e) => {
-                println!("rbqn-gen: {req_tag}: {bqn_file} read error: {e}");
+                println!("rbqn-gen: SELF-01: {bqn_file} read error: {e}");
                 continue;
             }
         };
 
-        // c.bqn needs modification: its first line is `func‿mod1‿mod2 ← •args`
-        // We wrap the ENTIRE c.bqn body in a non-immediate function block that takes
-        // 𝕩 as the glyph array. The first line becomes `func‿mod1‿mod2 ← 𝕩`.
-        //
-        // The compiled result has structure:
-        //   DFND outer_block, RETN   (at top-level)
-        //
-        // When bootstrap executes:
-        //   1. exec_stage runs → DFND outer_block, RETN → returns outer_block
-        //   2. c1(outer_block, glyphs) runs outer_block with 𝕩=glyphs
-        //   3. outer_block does: func‿mod1‿mod2 ← 𝕩 (destructures glyphs)
-        //   4. c.bqn's body executes and returns Compile
-        //
-        // This is equivalent to CBQN's cc.bqn compilation approach.
-        // Using 𝕩 forces the block to be non-immediate (imm=0), matching bootstrap's
-        // expectation that it can call c1(compgen, glyphs_b).
-        let code = if *needs_wrap {
-            // Replace first line's `•args` with `𝕩` so the block takes glyphs as argument
-            // NOTE: "•args" is 7 bytes in UTF-8 (• = U+2022 = 3 bytes + "args" = 4 bytes)
-            let args_pattern = "•args";
-            let first_line = src.lines().next().unwrap_or("");
-            let body_rest = src.lines().skip(1).collect::<Vec<_>>().join("\n");
-            let new_first = if first_line.ends_with(args_pattern) {
-                let prefix_len = first_line.len() - args_pattern.len();
-                format!("{}𝕩", &first_line[..prefix_len])
-            } else {
-                "func‿mod1‿mod2 ← 𝕩".to_string()
-            };
-            // Wrap in a function block (NOT immediately called) to get DFND/RETN structure
-            // Using 𝕩 ensures imm=0 (non-immediate), matching bootstrap expectations
-            format!("{{\n{}\n{}\n}}", new_first, body_rest)
-        } else {
-            src.clone()
-        };
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            rbqn::exec::compile_string(&rt, &code)
-        }));
-
-        match result {
-            Ok(Ok(output)) => {
-                // Determine runtime context for this source file:
-                // c.bqn and f.bqn reference runtime[n] (the runtime1 output = rt.runtime)
-                // r0.bqn references only provide[n] (no runtime)
-                // r1.bqn references runtime_0 (built from fruntime) as runtime_prev
-                let (runtime_prev, runtime_ref) = if *bqn_file == "r0.bqn" {
-                    (None, None)
-                } else if *bqn_file == "r1.bqn" {
-                    // r1.bqn uses runtime_0 (the 24 native prims) as runtime_prev
-                    // We don't have easy access to it here, so skip r1.bqn
-                    (None, None)
-                } else {
-                    // c.bqn and f.bqn reference runtime[n]
-                    (None, Some(rt.runtime.as_slice()))
-                };
-
-                let owned = rbqn::exec::compiler_output_to_owned(
-                    &output,
-                    &provide,
-                    runtime_prev,
-                    runtime_ref,
-                );
-                let bin_bytes = rbqn::embedded::encode_owned_bytecode(&owned, "rbqn-self");
-
+        match compile_bqn_source(&rt, &provide, &rt_provide, rt_compiler, bqn_file, &src, needs_wrap, Some(&pp_dir)) {
+            Ok(bin_bytes) => {
                 let out = self_bin_dir.join(bin_name);
                 if let Err(e) = fs::write(&out, &bin_bytes) {
                     eprintln!("rbqn-gen: Warning: failed to write {}: {e}", out.display());
                 } else {
-                    println!("rbqn-gen: {req_tag}: {bqn_file} compiled OK ({} bytes → {})",
+                    println!("rbqn-gen: SELF-01: {bqn_file} compiled OK ({} bytes → {})",
                         bin_bytes.len(), out.display());
                 }
                 any_ok = true;
             }
-            Ok(Err(e)) => {
-                println!("rbqn-gen: {req_tag}: {bqn_file} compile ERROR: {e}");
-            }
-            Err(panic) => {
-                let msg = panic.downcast_ref::<String>().map(|s| s.as_str())
-                    .or_else(|| panic.downcast_ref::<&str>().copied())
-                    .unwrap_or("unknown panic");
-                println!("rbqn-gen: {req_tag}: {bqn_file} PANIC: {msg}");
+            Err(e) => {
+                println!("rbqn-gen: SELF-01: {bqn_file} FAILED: {e}");
             }
         }
     }
 
     println!();
     if any_ok {
-        println!("rbqn-gen: SELF-01: c.bqn compiled by RBQN's own compiler — self-hosting verified.");
-
-        // Print size comparison for compiler and formatter
-        let cbqn_compiler = embedded_dir.join("compiler.bin");
-        let self_compiler = self_bin_dir.join("compiler.bin");
-        let cbqn_formatter = embedded_dir.join("formatter.bin");
-        let self_formatter = self_bin_dir.join("formatter.bin");
-
-        if let (Ok(cbqn_bytes), Ok(self_bytes)) = (
-            fs::metadata(&cbqn_compiler).map(|m| m.len()),
-            fs::metadata(&self_compiler).map(|m| m.len()),
-        ) {
-            println!("rbqn-gen: SELF-02: compiler.bin  — CBQN: {} bytes, RBQN-self: {} bytes",
-                cbqn_bytes, self_bytes);
-        }
-        if let (Ok(cbqn_bytes), Ok(self_bytes)) = (
-            fs::metadata(&cbqn_formatter).map(|m| m.len()),
-            fs::metadata(&self_formatter).map(|m| m.len()),
-        ) {
-            println!("rbqn-gen: SELF-02: formatter.bin — CBQN: {} bytes, RBQN-self: {} bytes",
-                cbqn_bytes, self_bytes);
-        }
-
-        println!();
-        println!("rbqn-gen: SELF-02: To verify behavioral equivalence, run:");
-        println!("rbqn-gen:   cp crates/rbqn/src/embedded/self-compiled/compiler.bin crates/rbqn/src/embedded/compiler.bin");
-        println!("rbqn-gen:   cp crates/rbqn/src/embedded/self-compiled/formatter.bin crates/rbqn/src/embedded/formatter.bin");
-        println!("rbqn-gen:   cargo build -p rbqn && ./test_suite.sh");
-        println!("rbqn-gen:   (restore originals: CBQN_PATH=... cargo run --bin rbqn-gen --features gen-tools)");
+        println!("rbqn-gen: SELF-01: Self-compilation verified.");
     } else {
-        println!("rbqn-gen: SELF-01: All compilations failed — RBQN cannot yet compile its own sources.");
-        println!("rbqn-gen:   This is informational only; the CBQN-generated .bin files are used for shipping.");
+        println!("rbqn-gen: SELF-01: All compilations failed.");
     }
 }
 
-/// Find the BQN source directory (contains c.bqn, r0.bqn, r1.bqn, f.bqn).
-/// Checks BQN_SRC env var, then CBQN_PATH/../BQN/src (sibling directory).
-fn find_bqn_src(cbqn_path: &Path) -> Option<PathBuf> {
-    // Check BQN_SRC env var first
+// ---------------------------------------------------------------------------
+// Path helpers
+// ---------------------------------------------------------------------------
+
+fn find_bins_dir() -> PathBuf {
+    // CARGO_MANIFEST_DIR = {repo}/crates/rbqn → bins/ is at {repo}/bins/
+    if let Ok(manifest) = env::var("CARGO_MANIFEST_DIR") {
+        let p = PathBuf::from(manifest).join("../../bins");
+        if let Ok(canonical) = p.canonicalize() {
+            if canonical.is_dir() {
+                return canonical;
+            }
+        }
+    }
+    // Walk up from CWD
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut dir = cwd.as_path();
+    loop {
+        let candidate = dir.join("bins");
+        if candidate.is_dir() {
+            return candidate;
+        }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => break,
+        }
+    }
+    // Fallback: create it
+    let fallback = PathBuf::from("bins");
+    fs::create_dir_all(&fallback).ok();
+    fallback
+}
+
+fn find_bqn_src(cbqn_path: Option<&Path>) -> Option<PathBuf> {
     if let Ok(p) = env::var("BQN_SRC") {
         let path = PathBuf::from(p);
         if path.join("c.bqn").is_file() {
             return Some(path);
         }
     }
-
-    // Try sibling BQN repo
-    if let Some(parent) = cbqn_path.parent() {
-        let candidate = parent.join("BQN").join("src");
-        if candidate.join("c.bqn").is_file() {
-            return Some(candidate);
+    if let Some(cbqn) = cbqn_path {
+        if let Some(parent) = cbqn.parent() {
+            let candidate = parent.join("BQN").join("src");
+            if candidate.join("c.bqn").is_file() {
+                return Some(candidate);
+            }
         }
     }
-
     None
 }
 
-/// Format a Rust string as a BQN string literal: "abc"
-fn make_bqn_string(s: &str) -> String {
-    format!("\"{}\"", s)
-}
-
 fn find_embedded_dir() -> PathBuf {
-    // Try CARGO_MANIFEST_DIR first (set when run via cargo)
     if let Ok(manifest) = env::var("CARGO_MANIFEST_DIR") {
         let p = PathBuf::from(manifest).join("src").join("embedded");
         if p.is_dir() {
             return p;
         }
     }
-
-    // Walk up from CWD to find crates/rbqn/src/embedded/
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut dir = cwd.as_path();
     loop {
@@ -356,8 +599,6 @@ fn find_embedded_dir() -> PathBuf {
             None => break,
         }
     }
-
-    // Fallback: create it relative to cwd
     let fallback = PathBuf::from("crates/rbqn/src/embedded");
     fs::create_dir_all(&fallback).ok();
     fallback
@@ -387,42 +628,25 @@ fn find_gen_dir(cbqn: &Path) -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Binary format encoder
+// Binary format encoder (for CBQN gen/ parsing)
 // ---------------------------------------------------------------------------
-//
-// Wire format (little-endian throughout):
-//   [magic: 4 bytes = b"RBQN"]
-//   [version: u32 LE = 1]
-//   [source_tag_len: u16 LE] [source_tag: bytes]
-//   [bc_len: u32] [bc: i32 × bc_len]
-//   [iarrs_count: u32] for each: [len: u32] [data: i32 × len]
-//   [objs_count: u32] for each: [tag: u8] [payload per tag]
-//     tag 0=Provide(u32), 1=Runtime(u32), 2=RuntimePrev(u32),
-//         3=Float(f64 LE), 4=Char(u32), 5=Str(u32 len + u32 × len codepoints), 6=IArr(u32)
-//   [blocks_count: u32] for each: [tag: u8]
-//     tag 0=IArr(u32), 1=Info(u8 typ + u32 iarrs0_idx + u32 data_idx)
-//   [bodies_count: u32] [data: u32 × bodies_count]
 
 fn encode_bytecode(parsed: &ParsedComponent, source_tag: &str) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
 
-    // Magic + version
     buf.extend_from_slice(b"RBQN");
     buf.extend_from_slice(&1u32.to_le_bytes());
 
-    // Source tag
     let tag_bytes = source_tag.as_bytes();
     buf.extend_from_slice(&(tag_bytes.len() as u16).to_le_bytes());
     buf.extend_from_slice(tag_bytes);
 
-    // Bytecode (bc = iarrs[bc_idx])
     let bc = &parsed.iarrs[parsed.bc_idx];
     buf.extend_from_slice(&(bc.len() as u32).to_le_bytes());
     for &v in bc {
         buf.extend_from_slice(&v.to_le_bytes());
     }
 
-    // iarrs
     buf.extend_from_slice(&(parsed.iarrs.len() as u32).to_le_bytes());
     for arr in &parsed.iarrs {
         buf.extend_from_slice(&(arr.len() as u32).to_le_bytes());
@@ -431,7 +655,6 @@ fn encode_bytecode(parsed: &ParsedComponent, source_tag: &str) -> Vec<u8> {
         }
     }
 
-    // objs — build a map for fast lookup
     use std::collections::HashMap;
     let mut obj_map: HashMap<usize, &ObjEntry> = HashMap::new();
     for (idx, entry) in &parsed.objs {
@@ -476,13 +699,11 @@ fn encode_bytecode(parsed: &ParsedComponent, source_tag: &str) -> Vec<u8> {
                 }
             }
         } else {
-            // Missing slot → Float(0.0)
             buf.push(3);
             buf.extend_from_slice(&0.0f64.to_le_bytes());
         }
     }
 
-    // blocks
     let mut blk_map: HashMap<usize, &BlkEntry> = HashMap::new();
     for (idx, entry) in &parsed.blocks {
         blk_map.insert(*idx, entry);
@@ -504,13 +725,11 @@ fn encode_bytecode(parsed: &ParsedComponent, source_tag: &str) -> Vec<u8> {
                 }
             }
         } else {
-            // Missing slot → IArr(0)
             buf.push(0);
             buf.extend_from_slice(&0u32.to_le_bytes());
         }
     }
 
-    // bodies
     let mut body_map: HashMap<usize, usize> = HashMap::new();
     for (idx, iarrs_idx) in &parsed.bodies {
         body_map.insert(*idx, *iarrs_idx);
@@ -548,21 +767,19 @@ fn parse_float_str(val: &str) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// CBQN gen/ file parser (moved verbatim from build.rs)
+// CBQN gen/ file parser
 // ---------------------------------------------------------------------------
 
-/// Parsed representation of object array entries
 enum ObjEntry {
     Provide(usize),
     Runtime(usize),
     RuntimePrev(usize),
-    Float(String), // keep as string to preserve exact representation (e.g. "1.0/0.0")
+    Float(String),
     Char(u32),
     Str(Vec<u32>),
     IArr(usize),
 }
 
-/// Parsed representation of block array entries
 enum BlkEntry {
     IArr(usize),
     Info { typ: u8, iarrs0_idx: usize, data_idx: usize },
@@ -571,11 +788,11 @@ enum BlkEntry {
 struct ParsedComponent {
     iarrs: Vec<Vec<i32>>,
     bc_idx: usize,
-    objs: Vec<(usize, ObjEntry)>,   // (index, entry) — sparse
+    objs: Vec<(usize, ObjEntry)>,
     obj_len: usize,
-    blocks: Vec<(usize, BlkEntry)>,  // (index, entry) — sparse
+    blocks: Vec<(usize, BlkEntry)>,
     block_len: usize,
-    bodies: Vec<(usize, usize)>,     // (index, iarrs_idx) — sparse
+    bodies: Vec<(usize, usize)>,
     body_len: usize,
 }
 
@@ -583,7 +800,6 @@ fn parse_cbqn_gen(src: &str) -> ParsedComponent {
     let mut iarrs: Vec<Vec<i32>> = Vec::new();
     let mut bc_idx = 0;
 
-    // Extract all integer arrays from iarrs_data[]
     if let Some(start) = src.find("iarrs_data[]") {
         if let Some(brace_start) = src[start..].find('{') {
             let data_start = start + brace_start + 1;
@@ -598,9 +814,7 @@ fn parse_cbqn_gen(src: &str) -> ParsedComponent {
                         } else {
                             s
                         };
-                        if s.is_empty() {
-                            return None;
-                        }
+                        if s.is_empty() { return None; }
                         s.parse::<i32>().ok()
                     })
                     .collect();
@@ -632,7 +846,6 @@ fn parse_cbqn_gen(src: &str) -> ParsedComponent {
         }
     }
 
-    // The bytecode is the first direct iarrs[] reference in load_importBlock call.
     if let Some(call_start) = src.find("load_importBlock") {
         if let Some(paren) = src[call_start..].find('(') {
             let args_start = call_start + paren + 1;
@@ -645,7 +858,6 @@ fn parse_cbqn_gen(src: &str) -> ParsedComponent {
         }
     }
 
-    // Parse objects (a0), blocks (a1), bodies (a2)
     let (objs, obj_len) = parse_objects(src);
     let (blocks, block_len) = parse_blocks(src);
     let (bodies, body_len) = parse_bodies(src);
@@ -653,7 +865,6 @@ fn parse_cbqn_gen(src: &str) -> ParsedComponent {
     ParsedComponent { iarrs, bc_idx, objs, obj_len, blocks, block_len, bodies, body_len }
 }
 
-/// Extract the array size from `m_lvBn(&aX, SIZE)`
 fn parse_array_size(src: &str, var: &str) -> usize {
     let pattern = format!("{}; B* {}p = m_lvBn(&{}, ", var, var, var);
     if let Some(pos) = src.find(&pattern) {
@@ -673,48 +884,29 @@ fn parse_objects(src: &str) -> (Vec<(usize, ObjEntry)>, usize) {
 
     for line in src.lines() {
         let line = line.trim();
-        if !line.starts_with("a0p[") {
-            continue;
-        }
-        // Extract index: a0p[N] = ...
-        let idx_end = match line.find(']') {
-            Some(i) => i,
-            None => continue,
-        };
-        let idx: usize = match line[4..idx_end].parse() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        // Get the RHS after " = "
-        let eq_pos = match line.find(" = ") {
-            Some(i) => i,
-            None => continue,
-        };
+        if !line.starts_with("a0p[") { continue; }
+        let idx_end = match line.find(']') { Some(i) => i, None => continue };
+        let idx: usize = match line[4..idx_end].parse() { Ok(n) => n, Err(_) => continue };
+        let eq_pos = match line.find(" = ") { Some(i) => i, None => continue };
         let rhs = line[eq_pos + 3..].trim_end_matches(';').trim();
 
         let entry = if let Some(rest) = rhs.strip_prefix("incG(provide[") {
-            // incG(provide[N])
             let n: usize = rest.trim_end_matches("])").parse().unwrap_or(0);
             ObjEntry::Provide(n)
         } else if let Some(rest) = rhs.strip_prefix("incG(runtime_0[") {
-            // incG(runtime_0[N])
             let n: usize = rest.trim_end_matches("])").parse().unwrap_or(0);
             ObjEntry::RuntimePrev(n)
         } else if let Some(rest) = rhs.strip_prefix("incG(runtime[") {
-            // incG(runtime[N])
             let n: usize = rest.trim_end_matches("])").parse().unwrap_or(0);
             ObjEntry::Runtime(n)
         } else if let Some(rest) = rhs.strip_prefix("m_f64(") {
-            // m_f64(VALUE)
             let val = rest.trim_end_matches(')');
             ObjEntry::Float(val.to_string())
         } else if let Some(rest) = rhs.strip_prefix("m_c32(") {
-            // m_c32(U'X') or m_c32(U'\0')
             let inner = rest.trim_end_matches(')');
             let ch = parse_c32_char(inner);
             ObjEntry::Char(ch)
         } else if rhs.starts_with("m_c8vec(") || rhs.starts_with("m_c32vec(") {
-            // m_c8vec("...",N) or m_c32vec(U"...",N)
             let chars = parse_string_literal(rhs);
             ObjEntry::Str(chars)
         } else if let Some(rest) = rhs.strip_prefix("iarrs[") {
@@ -730,11 +922,8 @@ fn parse_objects(src: &str) -> (Vec<(usize, ObjEntry)>, usize) {
     (entries, len)
 }
 
-/// Parse a C char literal from m_c32(U'X'), handling escape sequences
 fn parse_c32_char(s: &str) -> u32 {
-    // Format: U'X' or U'\0' or U'\n' etc.
     let inner = s.trim();
-    // Strip "U'" prefix and "'" suffix (exactly one of each)
     let inner = inner.strip_prefix("U'")
         .and_then(|s| s.strip_suffix('\''))
         .unwrap_or(inner);
@@ -754,27 +943,14 @@ fn parse_c32_char(s: &str) -> u32 {
     }
 }
 
-/// Parse m_c8vec("...",N) or m_c32vec(U"...",N) into Vec<u32>
 fn parse_string_literal(rhs: &str) -> Vec<u32> {
-    // Find the string content between quotes
     let is_c32 = rhs.starts_with("m_c32vec(");
-
-    // Find opening quote
     let quote_start = if is_c32 {
-        // m_c32vec(U"...",N)  — find U" after (
-        match rhs.find("U\"") {
-            Some(i) => i + 2,
-            None => return Vec::new(),
-        }
+        match rhs.find("U\"") { Some(i) => i + 2, None => return Vec::new() }
     } else {
-        // m_c8vec("...",N)  — find first " after (
-        match rhs.find('"') {
-            Some(i) => i + 1,
-            None => return Vec::new(),
-        }
+        match rhs.find('"') { Some(i) => i + 1, None => return Vec::new() }
     };
 
-    // Find closing quote — scan from quote_start, handling escapes
     let bytes = rhs.as_bytes();
     let mut i = quote_start;
     let mut chars = Vec::new();
@@ -794,7 +970,6 @@ fn parse_string_literal(rhs: &str) -> Vec<u32> {
                 _ => { chars.push(bytes[i + 1] as u32); i += 2; }
             }
         } else {
-            // Decode UTF-8 character
             let remaining = &rhs[i..];
             if let Some(ch) = remaining.chars().next() {
                 chars.push(ch as u32);
@@ -814,25 +989,13 @@ fn parse_blocks(src: &str) -> (Vec<(usize, BlkEntry)>, usize) {
 
     for line in src.lines() {
         let line = line.trim();
-        if !line.starts_with("a1p[") {
-            continue;
-        }
-        let idx_end = match line.find(']') {
-            Some(i) => i,
-            None => continue,
-        };
-        let idx: usize = match line[4..idx_end].parse() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        let eq_pos = match line.find(" = ") {
-            Some(i) => i,
-            None => continue,
-        };
+        if !line.starts_with("a1p[") { continue; }
+        let idx_end = match line.find(']') { Some(i) => i, None => continue };
+        let idx: usize = match line[4..idx_end].parse() { Ok(n) => n, Err(_) => continue };
+        let eq_pos = match line.find(" = ") { Some(i) => i, None => continue };
         let rhs = line[eq_pos + 3..].trim_end_matches(';').trim();
 
         let entry = if let Some(rest) = rhs.strip_prefix("m_blockinfo(") {
-            // m_blockinfo(TYPE, iarrs0, iarrs[N])
             let inner = rest.trim_end_matches(')');
             parse_blockinfo(inner)
         } else if let Some(rest) = rhs.strip_prefix("iarrs[") {
@@ -848,25 +1011,16 @@ fn parse_blocks(src: &str) -> (Vec<(usize, BlkEntry)>, usize) {
     (entries, len)
 }
 
-/// Parse m_blockinfo(TYPE, iarrs0, iarrs[N]) or m_blockinfo(TYPE, iarrs[M], iarrs[N])
 fn parse_blockinfo(inner: &str) -> BlkEntry {
     let parts: Vec<&str> = inner.splitn(3, ',').map(|s| s.trim()).collect();
-    if parts.len() < 3 {
-        return BlkEntry::IArr(0);
-    }
+    if parts.len() < 3 { return BlkEntry::IArr(0); }
     let typ: u8 = parts[0].parse().unwrap_or(0);
-    // parts[1] is "iarrs0" (= iarrs[0]) or "iarrs[M]"
     let iarrs0_idx = if let Some(rest) = parts[1].strip_prefix("iarrs[") {
         rest.trim_end_matches(']').parse().unwrap_or(0)
-    } else {
-        0 // bare "iarrs0" means iarrs[0]
-    };
-    // parts[2] is "iarrs0" or "iarrs[N]"
+    } else { 0 };
     let data_idx = if let Some(rest) = parts[2].strip_prefix("iarrs[") {
         rest.trim_end_matches(']').parse().unwrap_or(0)
-    } else {
-        0
-    };
+    } else { 0 };
     BlkEntry::Info { typ, iarrs0_idx, data_idx }
 }
 
@@ -876,21 +1030,10 @@ fn parse_bodies(src: &str) -> (Vec<(usize, usize)>, usize) {
 
     for line in src.lines() {
         let line = line.trim();
-        if !line.starts_with("a2p[") {
-            continue;
-        }
-        let idx_end = match line.find(']') {
-            Some(i) => i,
-            None => continue,
-        };
-        let idx: usize = match line[4..idx_end].parse() {
-            Ok(n) => n,
-            Err(_) => continue,
-        };
-        let eq_pos = match line.find(" = ") {
-            Some(i) => i,
-            None => continue,
-        };
+        if !line.starts_with("a2p[") { continue; }
+        let idx_end = match line.find(']') { Some(i) => i, None => continue };
+        let idx: usize = match line[4..idx_end].parse() { Ok(n) => n, Err(_) => continue };
+        let eq_pos = match line.find(" = ") { Some(i) => i, None => continue };
         let rhs = line[eq_pos + 3..].trim_end_matches(';').trim();
 
         if let Some(rest) = rhs.strip_prefix("iarrs[") {
@@ -907,12 +1050,7 @@ fn find_matching_paren(s: &str) -> Option<usize> {
     for (i, c) in s.chars().enumerate() {
         match c {
             '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
+            ')' => { depth -= 1; if depth == 0 { return Some(i); } }
             _ => {}
         }
     }

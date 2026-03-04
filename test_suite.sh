@@ -13,9 +13,9 @@ set -euo pipefail
 
 RBQN_ROOT="$(cd "$(dirname "$0")" && pwd)"
 RBQN="$RBQN_ROOT/target/release/rbqn"
-BQN_TEST_DIR="/Users/axel/Code/forks/BQN/test"
+BQN_TEST_DIR="${BQN_TEST_DIR:-}"
 RESULTS_DIR="$RBQN_ROOT/.test-results"
-CBQN_PATH="${CBQN_PATH:-/Users/axel/Code/forks/CBQN}"
+CBQN_PATH="${CBQN_PATH:-}"
 
 ALL_FILES=(simple literal syntax bytecode token namespace identity unhead prim fill header under undo)
 QUICK_FILES=(prim fill header under undo)
@@ -28,13 +28,23 @@ else
     RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; DIM=''; NC=''
 fi
 
+if [[ -z "$BQN_TEST_DIR" ]]; then
+    echo -e "${RED}Error: BQN_TEST_DIR not set. Point it to BQN/test directory.${NC}" >&2
+    echo "  Example: BQN_TEST_DIR=/path/to/BQN/test ./test_suite.sh" >&2
+    exit 1
+fi
+if [[ ! -d "$BQN_TEST_DIR" ]]; then
+    echo -e "${RED}Error: BQN_TEST_DIR=$BQN_TEST_DIR does not exist${NC}" >&2
+    exit 1
+fi
+
 mkdir -p "$RESULTS_DIR"
 
 # --- Helpers ---
 
 build_rbqn() {
     echo -e "${DIM}Building RBQN (release)...${NC}"
-    if ! CBQN_PATH="$CBQN_PATH" cargo build --release --manifest-path="$RBQN_ROOT/Cargo.toml" 2>&1 | tail -1; then
+    if ! cargo build --release --manifest-path="$RBQN_ROOT/Cargo.toml" 2>&1 | tail -1; then
         echo -e "${RED}Build failed${NC}"
         return 1
     fi

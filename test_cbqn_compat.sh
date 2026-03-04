@@ -3,14 +3,25 @@
 # RBQN vs CBQN Compatibility Test Harness
 # Compares output across 5 tiers of BQN expression complexity
 
-CBQN_BIN="/Users/axel/Code/forks/CBQN/BQN"
-RBQN_BIN="target/release/rbqn"
+CBQN_BIN="${CBQN_BIN:-${CBQN_PATH:+$CBQN_PATH/BQN}}"
+RBQN_BIN="${RBQN_BIN:-target/release/rbqn}"
 TIER="${1:-all}"
 
 # Color codes
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
+
+if [[ -z "${CBQN_BIN:-}" ]]; then
+    echo -e "${RED}Error: CBQN_BIN not set. Point it to the CBQN binary.${NC}" >&2
+    echo "  Example: CBQN_BIN=/path/to/CBQN/BQN ./test_cbqn_compat.sh" >&2
+    echo "  Or set CBQN_PATH: CBQN_PATH=/path/to/CBQN ./test_cbqn_compat.sh" >&2
+    exit 1
+fi
+if [[ ! -x "$CBQN_BIN" ]]; then
+    echo -e "${RED}Error: CBQN_BIN=$CBQN_BIN is not executable${NC}" >&2
+    exit 1
+fi
 
 PASS=0
 FAIL=0

@@ -18,7 +18,9 @@ const RT_LEN: usize = 64;
 pub struct Runtime {
     pub prims: Vec<Primitive>,
     pub fruntime: Vec<B>,
+    pub runtime_0: Vec<B>,
     pub runtime: Vec<B>,
+    pub compgen: B,
     pub compiler: B,
     pub formatter: Option<(B, B)>,
     pub glyphs: Vec<Vec<u32>>,
@@ -346,7 +348,9 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
         return Ok(Runtime {
             prims,
             fruntime: fruntime.clone(),
+            runtime_0: vec![],
             runtime: fruntime,
+            compgen: B::SENTINEL,
             compiler: B::SENTINEL,
             formatter: None,
             glyphs,
@@ -423,8 +427,10 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
             return Ok(Runtime {
                 prims,
                 fruntime: fruntime.clone(),
+                runtime_0,
                 runtime: fruntime,
-                compiler: B::SENTINEL,
+                compgen: B::SENTINEL,
+            compiler: B::SENTINEL,
                 formatter: None,
                 glyphs,
             });
@@ -437,8 +443,10 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
             return Ok(Runtime {
                 prims,
                 fruntime: fruntime.clone(),
+                runtime_0,
                 runtime: fruntime,
-                compiler: B::SENTINEL,
+                compgen: B::SENTINEL,
+            compiler: B::SENTINEL,
                 formatter: None,
                 glyphs,
             });
@@ -453,8 +461,10 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
             return Ok(Runtime {
                 prims,
                 fruntime: fruntime.clone(),
+                runtime_0,
                 runtime: fruntime,
-                compiler: B::SENTINEL,
+                compgen: B::SENTINEL,
+            compiler: B::SENTINEL,
                 formatter: None,
                 glyphs,
             });
@@ -468,8 +478,10 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
             return Ok(Runtime {
                 prims,
                 fruntime: fruntime.clone(),
+                runtime_0,
                 runtime: fruntime,
-                compiler: B::SENTINEL,
+                compgen: B::SENTINEL,
+            compiler: B::SENTINEL,
                 formatter: None,
                 glyphs,
             });
@@ -531,11 +543,11 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     let c_blocks = build_blocks(&cc_bin);
     let c_bodies = build_bodies(&cc_bin);
 
-    let compiler = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let (compgen, compiler) = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         exec_stage(&cc_bin, c_objs, c_blocks, c_bodies, "compiler")
     })) {
-        Ok(Ok(compgen)) => {
-            // compgen is a function: call it with glyphs to get the actual compiler
+        Ok(Ok(cg)) => {
+            // cg is a function: call it with glyphs to get the actual compiler
             let glyphs_b = {
                 let fn_arr = tag_arr(BqnArr::new_vec_c32(glyphs[0].clone()));
                 let md1_arr = tag_arr(BqnArr::new_vec_c32(glyphs[1].clone()));
@@ -543,9 +555,9 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
                 tag_arr(BqnArr::from_b_vec(vec![fn_arr, md1_arr, md2_arr]))
             };
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                c1(compgen, glyphs_b)
+                c1(cg, glyphs_b)
             })) {
-                Ok(c) => c,
+                Ok(c) => (cg, c),
                 Err(p) => {
                     let msg = if let Some(s) = p.downcast_ref::<String>() {
                         s.clone()
@@ -555,17 +567,17 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
                         "unknown panic".to_string()
                     };
                     eprintln!("rbqn: warning: compiler initialization panicked: {msg}");
-                    B::SENTINEL
+                    (cg, B::SENTINEL)
                 }
             }
         }
         Ok(Err(e)) => {
             eprintln!("rbqn: warning: compiler failed: {e}. Compiler unavailable.");
-            B::SENTINEL
+            (B::SENTINEL, B::SENTINEL)
         }
         Err(_panic) => {
             eprintln!("rbqn: warning: compiler panicked. Compiler unavailable.");
-            B::SENTINEL
+            (B::SENTINEL, B::SENTINEL)
         }
     };
 
@@ -612,7 +624,9 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     Ok(Runtime {
         prims,
         fruntime,
+        runtime_0,
         runtime,
+        compgen,
         compiler,
         formatter,
         glyphs,

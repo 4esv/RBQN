@@ -27,34 +27,28 @@ No external dependencies required. The BQN compiler and runtime are embedded as 
 
 ## Bootstrap
 
-RBQN ships with pre-compiled bytecode committed to the repository. This eliminates the CBQN build dependency from normal users.
+RBQN is self-hosting. The BQN compiler, runtime, and formatter are compiled by RBQN itself. No external BQN implementation is needed to build.
 
-**Bootstrap chain:** CBQN compiles the BQN compiler source files (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) into bytecode. That bytecode is stored as `.bin` files in `crates/rbqn/src/embedded/` and committed to the repo. RBQN loads them via `include_bytes!` at compile time — no CBQN needed to build.
+Bytecode files in `bins/` are compiled from the BQN source files (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) and loaded via `include_bytes!` at compile time.
 
-**Self-hosting verification:** RBQN can compile `c.bqn` (the BQN compiler source) using its own compiler. Run with `--verify`:
-
-```bash
-CBQN_PATH=/path/to/cbqn BQN_SRC=/path/to/BQN/src \
-  cargo run --bin rbqn-gen --features gen-tools -- --verify
-```
-
-This bootstraps RBQN from the committed `.bin` files, then compiles the BQN compiler source, confirming RBQN can reproduce its own compiler.
-
-**Developer workflow:** To regenerate `.bin` files from updated CBQN sources:
+**Fixpoint verification:** RBQN's self-compilation is deterministic — recompiling the BQN sources with RBQN-compiled bins produces byte-for-byte identical output (fixpoint at round 2).
 
 ```bash
-CBQN_PATH=/path/to/cbqn cargo run --bin rbqn-gen --features gen-tools
-# Commit the updated .bin files
-git add crates/rbqn/src/embedded/*.bin && git commit
+BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -- --self --fixpoint-check
 ```
 
-The `rbqn-gen` tool requires `CBQN_PATH` pointing to a built CBQN directory. It is not compiled during normal `cargo build` — only when the `gen-tools` feature is enabled.
+**Developer workflow:** To regenerate bins from updated BQN sources:
+
+```bash
+BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -- --self
+git add bins/ && git commit
+```
 
 ## Acknowledgements
 
 **BQN** was designed by [Marshall Lochbaum](https://mlochbaum.github.io/). The language spec, compiler source (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`), and reference test suite are his work and are licensed under the ISC License. RBQN embeds bytecode compiled from those source files — the language itself is Marshall's creation.
 
-**CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN currently uses CBQN as a build-time tool to bootstrap its embedded bytecode. CBQN's internals particularly the bytecode format, provide array layout, and runtime structure documented in `load.c` were essential reference material during development.
+**CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN was originally bootstrapped from CBQN-compiled bytecode and is now self-hosting. CBQN's internals — the bytecode format, provide array layout, and runtime structure documented in `load.c` — were essential reference material throughout development.
 
 - BQN: https://mlochbaum.github.io/BQN/
 - CBQN: https://github.com/dzaima/CBQN
@@ -69,4 +63,4 @@ rbqn 0.1.0
 bytecode: cbqn
 ```
 
-The `bytecode` field is `cbqn` for CBQN-bootstrapped bytecode (the default) and `rbqn-self` for self-compiled bytecode.
+The `bytecode` field is `rbqn-self` for self-compiled bytecode (the default) or `cbqn` for legacy CBQN-bootstrapped bytecode.

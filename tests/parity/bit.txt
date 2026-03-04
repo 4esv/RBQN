@@ -1,0 +1,13 @@
+# bit namespace (9 modifiers)
+# _cast: operand is from‿to pair
+(8‿8) •bit._cast 1‿2‿3
+# _not, _neg: monadic (unary)
+8 •bit._not 1‿0‿1
+8 •bit._neg 1‿2‿3
+# _and, _or, _xor, _add, _sub, _mul: dyadic (binary)
+1‿0‿1 (8 •bit._and) 1‿1‿0
+1‿0‿1 (8 •bit._or) 1‿1‿0
+1‿0‿1 (8 •bit._xor) 1‿1‿0
+1‿2 (8 •bit._add) 3‿4
+5‿3 (8 •bit._sub) 2‿1
+2‿3 (8 •bit._mul) 4‿5

@@ -1,0 +1,2 @@
+# CurrentError inside catch
+({𝕩⋄!"err"}⎊{•CurrentError 𝕩}) @
