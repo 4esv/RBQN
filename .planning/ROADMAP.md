@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v2.0 — CBQN Drop-in with GPU Acceleration** — Phases 1–7 (shipped 2026-03-03)
-- 🚧 **v3.0 — True Self-Hosting & CBQN Parity** — Phases 8–10 (in progress)
+- ✅ **v3.0 — True Self-Hosting & CBQN Parity** — Phases 8–10 (shipped 2026-03-03)
 
 ## Phases
 
@@ -24,13 +24,13 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 
 ---
 
-### 🚧 v3.0 — True Self-Hosting & CBQN Parity (In Progress)
+### ✅ v3.0 — True Self-Hosting & CBQN Parity (Shipped 2026-03-03)
 
 **Milestone Goal:** RBQN with zero dependency on CBQN at any point — RBQN compiles its own bootstrap bytecode — plus full behavioral parity fixing all known stubs and edge cases.
 
-- [ ] **Phase 8: Complete Self-Hosting** - RBQN compiles all .bin files; build chain requires no CBQN tool
-- [ ] **Phase 9: CBQN Behavioral Parity** - All known system function stubs and edge cases fixed
-- [ ] **Phase 10: Quality & Validation** - Portable test infrastructure and systematic parity corpus
+- [x] **Phase 8: Complete Self-Hosting** - RBQN compiles all .bin files; build chain requires no CBQN tool
+- [x] **Phase 9: CBQN Behavioral Parity** - All known system function stubs and edge cases fixed
+- [x] **Phase 10: Quality & Validation** - Portable test infrastructure and systematic parity corpus
 
 ## Phase Details
 
@@ -47,10 +47,10 @@ Full details: `.planning/milestones/v2.0-ROADMAP.md`
 **Plans**: 4 plans
 
 Plans:
-- [ ] 08-01-PLAN.md — Move .bin files to git-lfs bins/ dir; update build.rs with CBQN_PATH deprecation warning
-- [ ] 08-02-PLAN.md — Implement rbqn-gen --self mode; fix r1.bqn compilation; compile all 4 bins without CBQN_PATH
-- [ ] 08-03-PLAN.md — Fixpoint swap test; compile and commit RBQN-self bins; verify 1316 tests pass
-- [ ] 08-04-PLAN.md — Document SELF3-02 verification (VERIFICATION.md); update README with CBQN acknowledgement
+- [x] 08-01-PLAN.md — Move .bin files to git-lfs bins/ dir; update build.rs with CBQN_PATH deprecation warning
+- [x] 08-02-PLAN.md — Implement rbqn-gen --self mode; fix r1.bqn compilation; compile all 4 bins without CBQN_PATH
+- [x] 08-03-PLAN.md — Fixpoint swap test; compile and commit RBQN-self bins; verify 1316 tests pass
+- [x] 08-04-PLAN.md — Document SELF3-02 verification (VERIFICATION.md); update README with CBQN acknowledgement
 
 ### Phase 9: CBQN Behavioral Parity
 **Goal**: All known system function stubs and behavioral gaps are fixed to match CBQN 1:1
@@ -79,11 +79,11 @@ Plans:
   1. `test_suite.sh` and `test_cbqn_compat.sh` run correctly on a fresh checkout without editing any paths
   2. A parity validation script runs CBQN and RBQN on the same BQN corpus and produces a diff report of any output divergences
   3. The parity corpus covers all system functions implemented in v3.0 (•bit, •term, •math edge cases, •state, •CurrentError)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 10-01: Fix hardcoded paths in test_suite.sh and test_cbqn_compat.sh (relative/env-based)
-- [ ] 10-02: Write parity validation script and BQN corpus; run against CBQN, document results
+- [x] 10-01-PLAN.md — Fix hardcoded paths in test_suite.sh and test_cbqn_compat.sh (env-var based, clear errors)
+- [x] 10-02-PLAN.md — Write parity validation script and BQN corpus covering v3.0 system functions
 
 ## Progress
 
@@ -98,6 +98,6 @@ Plans:
 | 5. GPU Integration | v2.0 | 6/6 | Complete | 2026-02-28 |
 | 6. Self-Hosting | v2.0 | 3/3 | Complete | 2026-03-01 |
 | 7. Code Simplification & CBQN Parity | v2.0 | 4/4 | Complete | 2026-03-03 |
-| 8. Complete Self-Hosting | v3.0 | 0/4 | Not started | - |
+| 8. Complete Self-Hosting | v3.0 | 4/4 | Complete | 2026-03-03 |
 | 9. CBQN Behavioral Parity | v3.0 | 5/5 | Complete | 2026-03-03 |
-| 10. Quality & Validation | v3.0 | 0/2 | Not started | - |
+| 10. Quality & Validation | v3.0 | 2/2 | Complete | 2026-03-03 |
