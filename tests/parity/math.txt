@@ -1,0 +1,6 @@
+# math namespace edge cases
+5 •math.Comb 2
+10 •math.Comb 3
+0 •math.Comb 0
+6 •math.GCD 4
+12 •math.LCM 8
