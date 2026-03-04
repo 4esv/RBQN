@@ -2214,7 +2214,7 @@ pub fn get_current_error() -> Option<B> {
 /// Extract error message from a panic payload and convert to BQN character array.
 fn panic_to_error_string(panic: &Box<dyn std::any::Any + Send>) -> B {
     let msg = if let Some(e) = panic.downcast_ref::<rbqn_core::error::BqnError>() {
-        e.to_string()
+        e.current_error_msg()
     } else if let Some(s) = panic.downcast_ref::<String>() {
         s.clone()
     } else if let Some(s) = panic.downcast_ref::<&str>() {
