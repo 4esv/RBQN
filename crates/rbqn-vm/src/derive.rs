@@ -2600,8 +2600,9 @@ fn resolve_path(path: String) -> String {
         let path_str = b_to_string(path_b);
         if !path_str.is_empty() {
             let base = std::path::Path::new(&path_str);
-            // •path is the directory (not the file), so join directly
-            let joined = base.join(&path);
+            // •path stores the file path; get its parent directory for relative resolution
+            let base_dir = base.parent().unwrap_or(base);
+            let joined = base_dir.join(&path);
             return joined.to_string_lossy().into_owned();
         }
     }
