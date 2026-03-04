@@ -1,6 +1,30 @@
 # RBQN
 
-A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language that attempts to get the GPU involved.
+A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language with experimental GPU dispatch.
+
+> **Experimental / Archived.** Built primarily with Claude as a fun experiment. Slower than [CBQN](https://github.com/dzaima/CBQN) and unlikely to receive further updates. Use CBQN for anything serious.
+
+## What works
+
+- **Self-hosting** — compiles its own BQN compiler, runtime, and formatter. No external BQN implementation needed to build. Fixpoint-verified (round 2 produces identical bytecode).
+- **All primitives** — arithmetic, comparison, structural (`⥊↑↓↕⌽⍉`), search/sort (`⊐⊒∊⍋⍒`), modifiers (`˘¨⌜´˝`), combinators (`∘○⊸⟜⊘◶⍟`), etc.
+- **System values** — `•BQN`, `•Show`, `•Out`, `•Fmt`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•args`, `•Exit`
+- **`•math` namespace** — `Sin`, `Cos`, `Tan`, `ASin`, `ACos`, `ATan`, `Log`, `Cbrt`, `Hypot`, `Erf`, `Comb`, `MatMul`, `Softmax`, `Pi`
+- **`•file` namespace** — `Lines`, `Chars`, `Bytes`, `List`, `At`, `Name`, `Parent`, `Exists`, `Type`, `CreateDir`, `Remove`, `Rename`
+- **`•term` namespace** — `RawMode`, `CharB`, `CharN`, `Flush`, `OutRaw`, `ErrRaw`
+- **`•bit` namespace** — `_cast`, `_not`, `_neg`, and binary bit operations across widths
+- **Other** — `•Import`, `•ParseFloat`, `•Hash`, `•FromUTF8`, `•ToUTF8`, inverse (`⁼`) for many primitives, headers/predicates, block bodies, REPL
+- **GPU kernels** (wgpu) — elementwise arithmetic, reductions, prefix scan, sort, gather, softmax, matmul. Auto-dispatches to GPU above size thresholds (~10M+ elements on Apple Silicon). Fused kernel support.
+
+## What doesn't
+
+- Significantly slower than CBQN across the board
+- No REPL completion or history
+- `•FFI` is stubbed but non-functional
+- `•file.Open` not implemented
+- Error messages are often unhelpful
+- No namespace support beyond the built-in ones
+- Edge cases in lesser-used primitives — passes most but not all of the BQN test suite
 
 ## Usage
 
@@ -25,23 +49,28 @@ cargo install rbqn
 
 No external dependencies required. The BQN compiler and runtime are embedded as bytecode.
 
+## Architecture
+
+~24K lines of Rust across five crates:
+
+| Crate | Purpose |
+|-------|---------|
+| `rbqn` | CLI, REPL, bootstrap, `•Import`/`•BQN` |
+| `rbqn-core` | Value types, NaN-boxed `B` representation, arrays, errors |
+| `rbqn-prim` | Primitive implementations (arithmetic, structural, search/sort) |
+| `rbqn-vm` | Bytecode VM, block compilation, modifiers, derived functions, system values |
+| `rbqn-gpu` | wgpu context, buffer pool, pipeline cache, WGSL kernels |
+
 ## Bootstrap
 
-RBQN is self-hosting. The BQN compiler, runtime, and formatter are compiled by RBQN itself. No external BQN implementation is needed to build.
-
-Bytecode files in `bins/` are compiled from the BQN source files (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) and loaded via `include_bytes!` at compile time.
-
-**Fixpoint verification:** RBQN's self-compilation is deterministic — recompiling the BQN sources with RBQN-compiled bins produces byte-for-byte identical output (fixpoint at round 2).
+RBQN is self-hosting. Bytecode files in `bins/` are compiled from the BQN source files (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) and loaded via `include_bytes!` at compile time.
 
 ```bash
-BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -- --self --fixpoint-check
-```
-
-**Developer workflow:** To regenerate bins from updated BQN sources:
-
-```bash
+# Regenerate bins from updated BQN sources
 BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -- --self
-git add bins/ && git commit
+
+# Verify fixpoint
+BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -- --self --fixpoint-check
 ```
 
 ## Acknowledgements
@@ -53,14 +82,3 @@ git add bins/ && git commit
 - BQN: https://mlochbaum.github.io/BQN/
 - CBQN: https://github.com/dzaima/CBQN
 - BQN community: https://mlochbaum.github.io/BQN/community/
-
-## Version
-
-`rbqn --version` shows the version and bytecode source:
-
-```
-rbqn 0.1.0
-bytecode: cbqn
-```
-
-The `bytecode` field is `rbqn-self` for self-compiled bytecode (the default) or `cbqn` for legacy CBQN-bootstrapped bytecode.
