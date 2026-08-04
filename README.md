@@ -18,7 +18,7 @@ A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array langu
 
 ## What doesn't
 
-- Significantly slower than CBQN across the board
+- Slower than CBQN across the board
 - No REPL completion or history
 - `•FFI` is stubbed but non-functional
 - `•file.Open` not implemented
@@ -75,7 +75,7 @@ BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -
 
 ## Acknowledgements
 
-**BQN** was designed by [Marshall Lochbaum](https://mlochbaum.github.io/). The language spec, compiler source (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`), and reference test suite are his work and are licensed under the ISC License. RBQN embeds bytecode compiled from those source files — the language itself is Marshall's creation.
+**BQN** was designed by [Marshall Lochbaum](https://mlochbaum.github.io/). The language spec, compiler source (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`), and reference test suite are his work and are licensed under the ISC License. RBQN embeds bytecode compiled from those source files. The language itself is Marshall's creation.
 
 **CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN was originally bootstrapped from CBQN-compiled bytecode and is now self-hosting. CBQN's internals — the bytecode format, provide array layout, and runtime structure documented in `load.c` — were essential reference material throughout development.
 
