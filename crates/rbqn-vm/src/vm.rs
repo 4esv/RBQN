@@ -9,19 +9,19 @@ use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_p
 use crate::namespace::{self, NS, get_ns, store_ns};
 use crate::scope::{Scope, v_get, v_set, v_seth, v_check_bad_read};
 
-pub fn exec_block(bl: &Block, body: Arc<Body>, psc: Arc<Scope>) -> B {
+pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
     let var_am = body.var_am;
-    let sc = Arc::new(Scope::new(body.clone(), Some(psc), var_am, &[]));
+    let sc = std::rc::Rc::new(Scope::new(body.clone(), Some(psc), var_am, &[]));
     eval_bc(&body, sc, bl)
 }
 
-pub fn exec_block_with_args(bl: &Block, body: Arc<Body>, psc: Arc<Scope>, args: &[B]) -> B {
+pub fn exec_block_with_args(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
     let var_am = body.var_am.max(args.len() as u16);
-    let sc = Arc::new(Scope::new(body.clone(), Some(psc), var_am, args));
+    let sc = std::rc::Rc::new(Scope::new(body.clone(), Some(psc), var_am, args));
     eval_bc(&body, sc, bl)
 }
 
-fn build_pscs(sc: &Arc<Scope>, max_psc: u16) -> Vec<Arc<Scope>> {
+fn build_pscs(sc: &std::rc::Rc<Scope>, max_psc: u16) -> Vec<std::rc::Rc<Scope>> {
     let mut pscs = Vec::with_capacity(max_psc as usize);
     if max_psc > 0 {
         pscs.push(sc.clone());
@@ -253,7 +253,7 @@ pub fn fmt_b_detail(b: B) -> String {
 }
 
 
-pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
+pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     let bc = &bl.bc;
     let mut pc = body.bc_offset;
     let mut stack: Vec<B> = Vec::with_capacity(body.max_stack as usize);
@@ -573,7 +573,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let d = read_u32!();
                 let p = read_u32!();
                 if let Some(ref ext) = pscs[d as usize].ext {
-                    let val = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize];
+                    let val = ext.vars.borrow_mut()[p as usize];
                     if v_check_bad_read(val) {
                         rbqn_core::error::throw("Attempting to read ext variable which is not yet defined");
                     }
@@ -591,13 +591,13 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let d = read_u32!();
                 let p = read_u32!();
                 if let Some(ref ext) = pscs[d as usize].ext {
-                    let val = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize];
+                    let val = ext.vars.borrow_mut()[p as usize];
                     push!(val);
                 } else {
                     rbqn_core::error::throw("EXTU: no scope extension");
                 }
                 if let Some(ref ext) = pscs[d as usize].ext {
-                    ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize] = B::OPT_OUT;
+                    ext.vars.borrow_mut()[p as usize] = B::OPT_OUT;
                 }
             }
 
@@ -731,14 +731,14 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     // where 𝕣 (var[0]) and 𝔽 (operand) must be available in the next body.
                     let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
                     let args: Vec<B> = if arg_count > 0 {
-                        let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+                        let vars = current_sc.vars.borrow_mut();
                         (0..arg_count).map(|i| vars.get(i).copied().unwrap_or(B::SENTINEL)).collect()
                     } else {
                         vec![]
                     };
                     let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
                     let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
+                    let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
                     current_sc = new_sc;
                     pscs = build_pscs(&current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
@@ -752,7 +752,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
                 if !v_seth(&pscs, s, x) {
-                    let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+                    let vars = current_sc.vars.borrow_mut();
                     let is_dyadic = vars.get(2).is_some_and(|b| !b.q_n());
                     let next_idx = if is_dyadic { dy_idx } else { mono_idx };
                     let next_body = bl.bodies[next_idx].clone();
@@ -767,7 +767,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     // Iterative retry: reset VM state for the new body
                     let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
                     let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
+                    let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
                     current_sc = new_sc;
                     pscs = build_pscs(&current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
@@ -795,14 +795,14 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     // Iterative retry: preserve original args for modifier blocks
                     let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
                     let args: Vec<B> = if arg_count > 0 {
-                        let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+                        let vars = current_sc.vars.borrow_mut();
                         (0..arg_count).map(|i| vars.get(i).copied().unwrap_or(B::SENTINEL)).collect()
                     } else {
                         vec![]
                     };
                     let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
                     let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
+                    let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
                     current_sc = new_sc;
                     pscs = build_pscs(&current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
@@ -822,7 +822,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     }
                 }
                 if !x.o2b() {
-                    let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+                    let vars = current_sc.vars.borrow_mut();
                     let is_dyadic = vars.get(2).is_some_and(|b| !b.q_n());
                     let next_idx = if is_dyadic { dy_idx } else { mono_idx };
                     let next_body = bl.bodies[next_idx].clone();
@@ -837,7 +837,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                     // Iterative retry
                     let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
                     let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
+                    let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
                     current_sc = new_sc;
                     pscs = build_pscs(&current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
@@ -1041,9 +1041,9 @@ impl Clone for Scope {
             var_am: self.var_am,
             ext: self.ext.as_ref().map(|e| crate::scope::ScopeExt {
                 var_am: e.var_am,
-                vars: std::sync::Mutex::new(e.vars.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+                vars: std::cell::RefCell::new(e.vars.borrow_mut().clone()),
             }),
-            vars: std::sync::Mutex::new(self.vars.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+            vars: std::cell::RefCell::new(self.vars.borrow_mut().clone()),
         }
     }
 }

@@ -86,7 +86,7 @@ pub fn block_given_vars(bl: &Block) -> i32 {
     arg_count(bl.ty, bl.imm)
 }
 
-pub fn eval_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn eval_fun_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     if bl.imm {
         crate::vm::exec_block(&bl, bl.bodies[0].clone(), psc)
     } else {
@@ -94,10 +94,10 @@ pub fn eval_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     }
 }
 
-pub fn m_md1_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_md1_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     crate::derive::m_md1_block_val(bl, psc)
 }
 
-pub fn m_md2_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_md2_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     crate::derive::m_md2_block_val(bl, psc)
 }

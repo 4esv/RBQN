@@ -12,7 +12,6 @@ use rbqn_vm::derive::{c1, c2};
 use rbqn_vm::scope::Scope;
 use rbqn_vm::vm::{get_arr, tag_arr};
 
-use std::sync::Arc;
 
 fn main() {
     // Suppress default panic output — BQN errors use panic-based throw()
@@ -300,13 +299,13 @@ fn exec_repl_line_inner(
     // Execute directly with eval_bc so we retain scope access afterwards.
     // The root block is ty=0, imm=true. exec_block would create a child scope
     // and we'd lose the variable values. Instead we call eval_bc with our scope.
-    let exec_scope = Arc::new(Scope::new(body.clone(), None, var_am, &init_vars));
+    let exec_scope = std::rc::Rc::new(Scope::new(body.clone(), None, var_am, &init_vars));
     let result = rbqn_vm::vm::eval_bc(&body, exec_scope.clone(), &block);
 
     // Read back variable values from exec_scope
     let mut new_values = Vec::with_capacity(var_am as usize);
     {
-        let vars = exec_scope.vars.lock().unwrap_or_else(|e| e.into_inner());
+        let vars = exec_scope.vars.borrow_mut();
         for i in 0..var_am as usize {
             if i < vars.len() {
                 new_values.push(vars[i]);

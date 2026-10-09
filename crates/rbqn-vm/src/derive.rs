@@ -20,7 +20,7 @@ pub struct SysRuntime {
 }
 
 // NOTE: B contains a u64 which is Send-safe; all B values are NaN-boxed pointers or scalars.
-// The Arc<Derived> data structure is immutable after creation.
+// The std::rc::Rc<Derived> data structure is immutable after creation.
 unsafe impl Send for SysRuntime {}
 
 /// Set the global runtime state for •BQN (called after bootstrap).
@@ -115,7 +115,7 @@ pub struct Derived {
     pub g: B,
     pub h: B,
     pub bl: Option<Arc<Block>>,
-    pub sc: Option<Arc<Scope>>,
+    pub sc: Option<std::rc::Rc<Scope>>,
 }
 
 static DERIVED_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -126,17 +126,17 @@ fn next_derived_id() -> u64 {
 
 pub fn store_derived(d: Derived) -> u64 {
     let id = next_derived_id();
-    let d = Arc::new(d);
+    let d = std::rc::Rc::new(d);
     DERIVED_STORE.with(|s| s.borrow_mut().insert(id, d));
     id
 }
 
 /// Derived object by id, or None for an unknown id.
-pub fn try_get_derived(id: u64) -> Option<Arc<Derived>> {
+pub fn try_get_derived(id: u64) -> Option<std::rc::Rc<Derived>> {
     DERIVED_STORE.with(|s| s.borrow().get(&id).cloned())
 }
 
-pub fn get_derived(id: u64) -> Arc<Derived> {
+pub fn get_derived(id: u64) -> std::rc::Rc<Derived> {
     try_get_derived(id)
         .unwrap_or_else(|| rbqn_core::error::throw("Invalid derived object reference"))
 }
@@ -150,7 +150,7 @@ use std::sync::Mutex;
 // panic, so catch_unwind (⎊) can never observe a live borrow.
 // ManuallyDrop: values are never freed today, so skip a teardown walk at exit.
 std::thread_local! {
-    static DERIVED_STORE: std::mem::ManuallyDrop<std::cell::RefCell<rbqn_core::IdMap<Arc<Derived>>>> =
+    static DERIVED_STORE: std::mem::ManuallyDrop<std::cell::RefCell<rbqn_core::IdMap<std::rc::Rc<Derived>>>> =
         std::mem::ManuallyDrop::new(std::cell::RefCell::new(rbqn_core::IdMap::default()));
 }
 
@@ -444,7 +444,7 @@ pub fn m_md2_partial_r(m2: B, g: B) -> B {
     tagu64(id << 3, MD1_TAG)
 }
 
-pub fn m_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_fun_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::FunBlock,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -455,7 +455,7 @@ pub fn m_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
 
 /// Create an inverse-block wrapper. When called (c1 or c2), executes the block's
 /// inv_m_body (monadic) or inv_w_body/inv_x_body (dyadic) header body.
-pub fn m_inv_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_inv_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::InvBlock,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -467,7 +467,7 @@ pub fn m_inv_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
 /// Create an inverse 1-modifier-block wrapper.
 /// bl = the modifier block (with inv_m_body), f = operand function.
 /// When called, executes bl.inv_m_body with [self, x, w?, modifier, operand] args.
-pub fn m_inv_md1_block(bl: Arc<Block>, psc: Arc<Scope>, operand: B) -> B {
+pub fn m_inv_md1_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>, operand: B) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::InvMd1Block,
         f: operand, g: B::SENTINEL, h: B::SENTINEL,
@@ -478,7 +478,7 @@ pub fn m_inv_md1_block(bl: Arc<Block>, psc: Arc<Scope>, operand: B) -> B {
 
 /// Create an inverse 2-modifier-block wrapper.
 /// bl = the modifier block (with inv_m_body), f = left operand, h = right operand.
-pub fn m_inv_md2_block(bl: Arc<Block>, psc: Arc<Scope>, f_operand: B, g_operand: B) -> B {
+pub fn m_inv_md2_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>, f_operand: B, g_operand: B) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::InvMd2Block,
         f: f_operand, g: B::SENTINEL, h: g_operand,
@@ -487,7 +487,7 @@ pub fn m_inv_md2_block(bl: Arc<Block>, psc: Arc<Scope>, f_operand: B, g_operand:
     tagu64(id << 3, FUN_TAG)
 }
 
-pub fn m_md1_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_md1_block_val(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::Md1Block,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -496,7 +496,7 @@ pub fn m_md1_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     tagu64(id << 3, MD1_TAG)
 }
 
-pub fn m_md2_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_md2_block_val(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::Md2Block,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -1079,7 +1079,7 @@ fn str_to_b(s: &str) -> B {
 /// Reconstruct a Md1Block B value from the block and its parent scope.
 /// Used when rebuilding the modifier value for 𝔽 binding in InvMd1Block dispatch.
 #[inline]
-fn make_md1_block_val(bl: &Arc<Block>, psc: &Arc<Scope>) -> B {
+fn make_md1_block_val(bl: &Arc<Block>, psc: &std::rc::Rc<Scope>) -> B {
     let tmp_id = store_derived(Derived {
         kind: DerivedKind::Md1Block,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -1091,7 +1091,7 @@ fn make_md1_block_val(bl: &Arc<Block>, psc: &Arc<Scope>) -> B {
 /// Reconstruct a Md2Block B value from the block and its parent scope.
 /// Used when rebuilding the modifier value for 𝔽 binding in InvMd2Block dispatch.
 #[inline]
-fn make_md2_block_val(bl: &Arc<Block>, psc: &Arc<Scope>) -> B {
+fn make_md2_block_val(bl: &Arc<Block>, psc: &std::rc::Rc<Scope>) -> B {
     let tmp_id = store_derived(Derived {
         kind: DerivedKind::Md2Block,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -2207,7 +2207,7 @@ fn make_file_namespace() -> B {
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
 
     // Build scope with all system function values (order must match exp_gids)
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -2773,7 +2773,7 @@ fn dispatch_sys_bqn_eval(src: &str) -> B {
 
     let body = block.bodies[0].clone();
     let var_am = body.var_am;
-    let root_scope = Arc::new(crate::scope::Scope::new(body.clone(), None, var_am, &[]));
+    let root_scope = std::rc::Rc::new(crate::scope::Scope::new(body.clone(), None, var_am, &[]));
     crate::block::eval_fun_block(block, root_scope)
 }
 
@@ -2834,7 +2834,7 @@ fn make_math_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3133,7 +3133,7 @@ fn make_rand_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3250,7 +3250,7 @@ fn make_platform_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3356,7 +3356,7 @@ fn make_bit_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3407,7 +3407,7 @@ fn make_term_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3453,7 +3453,7 @@ fn make_ns_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3487,7 +3487,7 @@ fn ns_values_c1(x: B) -> B {
         rbqn_core::error::throw("•ns.Values: 𝕩 must be a namespace");
     }
     let ns = crate::namespace::get_ns(x);
-    let vars = ns.sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+    let vars = ns.sc.vars.borrow_mut();
     let n = ns.desc.exp_gids.len();
     let values: Vec<B> = (0..n).map(|i| {
         if i < vars.len() { vars[i] } else { B::SENTINEL }
@@ -3605,7 +3605,7 @@ fn make_hashmap_instance(x: B) -> B {
     // Simplest MVP: use sys_fn stubs that throw "not yet implemented" for mutating ops,
     // and make Count return 0 for now. Since the test suite doesn't test HashMap,
     // just having it be a valid namespace is sufficient.
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,

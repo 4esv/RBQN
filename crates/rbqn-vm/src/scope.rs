@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use rbqn_core::B;
 
@@ -9,20 +8,20 @@ use crate::namespace::get_ns;
 #[derive(Debug)]
 pub struct ScopeExt {
     pub var_am: u16,
-    pub vars: Mutex<Vec<B>>,
+    pub vars: std::cell::RefCell<Vec<B>>,
 }
 
 #[derive(Debug)]
 pub struct Scope {
-    pub psc: Option<Arc<Scope>>,
+    pub psc: Option<std::rc::Rc<Scope>>,
     pub body: Arc<Body>,
     pub var_am: u16,
     pub ext: Option<ScopeExt>,
-    pub vars: Mutex<Vec<B>>,
+    pub vars: std::cell::RefCell<Vec<B>>,
 }
 
 impl Scope {
-    pub fn new(body: Arc<Body>, psc: Option<Arc<Scope>>, var_am: u16, init_vars: &[B]) -> Self {
+    pub fn new(body: Arc<Body>, psc: Option<std::rc::Rc<Scope>>, var_am: u16, init_vars: &[B]) -> Self {
         let mut vars = Vec::with_capacity(var_am as usize);
         vars.extend_from_slice(init_vars);
         vars.resize(var_am as usize, B::NO_VAR);
@@ -31,18 +30,18 @@ impl Scope {
             body,
             var_am,
             ext: None,
-            vars: Mutex::new(vars),
+            vars: std::cell::RefCell::new(vars),
         }
     }
 
     /// Read a variable at the given position.
     pub fn var_get(&self, pos: usize) -> B {
-        self.vars.lock().unwrap_or_else(|e| e.into_inner())[pos]
+        self.vars.borrow_mut()[pos]
     }
 
     /// Write a variable at the given position.
     pub fn var_set(&self, pos: usize, val: B) {
-        self.vars.lock().unwrap_or_else(|e| e.into_inner())[pos] = val;
+        self.vars.borrow_mut()[pos] = val;
     }
 }
 
@@ -72,7 +71,7 @@ fn v_tag_error(x: B, write: bool) -> ! {
     rbqn_core::error::throw("Unexpected v_tagError argument");
 }
 
-pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
+pub fn v_get(pscs: &[std::rc::Rc<Scope>], s: B, chk: bool) -> B {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -87,7 +86,7 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            let r = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
+            let r = ext.vars.borrow_mut()[p];
             if chk && v_check_bad_read(r) {
                 v_tag_error(r, false);
             }
@@ -111,7 +110,7 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
     }
 }
 
-pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
+pub fn v_set(pscs: &[std::rc::Rc<Scope>], s: B, x: B, upd: bool, chk: bool) {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -153,12 +152,12 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
             if upd {
-                let prev = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
+                let prev = ext.vars.borrow_mut()[p];
                 if chk && v_check_bad_write(prev) {
                     v_tag_error(prev, true);
                 }
             }
-            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = x;
+            ext.vars.borrow_mut()[p] = x;
         } else {
             rbqn_core::error::throw("v_set: no scope extension for EXT ref");
         }
@@ -256,7 +255,7 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
 
 /// Merge-destructuring: split x along its first axis and assign to each target in s.
 /// This implements CBQN's v_merge for `[a⋄b]←val` syntax (ARMM targets).
-fn v_merge(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
+fn v_merge(pscs: &[std::rc::Rc<Scope>], s: B, x: B, upd: bool, chk: bool) {
     let s_arr = rbqn_core::get_arr(s)
         .unwrap_or_else(|| rbqn_core::error::throw("v_merge: invalid merge target"));
     let s_len = s_arr.ia();
@@ -319,7 +318,7 @@ fn v_merge(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
     }
 }
 
-pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
+pub fn v_seth(pscs: &[std::rc::Rc<Scope>], s: B, x: B) -> bool {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -330,7 +329,7 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = x;
+            ext.vars.borrow_mut()[p] = x;
             true
         } else {
             false
@@ -441,7 +440,7 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
 }
 
 /// Merge-destructuring for header match (v_seth variant).
-fn v_merge_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
+fn v_merge_seth(pscs: &[std::rc::Rc<Scope>], s: B, x: B) -> bool {
     let s_arr = match rbqn_core::get_arr(s) {
         Some(a) => a,
         None => return false,
@@ -500,7 +499,7 @@ fn v_merge_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
     true
 }
 
-pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
+pub fn v_get_move(pscs: &[std::rc::Rc<Scope>], s: B, chk: bool) -> B {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -516,11 +515,11 @@ pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            let r = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
+            let r = ext.vars.borrow_mut()[p];
             if chk && v_check_bad_read(r) {
                 v_tag_error(r, false);
             }
-            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = B::OPT_OUT;
+            ext.vars.borrow_mut()[p] = B::OPT_OUT;
             r
         } else {
             rbqn_core::error::throw("v_get_move: no scope extension for EXT ref");

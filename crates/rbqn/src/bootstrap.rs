@@ -1,4 +1,3 @@
-use std::sync::Arc;
 
 use rbqn_core::array::BqnArr;
 use rbqn_core::error::BqnError;
@@ -317,7 +316,7 @@ fn exec_stage(
     // After compile_block swap, bodies[0] is the first monadic body
     let body = block.bodies[0].clone();
     let var_am = body.var_am;
-    let root_scope = Arc::new(Scope::new(body.clone(), None, var_am, &[]));
+    let root_scope = std::rc::Rc::new(Scope::new(body.clone(), None, var_am, &[]));
 
     Ok(eval_fun_block(block, root_scope))
 }

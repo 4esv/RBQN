@@ -16,7 +16,7 @@ pub struct NSDesc {
 #[derive(Debug)]
 pub struct NS {
     pub desc: Arc<NSDesc>,
-    pub sc: Arc<Scope>,
+    pub sc: std::rc::Rc<Scope>,
 }
 
 static GID_MAP: std::sync::LazyLock<Mutex<HashMap<String, i32>>> =
@@ -33,18 +33,18 @@ static NS_COUNTER: AtomicU64 = AtomicU64::new(1);
 // panic, so catch_unwind (⎊) can never observe a live borrow.
 // ManuallyDrop: values are never freed today, so skip a teardown walk at exit.
 std::thread_local! {
-    static NS_STORE: std::mem::ManuallyDrop<std::cell::RefCell<rbqn_core::IdMap<Arc<NS>>>> =
+    static NS_STORE: std::mem::ManuallyDrop<std::cell::RefCell<rbqn_core::IdMap<std::rc::Rc<NS>>>> =
         std::mem::ManuallyDrop::new(std::cell::RefCell::new(rbqn_core::IdMap::default()));
 }
 
 pub fn store_ns(ns: NS) -> B {
     let id = NS_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let ns = Arc::new(ns);
+    let ns = std::rc::Rc::new(ns);
     NS_STORE.with(|s| s.borrow_mut().insert(id, ns));
     tagu64(id << 3, NSP_TAG)
 }
 
-pub fn get_ns(b: B) -> Arc<NS> {
+pub fn get_ns(b: B) -> std::rc::Rc<NS> {
     let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
     NS_STORE.with(|s| s.borrow().get(&id).cloned())
         .unwrap_or_else(|| rbqn_core::error::throw("Invalid namespace reference"))
@@ -69,7 +69,7 @@ pub fn gid2str(id: i32) -> String {
 
 impl NS {
     pub fn get_by_gid(&self, gid: i32) -> Option<B> {
-        let vars = self.sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+        let vars = self.sc.vars.borrow_mut();
         for (i, &exp_gid) in self.desc.exp_gids.iter().enumerate() {
             if exp_gid == gid
                 && i < vars.len() {
