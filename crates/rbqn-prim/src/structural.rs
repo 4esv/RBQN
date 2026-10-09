@@ -1134,21 +1134,10 @@ fn join_typed_vectors(arr: &BqnArr) -> Option<BqnArr> {
             })
             .collect();
         let mut out: Vec<T> = Vec::with_capacity(total);
-        let dst = out.as_mut_ptr();
-        let mut pos = 0usize;
         for &k in order {
-            let w = &wide[k as usize];
-            assert!(pos + w.len() <= total);
-            // PERF: elements are often 2-3 items; a plain loop beats memcpy calls.
-            for (j, &x) in w.iter().enumerate() {
-                // SAFETY: pos + j < total (asserted above) and out has capacity total.
-                unsafe { dst.add(pos + j).write(x) };
-            }
-            pos += w.len();
+            out.extend_from_slice(&wide[k as usize]);
         }
-        assert_eq!(pos, total);
-        // SAFETY: exactly `total` elements were written above.
-        unsafe { out.set_len(total) };
+        debug_assert_eq!(out.len(), total);
         out
     }
     fn bits(a: &BqnArr) -> impl Iterator<Item = u8> + '_ {
