@@ -386,11 +386,20 @@ fn each_c1(f: B, x: B) -> B {
             let bl = d.bl.as_ref().unwrap();
             let psc = d.sc.as_ref().unwrap();
             let body = &bl.bodies[0];
-            for i in 0..n {
-                let elem = get_elem(&arr, i);
+            let mut call = |elem: B| {
                 results.push(crate::vm::exec_block_with_args(
                     bl, body, psc.clone(), &[f, elem, B::SENTINEL],
                 ));
+            };
+            // Read elements straight from the typed buffer: BqnArr::get recomputes
+            // the shape product and re-matches the element type per element.
+            match &arr.data {
+                ArrData::I8(v) => v.iter().for_each(|&e| call(B::m_i32(e as i32))),
+                ArrData::I16(v) => v.iter().for_each(|&e| call(B::m_i32(e as i32))),
+                ArrData::I32(v) => v.iter().for_each(|&e| call(B::m_i32(e))),
+                ArrData::F64(v) => v.iter().for_each(|&e| call(B::m_f64(e))),
+                ArrData::Boxed(v) => v.iter().for_each(|&e| call(e)),
+                _ => (0..n).for_each(|i| call(get_elem(&arr, i))),
             }
             return results_to_arr(results, arr.shape.clone());
         }
