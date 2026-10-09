@@ -6,9 +6,9 @@ use crate::dispatch::{WORKGROUP_SIZE, grid_for};
 use crate::pipeline::{PipelineCache, PipelineKey};
 
 const SHADER_F32: &str = include_str!("../shaders/arith_f32.wgsl");
-const SHADER_I32: &str = include_str!("../shaders/arith_i32.wgsl");
+pub(crate) const SHADER_I32: &str = include_str!("../shaders/arith_i32.wgsl");
 const SHADER_SCALAR_F32: &str = include_str!("../shaders/arith_scalar_f32.wgsl");
-const SHADER_SCALAR_I32: &str = include_str!("../shaders/arith_scalar_i32.wgsl");
+pub(crate) const SHADER_SCALAR_I32: &str = include_str!("../shaders/arith_scalar_i32.wgsl");
 
 fn shader_for(elem: ElementKind) -> (&'static str, &'static str) {
     match elem {

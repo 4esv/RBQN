@@ -6,7 +6,7 @@ use crate::dispatch::{WORKGROUP_SIZE, grid_for, workgroup_count};
 use crate::pipeline::{PassBatch, PipelineCache, PipelineKey};
 
 const SHADER_F32: &str = include_str!("../shaders/reduce_f32.wgsl");
-const SHADER_I32: &str = include_str!("../shaders/reduce_i32.wgsl");
+pub(crate) const SHADER_I32: &str = include_str!("../shaders/reduce_i32.wgsl");
 
 fn shader_for(elem: ElementKind) -> (&'static str, &'static str) {
     match elem {

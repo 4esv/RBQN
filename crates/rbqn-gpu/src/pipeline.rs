@@ -81,22 +81,57 @@ impl PipelineCache {
     ) -> &wgpu::ComputePipeline {
         if !self.pipelines.contains_key(key) {
             self.ensure_module(key.shader_id, source);
-            let module = &self.modules[key.shader_id];
-            let pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(&key.entry_point),
-                layout: None,
-                module,
-                entry_point: Some(&key.entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    zero_initialize_workgroup_memory: zero_workgroup_memory(key.shader_id),
-                    ..Default::default()
-                },
-                cache: None,
-            });
+            let pipeline = build_pipeline(&self.device, &self.modules[key.shader_id], key);
             self.pipelines.insert(key.clone(), pipeline); crate::stats::PIPELINE_COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         &self.pipelines[key]
     }
+
+    pub fn contains(&self, key: &PipelineKey) -> bool {
+        self.pipelines.contains_key(key)
+    }
+
+    /// Insert a pipeline compiled outside the lock (`compile_detached`).
+    /// Keeps an existing entry; not counted in PIPELINE_COMPILES.
+    pub fn insert(&mut self, key: PipelineKey, pipeline: wgpu::ComputePipeline) {
+        self.pipelines.entry(key).or_insert(pipeline);
+    }
+}
+
+fn build_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    key: &PipelineKey,
+) -> wgpu::ComputePipeline {
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some(&key.entry_point),
+        layout: None,
+        module,
+        entry_point: Some(&key.entry_point),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            zero_initialize_workgroup_memory: zero_workgroup_memory(key.shader_id),
+            ..Default::default()
+        },
+        cache: None,
+    })
+}
+
+/// Compile one pipeline without touching a `PipelineCache`, so a background
+/// precompile can build it with no lock held and `insert` it afterwards.
+/// `modules` caches shader modules across calls by shader id.
+pub fn compile_detached(
+    device: &wgpu::Device,
+    modules: &mut HashMap<&'static str, wgpu::ShaderModule>,
+    key: &PipelineKey,
+    source: &str,
+) -> wgpu::ComputePipeline {
+    let module = modules.entry(key.shader_id).or_insert_with(|| {
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(key.shader_id),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        })
+    });
+    build_pipeline(device, module, key)
 }
 
 /// Several dependent compute passes recorded into one command buffer and

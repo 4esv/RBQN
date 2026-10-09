@@ -8,7 +8,7 @@ use crate::dispatch::workgroup_grid;
 use crate::kernels::int64::{self, BLOCK};
 use crate::pipeline::{PassBatch, PipelineCache, PipelineKey};
 
-const SOURCE: &str = include_str!("../shaders/minmax_i32.wgsl");
+pub(crate) const SOURCE: &str = include_str!("../shaders/minmax_i32.wgsl");
 
 pub fn minmax_i32(
     device: &Arc<wgpu::Device>,

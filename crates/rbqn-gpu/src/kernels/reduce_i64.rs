@@ -9,7 +9,7 @@ use crate::dispatch::workgroup_grid;
 use crate::kernels::int64::{self, BLOCK};
 use crate::pipeline::{PassBatch, PipelineCache, PipelineKey};
 
-const TEMPLATE: &str = include_str!("../shaders/reduce_i64.wgsl");
+pub(crate) const TEMPLATE: &str = include_str!("../shaders/reduce_i64.wgsl");
 
 pub fn reduce_i64(
     device: &Arc<wgpu::Device>,

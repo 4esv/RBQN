@@ -7,7 +7,7 @@ use crate::kernels::int64;
 use crate::pipeline::{PassBatch, PipelineCache, PipelineKey};
 
 const SHADER_F32: &str = include_str!("../shaders/scan_f32.wgsl");
-const SHADER_I32: &str = include_str!("../shaders/scan_i32.wgsl");
+pub(crate) const SHADER_I32: &str = include_str!("../shaders/scan_i32.wgsl");
 
 /// Elements per workgroup in scan_i32.wgsl (256 threads x 8).
 const TILE_I32: usize = 2048;

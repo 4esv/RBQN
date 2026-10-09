@@ -9,11 +9,11 @@ use crate::dispatch::workgroup_grid;
 use crate::kernels::int64;
 use crate::pipeline::{PassBatch, PipelineCache, PipelineKey};
 
-const TEMPLATE: &str = include_str!("../shaders/scan_i64.wgsl");
+pub(crate) const TEMPLATE: &str = include_str!("../shaders/scan_i64.wgsl");
 
 /// Elements per thread; a workgroup scans 256 * EPT elements.
-const EPT: usize = 4;
-const BLOCK: usize = 256 * EPT;
+pub(crate) const EPT: usize = 4;
+pub(crate) const BLOCK: usize = 256 * EPT;
 
 pub fn scan_i64(
     device: &Arc<wgpu::Device>,

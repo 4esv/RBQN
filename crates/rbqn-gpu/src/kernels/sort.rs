@@ -13,7 +13,7 @@ use crate::buffer::{ElementKind, GpuBuffer};
 use crate::dispatch::workgroup_grid;
 use crate::pipeline::{PipelineCache, PipelineKey};
 
-const SHADER: &str = include_str!("../shaders/sort.wgsl");
+pub(crate) const SHADER: &str = include_str!("../shaders/sort.wgsl");
 const RADIX_BITS: u32 = 4;
 const NUM_PASSES: u32 = 32 / RADIX_BITS;
 const TILE: usize = 2048;

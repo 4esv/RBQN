@@ -9,7 +9,7 @@ use crate::dispatch::{WORKGROUP_SIZE, grid_for};
 use crate::kernels::int64;
 use crate::pipeline::{PipelineCache, PipelineKey};
 
-const TEMPLATE: &str = include_str!("../shaders/arith_i64.wgsl");
+pub(crate) const TEMPLATE: &str = include_str!("../shaders/arith_i64.wgsl");
 
 pub fn arith_binary_i64(
     device: &Arc<wgpu::Device>,
@@ -43,7 +43,7 @@ pub fn arith_binary_i32_to_i64(
     arith_binary_i64(device, queue, cache, op, a, b, out)
 }
 
-const SCALAR_TEMPLATE: &str = include_str!("../shaders/arith_scalar_i64.wgsl");
+pub(crate) const SCALAR_TEMPLATE: &str = include_str!("../shaders/arith_scalar_i64.wgsl");
 
 /// `a op s` (or `s op a` when `scalar_left`) with an i32 scalar; `a` is I32
 /// (widened) or I64, output I64. Ops: add sub mul min max.

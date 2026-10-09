@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rbqn_core::array::{ArrData, BqnArr, squeeze_num, squeeze_i32};
 use rbqn_core::{B, DeviceValue, peek_device, tag_device};
-use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32, upload_i32_with, upload_f32, download_i32, download_i64, download_f32};
+use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32_with, upload_f32, download_i32, download_i64, download_f32};
 use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
 use rbqn_gpu::pipeline::PipelineCache;
@@ -13,6 +13,37 @@ use rbqn_gpu::pipeline::PipelineCache;
 pub struct GpuRuntime {
     pub ctx: GpuContext,
     pub cache: Mutex<PipelineCache>,
+    /// Output buffers of pending values, reused once nothing else holds them.
+    pub pool: Mutex<Vec<Arc<GpuBuffer>>>,
+}
+
+/// Bytes of free pooled buffers kept around; free ones beyond this are dropped.
+const POOL_FREE_BYTES: u64 = 512 << 20;
+
+/// An n-element output buffer for a kernel whose result becomes a pending
+/// value. Reuses a pooled buffer of the same kind and length whose only
+/// reference is the pool's own (its GpuArr was materialized or dropped, and
+/// no kernel input or upload-cache entry holds it). Queue order makes reuse
+/// safe against GPU work already submitted on the old contents.
+fn pooled_out(gpu: &GpuRuntime, kind: ElementKind, n: usize) -> Arc<GpuBuffer> {
+    let mut pool = gpu.pool.lock().unwrap_or_else(|e| e.into_inner());
+    let free = |b: &Arc<GpuBuffer>| Arc::strong_count(b) == 1;
+    if let Some(b) = pool.iter().find(|b| free(b) && b.element_type() == kind && b.len() == n) {
+        return b.clone();
+    }
+    // Trim free buffers (oldest first) so retained-but-unused memory stays bounded.
+    let mut free_bytes: u64 = pool.iter().filter(|b| free(b)).map(|b| b.size()).sum();
+    pool.retain(|b| {
+        if free_bytes > POOL_FREE_BYTES && free(b) {
+            free_bytes -= b.size();
+            false
+        } else {
+            true
+        }
+    });
+    let b = Arc::new(GpuBuffer::storage(&gpu.ctx.device, kind, n));
+    pool.push(b.clone());
+    b
 }
 
 static GPU_RUNTIME: OnceLock<Option<GpuRuntime>> = OnceLock::new();
@@ -57,9 +88,6 @@ impl Drop for SummaryGuard {
     }
 }
 
-/// Background device init started by `init()`; joined by the first `get()`.
-static INIT_THREAD: Mutex<Option<std::thread::JoinHandle<Option<GpuRuntime>>>> = Mutex::new(None);
-
 /// Create the context and cache. Pure device work: it never touches the
 /// interpreter's thread-local registries.
 fn build_runtime() -> Option<GpuRuntime> {
@@ -67,31 +95,38 @@ fn build_runtime() -> Option<GpuRuntime> {
     let ctx = pollster::block_on(GpuContext::new())?;
     rbqn_gpu::stats::DEVICE_INIT_US.store(t_init.elapsed().as_micros() as u64, Ordering::Relaxed);
     let cache = Mutex::new(PipelineCache::new(ctx.device.clone()));
-    Some(GpuRuntime { ctx, cache })
+    Some(GpuRuntime { ctx, cache, pool: Mutex::new(Vec::new()) })
 }
 
-/// Compile the i32 arith/reduce/scan pipelines by running them once on tiny buffers.
-/// NOTE: the dispatch/submit counters include these warmup runs.
+fn build_runtime_logged() -> Option<GpuRuntime> {
+    let rt = std::panic::catch_unwind(build_runtime).ok().flatten();
+    if rt.is_none() && debug_enabled() {
+        eprintln!("[gpu] device init failed; using CPU path");
+    }
+    rt
+}
+
+/// Compile the pipelines in `kernels::precompile_set` with
+/// `create_compute_pipeline` only (no warmup dispatches). Each pipeline is
+/// compiled with no lock held and inserted under a short lock, so the main
+/// thread is never blocked behind the whole set; a pipeline it needs before
+/// this gets there is compiled by the main thread itself (and counted).
 fn precompile(rt: &GpuRuntime) {
-    use rbqn_gpu::kernels::{arith, reduce, scan};
-    let (d, q) = (&rt.ctx.device, &rt.ctx.queue);
-    let mut cache = rt.cache.lock().unwrap_or_else(|e| e.into_inner());
-    // Larger than one scan workgroup so the block-sum and propagate pipelines compile too.
-    let data = vec![1i32; 4096];
-    let a = upload_i32(d, q, &data);
-    let out = GpuBuffer::storage(d, ElementKind::I32, data.len());
-    for op in ["add", "sub", "mul"] {
-        arith::arith_binary(d, q, &mut cache, op, &a, &a, &out);
+    let d = &rt.ctx.device;
+    let mut modules = std::collections::HashMap::new();
+    for (key, src) in rbqn_gpu::kernels::precompile_set(rt.ctx.shader_int64) {
+        if rt.cache.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) {
+            continue;
+        }
+        let p = rbqn_gpu::pipeline::compile_detached(d, &mut modules, &key, &src);
+        rt.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, p);
     }
-    for op in ["add", "max", "min"] {
-        let _ = reduce::reduce(d, q, &mut cache, op, &a);
-    }
-    let _ = scan::inclusive_scan(d, q, &mut cache, &a);
 }
 
 /// Record CLI GPU settings and start device creation on a background thread so
 /// it overlaps the compile phase. Disabled (`--no-gpu`, RBQN_GPU=off): no thread.
-/// `get()` joins the thread on the first dispatch that needs the device.
+/// The thread initializes GPU_RUNTIME and then keeps precompiling; `get()`
+/// waits only for the device (OnceLock init), never for the precompile.
 pub fn init(no_gpu: bool) {
     if std::env::var("RBQN_GPU_DEBUG").is_ok() {
         GPU_DEBUG.store(true, Ordering::Relaxed);
@@ -100,38 +135,24 @@ pub fn init(no_gpu: bool) {
         GPU_DISABLED.store(true, Ordering::Relaxed);
         return;
     }
-    let spawned = std::thread::Builder::new().name("rbqn-gpu-init".into()).spawn(|| {
-        let rt = std::panic::catch_unwind(build_runtime).ok().flatten();
-        if let Some(rt) = &rt {
+    let _ = std::thread::Builder::new().name("rbqn-gpu-init".into()).spawn(|| {
+        if let Some(rt) = GPU_RUNTIME.get_or_init(build_runtime_logged) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| precompile(rt)));
         }
-        rt
     });
-    if let Ok(h) = spawned {
-        *INIT_THREAD.lock().unwrap() = Some(h);
-    }
 }
 
-/// Get the GPU runtime, waiting for the init thread on first call. None when
+/// Get the GPU runtime, waiting for device creation on first call. None when
 /// disabled (`--no-gpu`) or when no adapter is available.
 /// NOTE: Callers must apply their size threshold before calling this.
 pub fn get() -> Option<&'static GpuRuntime> {
     if GPU_DISABLED.load(Ordering::Relaxed) {
         return None;
     }
-    GPU_RUNTIME
-        .get_or_init(|| {
-            let handle = INIT_THREAD.lock().ok().and_then(|mut g| g.take());
-            let rt = match handle {
-                Some(h) => h.join().ok().flatten(),
-                None => build_runtime(),
-            };
-            if rt.is_none() && debug_enabled() {
-                eprintln!("[gpu] device init failed; using CPU path");
-            }
-            rt
-        })
-        .as_ref()
+    // If the init thread is mid-build, OnceLock blocks here until it is done;
+    // if it has not started yet, this thread builds the device and the init
+    // thread finds it set and only precompiles.
+    GPU_RUNTIME.get_or_init(build_runtime_logged).as_ref()
 }
 
 // Set while a GPU dispatch runs so the interpreter's panic hook (which is
@@ -322,8 +343,8 @@ pub struct GpuArr {
 }
 
 impl GpuArr {
-    fn new(buf: GpuBuffer, shape: Vec<usize>, fill: Option<B>, bound: f64) -> Self {
-        GpuArr { buf: Arc::new(buf), shape, fill, bound: Cell::new(bound) }
+    fn new(buf: Arc<GpuBuffer>, shape: Vec<usize>, fill: Option<B>, bound: f64) -> Self {
+        GpuArr { buf, shape, fill, bound: Cell::new(bound) }
     }
 }
 
@@ -430,12 +451,12 @@ fn widen_i64(gpu: &GpuRuntime, buf: Arc<GpuBuffer>) -> Arc<GpuBuffer> {
     if buf.element_type() == ElementKind::I64 {
         return buf;
     }
-    let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I64, buf.len());
+    let out = pooled_out(gpu, ElementKind::I64, buf.len());
     let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
     rbqn_gpu::kernels::arith_i64::arith_binary_i32_to_i64(
         &gpu.ctx.device, &gpu.ctx.queue, &mut cache, "max", &buf, &buf, &out,
     );
-    Arc::new(out)
+    out
 }
 
 fn fill_of(b: B, host: Option<&BqnArr>) -> Option<B> {
@@ -482,7 +503,7 @@ pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
         }
         let both_i32 = w_buf.element_type() == ElementKind::I32 && x_buf.element_type() == ElementKind::I32;
         let (out_buf, kind) = if both_i32 && bound < I32_LIM {
-            let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I32, n);
+            let out = pooled_out(gpu, ElementKind::I32, n);
             let mut cache = gpu.cache.lock().ok()?;
             rbqn_gpu::kernels::arith::arith_binary(
                 &gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &w_buf, &x_buf, &out,
@@ -490,7 +511,7 @@ pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
             (out, "i32")
         } else {
             if !gpu.ctx.shader_int64 { return None; }
-            let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I64, n);
+            let out = pooled_out(gpu, ElementKind::I64, n);
             if both_i32 {
                 let mut cache = gpu.cache.lock().ok()?;
                 rbqn_gpu::kernels::arith_i64::arith_binary_i32_to_i64(
@@ -545,7 +566,7 @@ fn gpu_arith_scalar(op: &str, s: f64, scalar_left: bool, a: B) -> Option<B> {
         }
         let (out_buf, kind) = if buf.element_type() == ElementKind::I32 && bound < I32_LIM {
             let kop = if op == "sub" && scalar_left { "rsub" } else { op };
-            let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I32, n);
+            let out = pooled_out(gpu, ElementKind::I32, n);
             let mut cache = gpu.cache.lock().ok()?;
             rbqn_gpu::kernels::arith::arith_scalar_i32(
                 &gpu.ctx.device, &gpu.ctx.queue, &mut cache, kop, &buf, si, &out,
@@ -553,7 +574,7 @@ fn gpu_arith_scalar(op: &str, s: f64, scalar_left: bool, a: B) -> Option<B> {
             (out, "i32 scalar")
         } else {
             if !gpu.ctx.shader_int64 { return None; }
-            let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I64, n);
+            let out = pooled_out(gpu, ElementKind::I64, n);
             let kind = if buf.element_type() == ElementKind::I32 { "i32→i64 scalar" } else { "i64 scalar" };
             let mut cache = gpu.cache.lock().ok()?;
             rbqn_gpu::kernels::arith_i64::arith_scalar_i64(
@@ -789,15 +810,15 @@ fn gpu_scan_inner(f: B, x: B) -> Option<B> {
     let is_i32 = buf.element_type() == ElementKind::I32;
     let (result_buf, kind) = if is_i32 && out_bound < I32_LIM {
         let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
-        (rbqn_gpu::kernels::scan::inclusive_scan(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &buf), "i32")
+        let out = pooled_out(gpu, ElementKind::I32, n);
+        rbqn_gpu::kernels::scan::inclusive_scan_into(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &buf, &out);
+        (out, "i32")
     } else {
         if !gpu.ctx.shader_int64 { return None; }
         let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
-        if is_i32 {
-            (rbqn_gpu::kernels::scan_i64::scan_i32_to_i64(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, "add", &buf), "i32→i64")
-        } else {
-            (rbqn_gpu::kernels::scan_i64::scan_i64(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, "add", &buf), "i64")
-        }
+        let out = pooled_out(gpu, ElementKind::I64, n);
+        rbqn_gpu::kernels::scan_i64::scan_i64_into(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, "add", &buf, &out);
+        (out, if is_i32 { "i32→i64" } else { "i64" })
     };
     if result_buf.len() != n {
         return None;
