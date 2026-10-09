@@ -51,7 +51,16 @@ pub fn submit() {
 
 /// Zero the counters except device init time. Called after the source is compiled so
 /// the summary shows the program's own GPU traffic, not the compiler's.
+/// Set once the user program starts (after the compiler returns); `RBQN_GPU=force`
+/// only applies from then on, so the self-hosted compiler's tiny-array ops stay on CPU.
+pub static PROGRAM_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn program_started() -> bool {
+    PROGRAM_STARTED.load(Relaxed)
+}
+
 pub fn reset_run() {
+    PROGRAM_STARTED.store(true, Relaxed);
     let init = DEVICE_INIT_US.load(Relaxed);
     reset();
     DEVICE_INIT_US.store(init, Relaxed);
