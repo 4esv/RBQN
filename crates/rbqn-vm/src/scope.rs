@@ -59,6 +59,33 @@ impl std::ops::DerefMut for Vars {
     }
 }
 
+/// Non-owning handle to a scope in the active chain (`current_sc` and its `psc`
+/// parents). Valid while the owning `Rc` chain is alive; `eval_bc` holds
+/// `current_sc` for the whole lifetime of the `pscs` vector that contains these.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct ScRef(*const Scope);
+
+impl ScRef {
+    #[inline(always)]
+    pub fn new(rc: &std::rc::Rc<Scope>) -> ScRef { ScRef(std::rc::Rc::as_ptr(rc)) }
+    /// Take a new strong reference (for closures that capture this scope).
+    #[inline]
+    pub fn to_rc(self) -> std::rc::Rc<Scope> {
+        // SAFETY: the pointer came from a live Rc (see type docs).
+        unsafe {
+            std::rc::Rc::increment_strong_count(self.0);
+            std::rc::Rc::from_raw(self.0)
+        }
+    }
+}
+
+impl std::ops::Deref for ScRef {
+    type Target = Scope;
+    #[inline(always)]
+    fn deref(&self) -> &Scope { unsafe { &*self.0 } }
+}
+
 std::thread_local! {
     static SCOPE_FREE: std::cell::RefCell<Vec<std::rc::Rc<Scope>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -160,7 +187,7 @@ fn v_tag_error(x: B, write: bool) -> ! {
     rbqn_core::error::throw("Unexpected v_tagError argument");
 }
 
-pub fn v_get(pscs: &[std::rc::Rc<Scope>], s: B, chk: bool) -> B {
+pub fn v_get(pscs: &[ScRef], s: B, chk: bool) -> B {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -199,7 +226,7 @@ pub fn v_get(pscs: &[std::rc::Rc<Scope>], s: B, chk: bool) -> B {
     }
 }
 
-pub fn v_set(pscs: &[std::rc::Rc<Scope>], s: B, x: B, upd: bool, chk: bool) {
+pub fn v_set(pscs: &[ScRef], s: B, x: B, upd: bool, chk: bool) {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -344,7 +371,7 @@ pub fn v_set(pscs: &[std::rc::Rc<Scope>], s: B, x: B, upd: bool, chk: bool) {
 
 /// Merge-destructuring: split x along its first axis and assign to each target in s.
 /// This implements CBQN's v_merge for `[a⋄b]←val` syntax (ARMM targets).
-fn v_merge(pscs: &[std::rc::Rc<Scope>], s: B, x: B, upd: bool, chk: bool) {
+fn v_merge(pscs: &[ScRef], s: B, x: B, upd: bool, chk: bool) {
     let s_arr = rbqn_core::get_arr(s)
         .unwrap_or_else(|| rbqn_core::error::throw("v_merge: invalid merge target"));
     let s_len = s_arr.ia();
@@ -407,7 +434,7 @@ fn v_merge(pscs: &[std::rc::Rc<Scope>], s: B, x: B, upd: bool, chk: bool) {
     }
 }
 
-pub fn v_seth(pscs: &[std::rc::Rc<Scope>], s: B, x: B) -> bool {
+pub fn v_seth(pscs: &[ScRef], s: B, x: B) -> bool {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -529,7 +556,7 @@ pub fn v_seth(pscs: &[std::rc::Rc<Scope>], s: B, x: B) -> bool {
 }
 
 /// Merge-destructuring for header match (v_seth variant).
-fn v_merge_seth(pscs: &[std::rc::Rc<Scope>], s: B, x: B) -> bool {
+fn v_merge_seth(pscs: &[ScRef], s: B, x: B) -> bool {
     let s_arr = match rbqn_core::get_arr(s) {
         Some(a) => a,
         None => return false,
@@ -588,7 +615,7 @@ fn v_merge_seth(pscs: &[std::rc::Rc<Scope>], s: B, x: B) -> bool {
     true
 }
 
-pub fn v_get_move(pscs: &[std::rc::Rc<Scope>], s: B, chk: bool) -> B {
+pub fn v_get_move(pscs: &[ScRef], s: B, chk: bool) -> B {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;

@@ -7,7 +7,7 @@ use crate::block::{Block, Body, eval_fun_block, m_md1_block, m_md2_block};
 use crate::bytecode::Op;
 use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_partial_r};
 use crate::namespace::{self, NS, get_ns, store_ns};
-use crate::scope::{Scope, v_get, v_set, v_seth, v_check_bad_read};
+use crate::scope::{ScRef, Scope, v_get, v_set, v_seth, v_check_bad_read};
 
 pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
     let var_am = body.var_am;
@@ -22,16 +22,16 @@ pub fn exec_block_with_args(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope
 }
 
 /// Fill `pscs` with the scope chain starting at `sc`, up to `max_psc` entries.
-fn build_pscs(pscs: &mut Vec<std::rc::Rc<Scope>>, sc: &std::rc::Rc<Scope>, max_psc: u16) {
+fn build_pscs(pscs: &mut Vec<ScRef>, sc: &std::rc::Rc<Scope>, max_psc: u16) {
     pscs.clear();
     if max_psc > 0 {
-        pscs.push(sc.clone());
-        let mut current = sc.clone();
+        let mut cur: &Scope = sc;
+        pscs.push(ScRef::new(sc));
         for _ in 1..max_psc {
-            match &current.psc {
+            match &cur.psc {
                 Some(p) => {
-                    pscs.push(p.clone());
-                    current = p.clone();
+                    pscs.push(ScRef::new(p));
+                    cur = p;
                 }
                 None => break,
             }
@@ -43,7 +43,7 @@ type Pool<T> = std::cell::RefCell<Vec<Vec<T>>>;
 
 std::thread_local! {
     static STACK_POOL: Pool<B> = const { std::cell::RefCell::new(Vec::new()) };
-    static PSCS_POOL: Pool<std::rc::Rc<Scope>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PSCS_POOL: Pool<ScRef> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// A Vec borrowed from a thread-local free list and returned (cleared) on drop,
@@ -344,7 +344,7 @@ fn enter_eval() -> DepthGuard {
 /// Scope is built so captured scopes keep the failed body's variables.
 fn retry_scope(
     current_sc: &mut std::rc::Rc<Scope>,
-    pscs: &mut Vec<std::rc::Rc<Scope>>,
+    pscs: &mut Vec<ScRef>,
     next_body: &Arc<Body>,
     arg_count: usize,
 ) {
@@ -460,10 +460,10 @@ fn build_list(stack: &mut Vec<B>, sz: usize, mode: u8) -> B {
 }
 
 #[inline(never)]
-fn dfnd(kind: u8, bl: &Block, bl_idx: usize, pscs: &[std::rc::Rc<Scope>], current_sc: &std::rc::Rc<Scope>) -> B {
+fn dfnd(kind: u8, bl: &Block, bl_idx: usize, pscs: &[ScRef], current_sc: &std::rc::Rc<Scope>) -> B {
     if bl_idx < bl.blocks.len() {
         let child_bl = bl.blocks[bl_idx].clone();
-        let psc = if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() };
+        let psc = if !pscs.is_empty() { pscs[0].to_rc() } else { current_sc.clone() };
         match kind {
             0 => eval_fun_block(child_bl, psc),
             1 => m_md1_block(child_bl, psc),
@@ -476,7 +476,7 @@ fn dfnd(kind: u8, bl: &Block, bl_idx: usize, pscs: &[std::rc::Rc<Scope>], curren
 
 /// EXTO (mode 0, checks for undefined) / EXTU (mode 1, reads then clears).
 #[inline(never)]
-fn ext_get(pscs: &[std::rc::Rc<Scope>], d: u32, p: u32, mode: u8) -> B {
+fn ext_get(pscs: &[ScRef], d: u32, p: u32, mode: u8) -> B {
     if let Some(ref ext) = pscs[d as usize].ext {
         let val = ext.vars.borrow_mut()[p as usize];
         if mode == 0 {
@@ -508,7 +508,7 @@ fn retry_to(
     next_idx: usize,
     no_match: &str,
     current_sc: &mut std::rc::Rc<Scope>,
-    pscs: &mut Vec<std::rc::Rc<Scope>>,
+    pscs: &mut Vec<ScRef>,
     stack: &mut Vec<B>,
 ) -> usize {
     let next_body = bl.bodies[next_idx].clone();
@@ -553,14 +553,14 @@ fn alias_make(o: B, gid: i32) -> B {
 }
 
 #[inline(never)]
-fn ret_d(body: &Body, stack: &mut Vec<B>, pscs: &[std::rc::Rc<Scope>], current_sc: &std::rc::Rc<Scope>) -> B {
+fn ret_d(body: &Body, stack: &mut Vec<B>, pscs: &[ScRef], current_sc: &std::rc::Rc<Scope>) -> B {
     if let Some(ref ns_desc) = body.ns_desc {
         if !stack.is_empty() {
             stack.pop();
         }
         return store_ns(NS {
             desc: ns_desc.clone(),
-            sc: if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() },
+            sc: if !pscs.is_empty() { pscs[0].to_rc() } else { current_sc.clone() },
         });
     }
     stack.pop().unwrap_or(B::SENTINEL)
@@ -1057,7 +1057,6 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
             }
             Some(Op::RETN) => {
                 let r = pop!();
-                pscs.clear();
                 Scope::recycle(current_sc);
                 return r;
             }
