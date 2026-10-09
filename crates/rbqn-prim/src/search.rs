@@ -569,13 +569,56 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
 /// Id for an element that can never match anything (NaN).
 const NO_ID: u32 = u32::MAX;
 
-/// Integer contents of a small-int array, without boxing.
-fn int_slice(a: &BqnArr) -> Option<Vec<i32>> {
+/// Borrowed view of a small-int array. Bit arrays are widened to i8 (1 byte/elem).
+enum IntView<'a> {
+    I8(std::borrow::Cow<'a, [i8]>),
+    I16(&'a [i16]),
+    I32(&'a [i32]),
+}
+
+fn int_view(a: &BqnArr) -> Option<IntView<'_>> {
     match &a.data {
-        ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) => a.i32_iter().ok(),
-        ArrData::I32(v) => Some(v.clone()),
+        ArrData::Bit(_) => Some(IntView::I8(std::borrow::Cow::Owned(
+            a.i32_iter().ok()?.into_iter().map(|x| x as i8).collect()))),
+        ArrData::I8(v) => Some(IntView::I8(std::borrow::Cow::Borrowed(v))),
+        ArrData::I16(v) => Some(IntView::I16(v)),
+        ArrData::I32(v) => Some(IntView::I32(v)),
         _ => None,
     }
+}
+
+/// Run a generic body over the narrow slice type of an IntView.
+macro_rules! with_slice {
+    ($view:expr, $v:ident => $body:expr) => {
+        match $view {
+            IntView::I8($v) => { let $v: &[i8] = &$v; $body }
+            IntView::I16($v) => { let $v: &[i16] = $v; $body }
+            IntView::I32($v) => { let $v: &[i32] = $v; $body }
+        }
+    };
+}
+
+fn min_max<T: Copy + Into<i32>>(v: &[T]) -> (i32, i32) {
+    let mut lo = i32::MAX;
+    let mut hi = i32::MIN;
+    for &x in v { let x: i32 = x.into(); lo = lo.min(x); hi = hi.max(x); }
+    (lo, hi)
+}
+
+fn dense_ids<T: Copy + Into<i32>>(v: &[T], lo: i32) -> Vec<u32> {
+    v.iter().map(|&x| (x.into() as i64 - lo as i64) as u32).collect()
+}
+
+fn dense_classify<T: Copy + Into<i32>>(v: &[T], lo: i32, range: usize) -> Vec<i32> {
+    let mut cls = vec![-1i32; range];
+    let mut next = 0i32;
+    let mut out = Vec::with_capacity(v.len());
+    for &x in v {
+        let c = &mut cls[(x.into() as i64 - lo as i64) as usize];
+        if *c < 0 { *c = next; next += 1; }
+        out.push(*c);
+    }
+    out
 }
 
 #[inline]
@@ -615,19 +658,19 @@ fn atom_keys(a: &BqnArr) -> Option<Vec<Option<u128>>> {
 /// elements getting equal ids across all arrays. Returns (ids per array, k).
 fn intern(arrs: &[&BqnArr]) -> Option<(Vec<Vec<u32>>, usize)> {
     // Dense path: all small ints in a compact range, id = value - min.
-    let ints: Vec<Option<Vec<i32>>> = arrs.iter().map(|a| int_slice(a)).collect();
-    if ints.iter().all(|v| v.is_some()) {
-        let ints: Vec<Vec<i32>> = ints.into_iter().map(|v| v.unwrap()).collect();
-        let total: usize = ints.iter().map(|v| v.len()).sum();
-        let mut lo = i32::MAX;
-        let mut hi = i32::MIN;
-        for v in &ints { for &x in v { lo = lo.min(x); hi = hi.max(x); } }
-        if total == 0 { return Some((ints.into_iter().map(|_| vec![]).collect(), 0)); }
+    let views: Vec<Option<IntView>> = arrs.iter().map(|a| int_view(a)).collect();
+    if views.iter().all(|v| v.is_some()) {
+        let views: Vec<IntView> = views.into_iter().map(|v| v.unwrap()).collect();
+        let total: usize = arrs.iter().map(|a| a.ia()).sum();
+        if total == 0 { return Some((views.iter().map(|_| vec![]).collect(), 0)); }
+        let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+        for v in &views {
+            let (l, h) = with_slice!(v, s => min_max(s));
+            lo = lo.min(l); hi = hi.max(h);
+        }
         let range = (hi as i64 - lo as i64 + 1) as usize;
         if range <= (4 * total).max(1 << 16) {
-            let ids = ints.into_iter()
-                .map(|v| v.into_iter().map(|x| (x as i64 - lo as i64) as u32).collect())
-                .collect();
+            let ids = views.iter().map(|v| with_slice!(v, s => dense_ids(s, lo))).collect();
             return Some((ids, range));
         }
     }
@@ -651,8 +694,57 @@ fn i32_result(v: Vec<i32>, shape: Vec<usize>) -> PrimResult {
     PrimResult::Array(BqnArr { shape, data: ArrData::I32(v), fill: Some(B::m_i32(0)) })
 }
 
+fn dense_occurrence<T: Copy + Into<i32>>(v: &[T], lo: i32, range: usize) -> Vec<i32> {
+    let mut cnt = vec![0i32; range];
+    let mut out = Vec::with_capacity(v.len());
+    for &x in v {
+        let c = &mut cnt[(x.into() as i64 - lo as i64) as usize];
+        out.push(*c);
+        *c += 1;
+    }
+    out
+}
+
+fn dense_mark_firsts<T: Copy + Into<i32>>(v: &[T], lo: i32, range: usize) -> Vec<i32> {
+    let mut seen = vec![false; range];
+    let mut out = Vec::with_capacity(v.len());
+    for &x in v {
+        let sn = &mut seen[(x.into() as i64 - lo as i64) as usize];
+        out.push(!*sn as i32);
+        *sn = true;
+    }
+    out
+}
+
+fn dense_first_indices<T: Copy + Into<i32>>(v: &[T], lo: i32, range: usize) -> Vec<usize> {
+    let mut seen = vec![false; range];
+    let mut out = Vec::new();
+    for (i, &x) in v.iter().enumerate() {
+        let sn = &mut seen[(x.into() as i64 - lo as i64) as usize];
+        if !*sn { *sn = true; out.push(i); }
+    }
+    out
+}
+
+/// Min/max + range check shared by the single-pass dense paths.
+fn dense_params(view: &IntView, n: usize) -> Option<(i32, usize)> {
+    let (lo, hi) = with_slice!(view, s => min_max(s));
+    let range = (hi as i64 - lo as i64 + 1) as usize;
+    if range <= (4 * n).max(1 << 16) { Some((lo, range)) } else { None }
+}
+
 /// ⊐𝕩 on a list of atoms.
 fn fast_classify(arr: &BqnArr) -> Option<PrimResult> {
+    if let Some(view) = int_view(arr) {
+        let n = arr.ia();
+        if n == 0 { return Some(i32_result(vec![], vec![0])); }
+        let (lo, hi) = with_slice!(&view, s => min_max(s));
+        let range = (hi as i64 - lo as i64 + 1) as usize;
+        if range <= (4 * n).max(1 << 16) {
+            let r = with_slice!(&view, s => dense_classify(s, lo, range));
+            return Some(i32_result(r, vec![n]));
+        }
+    }
     let (ids, k) = intern(&[arr])?;
     let mut cls = vec![-1i32; k];
     let mut next = 0i32;
@@ -667,6 +759,14 @@ fn fast_classify(arr: &BqnArr) -> Option<PrimResult> {
 
 /// ⊒𝕩 on a list of atoms.
 fn fast_occurrence(arr: &BqnArr) -> Option<PrimResult> {
+    if let Some(view) = int_view(arr) {
+        let n = arr.ia();
+        if n == 0 { return Some(i32_result(vec![], vec![0])); }
+        if let Some((lo, range)) = dense_params(&view, n) {
+            let r = with_slice!(&view, s => dense_occurrence(s, lo, range));
+            return Some(i32_result(r, vec![n]));
+        }
+    }
     let (ids, k) = intern(&[arr])?;
     let mut cnt = vec![0i32; k];
     let r = ids[0].iter().map(|&id| {
@@ -680,6 +780,14 @@ fn fast_occurrence(arr: &BqnArr) -> Option<PrimResult> {
 
 /// ∊𝕩 on a list of atoms.
 fn fast_mark_firsts(arr: &BqnArr) -> Option<PrimResult> {
+    if let Some(view) = int_view(arr) {
+        let n = arr.ia();
+        if n == 0 { return Some(i32_result(vec![], vec![0])); }
+        if let Some((lo, range)) = dense_params(&view, n) {
+            let r = with_slice!(&view, s => dense_mark_firsts(s, lo, range));
+            return Some(i32_result(r, vec![n]));
+        }
+    }
     let (ids, k) = intern(&[arr])?;
     let mut seen = vec![false; k];
     let r = ids[0].iter().map(|&id| {
@@ -694,6 +802,13 @@ fn fast_mark_firsts(arr: &BqnArr) -> Option<PrimResult> {
 
 /// Indices of first occurrences, for ⍷𝕩.
 fn fast_first_indices(arr: &BqnArr) -> Option<Vec<usize>> {
+    if let Some(view) = int_view(arr) {
+        let n = arr.ia();
+        if n == 0 { return Some(vec![]); }
+        if let Some((lo, range)) = dense_params(&view, n) {
+            return Some(with_slice!(&view, s => dense_first_indices(s, lo, range)));
+        }
+    }
     let (ids, k) = intern(&[arr])?;
     let mut seen = vec![false; k];
     Some(ids[0].iter().enumerate().filter_map(|(i, &id)| {
