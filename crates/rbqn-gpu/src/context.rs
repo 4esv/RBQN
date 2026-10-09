@@ -36,6 +36,7 @@ impl GpuContext {
         let required_limits = wgpu::Limits {
             max_storage_buffer_binding_size: adapter.limits().max_storage_buffer_binding_size,
             max_buffer_size: adapter.limits().max_buffer_size,
+            max_storage_buffers_per_shader_stage: adapter.limits().max_storage_buffers_per_shader_stage,
             max_compute_workgroups_per_dimension: adapter
                 .limits()
                 .max_compute_workgroups_per_dimension,

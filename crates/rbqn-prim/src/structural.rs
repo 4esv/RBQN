@@ -1652,10 +1652,21 @@ fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
     Ok(PrimResult::Array(typed_arr(current_data, current_shape, fill)))
 }
 
+// NOTE: GPU iota hook, set by the rbqn crate at startup: `↕n` as a lazy
+// device value (never uploaded). None keeps the host path.
+static GPU_IOTA_HOOK: std::sync::OnceLock<fn(usize) -> Option<B>> = std::sync::OnceLock::new();
+
+pub fn register_gpu_iota(f: fn(usize) -> Option<B>) {
+    let _ = GPU_IOTA_HOOK.set(f);
+}
+
 // ↕ monad: range
 pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_f64() {
         let n = x.to_usz()?;
+        if let Some(b) = GPU_IOTA_HOOK.get().and_then(|h| h(n)) {
+            return Ok(PrimResult::Scalar(b));
+        }
         let vals: Vec<i32> = (0..n as i32).collect();
         return Ok(PrimResult::Array(BqnArr::new_vec_i32(vals)));
     }

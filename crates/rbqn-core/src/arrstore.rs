@@ -89,6 +89,7 @@ pub fn get_arr(b: B) -> Option<Arc<BqnArr>> {
     let arr = Arc::new(dv.materialize());
     ARR_STORE.with(|s| s.borrow_mut().insert(id, arr.clone()));
     PENDING.with(|p| p.borrow_mut().remove(&id));
+    dv.materialized(b.0);
     Some(arr)
 }
 
@@ -100,6 +101,8 @@ pub trait DeviceValue: std::any::Any {
     /// Read back and build the host array (called at most once per value).
     fn materialize(&self) -> BqnArr;
     fn as_any(&self) -> &dyn std::any::Any;
+    /// Called once after `materialize`, with the value's `B` bits.
+    fn materialized(&self, _bits: u64) {}
 }
 
 std::thread_local! {

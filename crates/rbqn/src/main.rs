@@ -51,6 +51,7 @@ fn interp_main(mut t: std::time::Instant) {
     // NOTE: Register GPU dispatch hooks into rbqn-prim after GPU runtime is initialized.
     // Function pointer pattern avoids circular dependency (rbqn-prim cannot depend on rbqn).
     rbqn_prim::arith_dyad::register_gpu_arith(gpu_runtime::gpu_arith_binary);
+    rbqn_prim::structural::register_gpu_iota(gpu_runtime::gpu_iota);
 
     // NOTE: Register GPU fused arithmetic hook for explicit multi-op dispatch.
     // FusionBuilder wired here; true expression-level auto-fusion is future work (requires
