@@ -628,7 +628,7 @@ pub fn c1(f: B, x: B) -> B {
                 c1(d.g, hx)
             }
             DerivedKind::FunBlock => {
-                crate::vm::vm_trace_push(format!("c1 FunBlock id={} x={:#x} x_is_arr={} nblocks={}", id, x.0, x.is_arr(), d.bl.as_ref().map_or(0, |b| b.blocks.len())));
+                crate::vm_trace!("c1 FunBlock id={} x={:#x} x_is_arr={} nblocks={}", id, x.0, x.is_arr(), d.bl.as_ref().map_or(0, |b| b.blocks.len()));
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c1] id={} x={}", id, crate::vm::fmt_b_short(x));
                 }
@@ -648,7 +648,7 @@ pub fn c1(f: B, x: B) -> B {
                     let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                     let md = get_derived(mid);
                     if md.kind == DerivedKind::Md1Block {
-                        crate::vm::vm_trace_push(format!("c1 Md1Block mid={} x={:#x}", mid, x.0));
+                        crate::vm_trace!("c1 Md1Block mid={} x={:#x}", mid, x.0);
                         let bl = md.bl.as_ref().unwrap().clone();
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.bodies[0].clone();
@@ -658,8 +658,8 @@ pub fn c1(f: B, x: B) -> B {
                         );
                     }
                     if let DerivedKind::NativeMd1 { prim_idx } = &md.kind {
-                        let x_ia = if x.is_arr() { crate::vm::get_arr(x).map_or(-1i64, |a| a.ia() as i64) } else { -2 };
-                        crate::vm::vm_trace_push(format!("c1 NativeMd1 prim={} x={:#x} x_ia={}", prim_idx, x.0, x_ia));
+                        crate::vm_trace!("c1 NativeMd1 prim={} x={:#x} x_ia={}", prim_idx, x.0,
+                            if x.is_arr() { crate::vm::get_arr(x).map_or(-1i64, |a| a.ia() as i64) } else { -2 });
                         return crate::modifiers::native_md1_c1(*prim_idx, operand, f, x);
                     }
                     if md.kind == DerivedKind::Md2PartialL {
@@ -702,12 +702,12 @@ pub fn c1(f: B, x: B) -> B {
                     rbqn_core::error::throw(format!("primitive '{}' has no monadic form", prim.glyph))
                 });
                 let x_arr = crate::vm::get_arr(x);
-                crate::vm::vm_trace_push(format!(
+                crate::vm_trace!(
                     "c1 prim={} x_tag={:#06x} x_ia={}",
                     prim.glyph,
                     (x.0 >> 48) as u16,
                     x_arr.as_ref().map_or(-1i64, |a| a.ia() as i64),
-                ));
+                );
                 if crate::vm::prim_trace_enabled() {
                     let glyph = PRIM_GLYPHS.chars().nth(prim_idx).map(|c| c.to_string())
                         .unwrap_or_else(|| prim.glyph.to_string());
@@ -901,13 +901,13 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 });
                 let w_arr = crate::vm::get_arr(w);
                 let x_arr = crate::vm::get_arr(x);
-                crate::vm::vm_trace_push(format!(
+                crate::vm_trace!(
                     "c2 prim={} w_tag={:#06x} x_tag={:#06x} x_ia={}",
                     prim.glyph,
                     (w.0 >> 48) as u16,
                     (x.0 >> 48) as u16,
                     x_arr.as_ref().map_or(-1i64, |a| a.ia() as i64),
-                ));
+                );
                 if crate::vm::prim_trace_enabled() {
                     let glyph = PRIM_GLYPHS.chars().nth(prim_idx).map(|c| c.to_string())
                         .unwrap_or_else(|| prim.glyph.to_string());

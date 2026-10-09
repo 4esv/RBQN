@@ -77,6 +77,17 @@ std::thread_local! {
     static VM_TRACE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Push a formatted line to the VM trace buffer, only when RBQN_PRIM_TRACE is set.
+/// The format! runs inside the branch so the hot path pays one bool load.
+#[macro_export]
+macro_rules! vm_trace {
+    ($($arg:tt)*) => {
+        if $crate::vm::prim_trace_enabled() {
+            $crate::vm::vm_trace_push(format!($($arg)*));
+        }
+    };
+}
+
 pub fn vm_trace_push(msg: String) {
     VM_TRACE.with(|t| {
         let mut buf = t.borrow_mut();
@@ -89,6 +100,10 @@ pub fn vm_trace_dump() -> Vec<String> {
     // NOTE: Temporary debugging function - remove when not needed
     VM_TRACE.with(|t| t.borrow().clone())
 }
+
+// NOTE: RBQN_VM_TRACE env-var gate, read once instead of per block execution
+static VM_DEBUG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("RBQN_VM_TRACE").is_ok());
 
 // NOTE: RBQN_PRIM_TRACE env-var gate — checked once at startup, zero cost when unset
 static PRIM_TRACE_ENABLED: std::sync::LazyLock<bool> =
@@ -279,7 +294,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     }
 
     // NOTE: Debug flag for targeted tracing during runtime1 bootstrap
-    let vm_debug = std::env::var("RBQN_VM_TRACE").is_ok();
+    let vm_debug = *VM_DEBUG_ENABLED;
 
     loop {
         if pc >= bc.len() {
