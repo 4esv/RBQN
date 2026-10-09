@@ -5,10 +5,31 @@ use std::sync::{Arc, Mutex};
 use crate::array::BqnArr;
 use crate::value::{B, ARR_TAG, tagu64};
 
+/// Hasher for sequential u64 ids: one multiply (Fibonacci hashing) instead of SipHash.
+/// The multiply spreads ids into the high bits hashbrown uses for its control bytes.
+#[derive(Default, Clone, Copy)]
+pub struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+pub type IdMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<IdHasher>>;
+
 static ARR_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-static ARR_STORE: std::sync::LazyLock<Mutex<HashMap<u64, Arc<BqnArr>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static ARR_STORE: std::sync::LazyLock<Mutex<IdMap<Arc<BqnArr>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(IdMap::default()));
 
 pub fn tag_arr(arr: BqnArr) -> B {
     let id = ARR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

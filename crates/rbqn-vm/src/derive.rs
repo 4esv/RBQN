@@ -139,8 +139,8 @@ pub fn get_derived(id: u64) -> Arc<Derived> {
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-pub static DERIVED_STORE: std::sync::LazyLock<Mutex<HashMap<u64, Arc<Derived>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+pub static DERIVED_STORE: std::sync::LazyLock<Mutex<rbqn_core::IdMap<Arc<Derived>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(rbqn_core::IdMap::default()));
 
 // Global inverse lookup functions, set by setInv callback during bootstrap.
 // INV_REG_FN: called as c1(inv_reg_fn, func) to get the regular inverse of func
