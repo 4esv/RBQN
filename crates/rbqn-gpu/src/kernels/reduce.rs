@@ -2,7 +2,7 @@ use std::sync::Arc;
 use wgpu;
 
 use crate::buffer::{ElementKind, GpuBuffer};
-use crate::dispatch::{WORKGROUP_SIZE, workgroup_count};
+use crate::dispatch::{WORKGROUP_SIZE, grid_for, workgroup_count};
 use crate::pipeline::{PipelineCache, PipelineKey};
 
 const SHADER_F32: &str = include_str!("../shaders/reduce_f32.wgsl");
@@ -37,7 +37,8 @@ fn dispatch_reduce_pass(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(workgroup_count(input.len(), WORKGROUP_SIZE), 1, 1);
+        let (gx, gy) = grid_for(input.len(), WORKGROUP_SIZE);
+        pass.dispatch_workgroups(gx, gy, 1);
     }
     queue.submit(std::iter::once(encoder.finish()));
 }

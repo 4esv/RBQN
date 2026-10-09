@@ -3,32 +3,44 @@
 @group(0) @binding(2) var<storage, read_write> output: array<f32>;
 
 @compute @workgroup_size(256)
-fn scalar_add_f32(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn scalar_add_f32(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let idx = id.x + id.y * nwg.x * 256u; // 2D grid, see dispatch::workgroup_grid
     if (idx < arrayLength(&output)) {
         output[idx] = input_a[idx] + scalar_b;
     }
 }
 
 @compute @workgroup_size(256)
-fn scalar_sub_f32(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn scalar_sub_f32(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let idx = id.x + id.y * nwg.x * 256u; // 2D grid, see dispatch::workgroup_grid
     if (idx < arrayLength(&output)) {
         output[idx] = input_a[idx] - scalar_b;
     }
 }
 
 @compute @workgroup_size(256)
-fn scalar_mul_f32(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn scalar_mul_f32(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let idx = id.x + id.y * nwg.x * 256u; // 2D grid, see dispatch::workgroup_grid
     if (idx < arrayLength(&output)) {
         output[idx] = input_a[idx] * scalar_b;
     }
 }
 
 @compute @workgroup_size(256)
-fn scalar_div_f32(@builtin(global_invocation_id) id: vec3<u32>) {
-    let idx = id.x;
+fn scalar_div_f32(
+    @builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let idx = id.x + id.y * nwg.x * 256u; // 2D grid, see dispatch::workgroup_grid
     if (idx < arrayLength(&output)) {
         output[idx] = input_a[idx] / scalar_b;
     }

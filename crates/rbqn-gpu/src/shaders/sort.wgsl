@@ -4,8 +4,11 @@
 @group(0) @binding(2) var<uniform> params: vec2<u32>; // (shift, n)
 
 @compute @workgroup_size(256)
-fn histogram(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
+fn histogram(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let idx = gid.x + gid.y * nwg.x * 256u; // 2D grid, see dispatch::workgroup_grid
     let n = params.y;
     if (idx >= n) { return; }
 
@@ -21,8 +24,11 @@ fn histogram(@builtin(global_invocation_id) gid: vec3<u32>) {
 @group(0) @binding(3) var<uniform> scatter_params: vec2<u32>;
 
 @compute @workgroup_size(256)
-fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
+fn scatter(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    let idx = gid.x + gid.y * nwg.x * 256u; // 2D grid, see dispatch::workgroup_grid
     let n = scatter_params.y;
     if (idx >= n) { return; }
 

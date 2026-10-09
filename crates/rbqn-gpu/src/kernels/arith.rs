@@ -2,7 +2,7 @@ use std::sync::Arc;
 use wgpu;
 
 use crate::buffer::{ElementKind, GpuBuffer};
-use crate::dispatch::{WORKGROUP_SIZE, workgroup_count};
+use crate::dispatch::{WORKGROUP_SIZE, grid_for};
 use crate::pipeline::{PipelineCache, PipelineKey};
 
 const SHADER_F32: &str = include_str!("../shaders/arith_f32.wgsl");
@@ -54,7 +54,8 @@ pub fn arith_binary(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(workgroup_count(out.len(), WORKGROUP_SIZE), 1, 1);
+        let (gx, gy) = grid_for(out.len(), WORKGROUP_SIZE);
+        pass.dispatch_workgroups(gx, gy, 1);
     }
     queue.submit(std::iter::once(encoder.finish()));
 }
@@ -107,7 +108,8 @@ pub fn arith_scalar(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(workgroup_count(out.len(), WORKGROUP_SIZE), 1, 1);
+        let (gx, gy) = grid_for(out.len(), WORKGROUP_SIZE);
+        pass.dispatch_workgroups(gx, gy, 1);
     }
     queue.submit(std::iter::once(encoder.finish()));
 }

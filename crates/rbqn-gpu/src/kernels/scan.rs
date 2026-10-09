@@ -2,7 +2,7 @@ use std::sync::Arc;
 use wgpu;
 
 use crate::buffer::{ElementKind, GpuBuffer};
-use crate::dispatch::WORKGROUP_SIZE;
+use crate::dispatch::{WORKGROUP_SIZE, workgroup_grid};
 use crate::pipeline::{PipelineCache, PipelineKey};
 
 const SHADER_F32: &str = include_str!("../shaders/scan_f32.wgsl");
@@ -43,7 +43,8 @@ fn dispatch_scan_pass(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(num_groups as u32, 1, 1);
+        let (gx, gy) = workgroup_grid(num_groups as u32);
+        pass.dispatch_workgroups(gx, gy, 1);
     }
     queue.submit(std::iter::once(encoder.finish()));
 }
@@ -74,7 +75,8 @@ fn dispatch_propagate(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(num_groups as u32, 1, 1);
+        let (gx, gy) = workgroup_grid(num_groups as u32);
+        pass.dispatch_workgroups(gx, gy, 1);
     }
     queue.submit(std::iter::once(encoder.finish()));
 }

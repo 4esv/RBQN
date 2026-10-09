@@ -2,7 +2,7 @@ use std::sync::Arc;
 use wgpu;
 
 use crate::buffer::{ElementKind, GpuBuffer};
-use crate::dispatch::{WORKGROUP_SIZE, workgroup_count};
+use crate::dispatch::{WORKGROUP_SIZE, grid_for};
 use crate::pipeline::{PipelineCache, PipelineKey};
 
 const SHADER: &str = include_str!("../shaders/sort.wgsl");
@@ -69,7 +69,8 @@ pub fn radix_sort_u32(
             let mut cpass = encoder.begin_compute_pass(&Default::default());
             cpass.set_pipeline(hist_pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
-            cpass.dispatch_workgroups(workgroup_count(n, WORKGROUP_SIZE), 1, 1);
+            let (gx, gy) = grid_for(n, WORKGROUP_SIZE);
+        cpass.dispatch_workgroups(gx, gy, 1);
         }
         queue.submit(std::iter::once(encoder.finish()));
 
@@ -125,7 +126,8 @@ pub fn radix_sort_u32(
             let mut cpass = encoder.begin_compute_pass(&Default::default());
             cpass.set_pipeline(scatter_pipeline);
             cpass.set_bind_group(0, &scatter_bg, &[]);
-            cpass.dispatch_workgroups(workgroup_count(n, WORKGROUP_SIZE), 1, 1);
+            let (gx, gy) = grid_for(n, WORKGROUP_SIZE);
+        cpass.dispatch_workgroups(gx, gy, 1);
         }
         queue.submit(std::iter::once(encoder.finish()));
 

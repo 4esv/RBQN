@@ -8,9 +8,11 @@ fn reduce_add_i32(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let idx = gid.x;
+    let wg = wid.y * nwg.x + wid.x; // linear workgroup index on the 2D grid
     let local_idx = lid.x;
+    let idx = wg * 256u + local_idx;
 
     if (idx < arrayLength(&input)) {
         shared_data[local_idx] = input[idx];
@@ -26,8 +28,10 @@ fn reduce_add_i32(
         workgroupBarrier();
     }
 
-    if (local_idx == 0u) {
-        output[wid.x] = shared_data[0];
+    // Spare workgroups on the last grid row must not write: an out-of-bounds
+    // store is clamped onto the last element on Metal and races with its owner.
+    if (local_idx == 0u && wg < arrayLength(&output)) {
+        output[wg] = shared_data[0];
     }
 }
 
@@ -36,9 +40,11 @@ fn reduce_mul_i32(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let idx = gid.x;
+    let wg = wid.y * nwg.x + wid.x; // linear workgroup index on the 2D grid
     let local_idx = lid.x;
+    let idx = wg * 256u + local_idx;
 
     if (idx < arrayLength(&input)) {
         shared_data[local_idx] = input[idx];
@@ -54,8 +60,10 @@ fn reduce_mul_i32(
         workgroupBarrier();
     }
 
-    if (local_idx == 0u) {
-        output[wid.x] = shared_data[0];
+    // Spare workgroups on the last grid row must not write: an out-of-bounds
+    // store is clamped onto the last element on Metal and races with its owner.
+    if (local_idx == 0u && wg < arrayLength(&output)) {
+        output[wg] = shared_data[0];
     }
 }
 
@@ -64,9 +72,11 @@ fn reduce_min_i32(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let idx = gid.x;
+    let wg = wid.y * nwg.x + wid.x; // linear workgroup index on the 2D grid
     let local_idx = lid.x;
+    let idx = wg * 256u + local_idx;
 
     if (idx < arrayLength(&input)) {
         shared_data[local_idx] = input[idx];
@@ -82,8 +92,10 @@ fn reduce_min_i32(
         workgroupBarrier();
     }
 
-    if (local_idx == 0u) {
-        output[wid.x] = shared_data[0];
+    // Spare workgroups on the last grid row must not write: an out-of-bounds
+    // store is clamped onto the last element on Metal and races with its owner.
+    if (local_idx == 0u && wg < arrayLength(&output)) {
+        output[wg] = shared_data[0];
     }
 }
 
@@ -92,9 +104,11 @@ fn reduce_max_i32(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let idx = gid.x;
+    let wg = wid.y * nwg.x + wid.x; // linear workgroup index on the 2D grid
     let local_idx = lid.x;
+    let idx = wg * 256u + local_idx;
 
     if (idx < arrayLength(&input)) {
         shared_data[local_idx] = input[idx];
@@ -110,7 +124,9 @@ fn reduce_max_i32(
         workgroupBarrier();
     }
 
-    if (local_idx == 0u) {
-        output[wid.x] = shared_data[0];
+    // Spare workgroups on the last grid row must not write: an out-of-bounds
+    // store is clamped onto the last element on Metal and races with its owner.
+    if (local_idx == 0u && wg < arrayLength(&output)) {
+        output[wg] = shared_data[0];
     }
 }

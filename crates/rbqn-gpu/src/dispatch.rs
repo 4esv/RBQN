@@ -34,4 +34,50 @@ pub fn workgroup_count(len: usize, workgroup_size: u32) -> u32 {
     (len as u32).div_ceil(workgroup_size)
 }
 
+/// Per-dimension workgroup cap (WebGPU default and Metal's limit).
+pub const MAX_WORKGROUPS_PER_DIM: u32 = 65535;
+
+/// Split `groups` linear workgroups into an (x, y) grid that respects
+/// `MAX_WORKGROUPS_PER_DIM`. Shaders recover the linear workgroup index as
+/// `wid.y * num_workgroups.x + wid.x`.
+/// BUG(fixed, #10): a 1D grid failed validation above 65535 groups, i.e. for
+/// every array over 16.7M elements, so arith/reduce/sort never ran on the GPU.
+pub fn workgroup_grid(groups: u32) -> (u32, u32) {
+    if groups <= MAX_WORKGROUPS_PER_DIM {
+        (groups.max(1), 1)
+    } else {
+        (MAX_WORKGROUPS_PER_DIM, groups.div_ceil(MAX_WORKGROUPS_PER_DIM))
+    }
+}
+
+/// (x, y) workgroup grid covering `len` elements at `workgroup_size` each.
+pub fn grid_for(len: usize, workgroup_size: u32) -> (u32, u32) {
+    workgroup_grid(workgroup_count(len, workgroup_size))
+}
+
 pub const WORKGROUP_SIZE: u32 = 256;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_covers_all_groups_within_cap() {
+        for groups in [0u32, 1, 255, 65535, 65536, 131070, 390625, 1 << 22] {
+            let (x, y) = workgroup_grid(groups);
+            assert!(x >= 1 && x <= MAX_WORKGROUPS_PER_DIM, "x={x} for {groups}");
+            assert!(y >= 1 && y <= MAX_WORKGROUPS_PER_DIM, "y={y} for {groups}");
+            let covered = x as u64 * y as u64;
+            assert!(covered >= groups as u64, "{groups} groups, grid {x}x{y}");
+            // Never a whole spare row: y is the minimum that covers.
+            let spare = covered - (groups as u64).max(1);
+            assert!(spare < x as u64, "{groups} groups, grid {x}x{y} has a spare row");
+        }
+    }
+
+    #[test]
+    fn grid_for_100m_elements_is_2d() {
+        let (x, y) = grid_for(100_000_000, WORKGROUP_SIZE);
+        assert_eq!((x, y), (65535, 6));
+    }
+}
