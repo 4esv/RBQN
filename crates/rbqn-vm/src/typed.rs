@@ -295,13 +295,17 @@ fn table_with<F: Fn(f64, f64) -> f64>(w: &[f64], x: &[f64], op: F) -> Vec<f64> {
 /// ops as the primitives. Result shape is 𝕨's shape then 𝕩's, squeezed.
 pub fn table(f: B, warr: &BqnArr, xarr: &BqnArr) -> Option<BqnArr> {
     let idx = native_fn_idx(f)?;
-    if !matches!(idx, 0 | 1 | 2 | 3 | 6 | 7 | 8) {
+    if !matches!(idx, 0 | 1 | 2 | 3 | 6 | 7 | 8 | 12..=17) {
         return None;
     }
     let mut shape = warr.shape.clone();
     shape.extend_from_slice(&xarr.shape);
-    if let Some(r) = int_table(idx, warr, xarr) {
-        return Some(BqnArr { shape, data: ArrData::I32(r), fill: Some(B::m_i32(0)) });
+    if let Some(mut r) = int_table(idx, warr, xarr) {
+        r.shape = shape;
+        return Some(r);
+    }
+    if idx >= 12 {
+        return None;
     }
     let w = f64_view(warr)?;
     let x = f64_view(xarr)?;
@@ -320,34 +324,110 @@ pub fn table(f: B, warr: &BqnArr, xarr: &BqnArr) -> Option<BqnArr> {
     Some(out)
 }
 
-/// Integer-only table for + - × ⌊ ⌈ when every result fits in i32 (exact, so it
-/// equals the f64 result). None on non-integer input, other ops, or overflow.
-fn int_table(idx: usize, warr: &BqnArr, xarr: &BqnArr) -> Option<Vec<i32>> {
+/// Collect `f(a, b)` for every (a, b) in w x x, row-major. Inner loop is over a
+/// native slice so it vectorizes.
+fn tab<T, F: Fn(i32, i32) -> T>(w: &[i32], x: &[i32], f: F) -> Vec<T> {
+    let mut out = Vec::with_capacity(w.len() * x.len());
+    for &a in w {
+        out.extend(x.iter().map(|&b| f(a, b)));
+    }
+    out
+}
+
+/// Pack 0/1 bytes into a Bit word vector.
+fn pack_bytes(v: &[u8]) -> Vec<u64> {
+    let mut words = vec![0u64; v.len().div_ceil(64)];
+    for (k, c) in v.chunks(64).enumerate() {
+        words[k] = c.iter().enumerate().fold(0u64, |acc, (i, &b)| acc | ((b as u64) << i));
+    }
+    words
+}
+
+/// Comparison table packed straight into Bit words, one row buffer at a time.
+fn cmp_table<F: Fn(i32, i32) -> bool>(w: &[i32], x: &[i32], f: F) -> Vec<u64> {
+    let total = w.len() * x.len();
+    let mut words = vec![0u64; total.div_ceil(64)];
+    let mut buf = vec![0u8; x.len()];
+    let mut pos = 0usize;
+    for &a in w {
+        buf.iter_mut().zip(x).for_each(|(o, &b)| *o = f(a, b) as u8);
+        for c in buf.chunks(64) {
+            let v = c.iter().enumerate().fold(0u64, |acc, (i, &b)| acc | ((b as u64) << i));
+            let sh = pos % 64;
+            words[pos / 64] |= v << sh;
+            if sh != 0 && sh + c.len() > 64 {
+                words[pos / 64 + 1] |= v >> (64 - sh);
+            }
+            pos += c.len();
+        }
+    }
+    words
+}
+
+/// Integer-only table for + - × ⌊ ⌈ and < > ≠ = ≤ ≥ on Bit/I8/I16/I32 operands
+/// (shape not set). The arithmetic result range is known from the operand
+/// ranges (exact corners), so the output is written directly in the smallest
+/// type; comparisons are packed to Bit. None on non-integer input, other ops,
+/// or a range outside i32 (f64 path then handles it exactly).
+fn int_table(idx: usize, warr: &BqnArr, xarr: &BqnArr) -> Option<BqnArr> {
     let is_int = |a: &BqnArr| matches!(a.data, ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) | ArrData::Bit(_));
     if !is_int(warr) || !is_int(xarr) {
         return None;
     }
     let w = warr.i32_iter().ok()?;
     let x = xarr.i32_iter().ok()?;
-    let mut out: Vec<i32> = Vec::with_capacity(w.len() * x.len());
-    macro_rules! run {
-        ($op:expr) => {{
-            let op = $op;
-            for &a in &w {
-                let a = a as i64;
-                for &b in &x {
-                    out.push(i32::try_from(op(a, b as i64)).ok()?);
-                }
-            }
-        }};
+    let fill = Some(B::m_i32(0));
+    let mk = |data| Some(BqnArr { shape: vec![], data, fill });
+    if w.is_empty() || x.is_empty() {
+        return mk(if idx >= 12 { ArrData::Bit(vec![]) } else { ArrData::I32(vec![]) });
     }
-    match idx {
-        0 => run!(|a: i64, b: i64| a + b),
-        1 => run!(|a: i64, b: i64| a - b),
-        2 => run!(|a: i64, b: i64| a * b),
-        6 => run!(|a: i64, b: i64| a.min(b)),
-        7 => run!(|a: i64, b: i64| a.max(b)),
+    if idx >= 12 {
+        let r = match idx {
+            12 => cmp_table(&w, &x, |a, b| a < b),
+            13 => cmp_table(&w, &x, |a, b| a > b),
+            14 => cmp_table(&w, &x, |a, b| a != b),
+            15 => cmp_table(&w, &x, |a, b| a == b),
+            16 => cmp_table(&w, &x, |a, b| a <= b),
+            _ => cmp_table(&w, &x, |a, b| a >= b),
+        };
+        return mk(ArrData::Bit(r));
+    }
+    let mm = |v: &[i32]| v.iter().fold((i32::MAX, i32::MIN), |(l, h), &e| (l.min(e), h.max(e)));
+    let ((wl, wh), (xl, xh)) = (mm(&w), mm(&x));
+    let (wl, wh, xl, xh) = (wl as i64, wh as i64, xl as i64, xh as i64);
+    let (lo, hi) = match idx {
+        0 => (wl + xl, wh + xh),
+        1 => (wl - xh, wh - xl),
+        2 => {
+            let p = [wl * xl, wl * xh, wh * xl, wh * xh];
+            (*p.iter().min()?, *p.iter().max()?)
+        }
+        6 => (wl.min(xl), wh.min(xh)),
+        7 => (wl.max(xl), wh.max(xh)),
         _ => return None,
+    };
+    if lo < i32::MIN as i64 || hi > i32::MAX as i64 {
+        return None;
     }
-    Some(out)
+    macro_rules! go {
+        ($t:ty) => {
+            match idx {
+                0 => tab(&w, &x, |a, b| a.wrapping_add(b) as $t),
+                1 => tab(&w, &x, |a, b| a.wrapping_sub(b) as $t),
+                2 => tab(&w, &x, |a, b| a.wrapping_mul(b) as $t),
+                6 => tab(&w, &x, |a, b| a.min(b) as $t),
+                _ => tab(&w, &x, |a, b| a.max(b) as $t),
+            }
+        };
+    }
+    if lo >= 0 && hi <= 1 {
+        let r: Vec<u8> = go!(u8);
+        mk(ArrData::Bit(pack_bytes(&r)))
+    } else if lo >= i8::MIN as i64 && hi <= i8::MAX as i64 {
+        mk(ArrData::I8(go!(i8)))
+    } else if lo >= i16::MIN as i64 && hi <= i16::MAX as i64 {
+        mk(ArrData::I16(go!(i16)))
+    } else {
+        mk(ArrData::I32(go!(i32)))
+    }
 }
