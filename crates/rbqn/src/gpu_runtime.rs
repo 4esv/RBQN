@@ -68,6 +68,34 @@ pub fn gpu_safe_integer(data: &[f64]) -> bool {
     })
 }
 
+/// Largest absolute value in an integer-safe array (see `gpu_safe_arr`), or None for
+/// types the GPU never takes.
+fn max_abs_int(arr: &BqnArr) -> Option<f64> {
+    Some(match &arr.data {
+        ArrData::Bit(_) => 1.0,
+        ArrData::I8(v) => v.iter().map(|&x| (x as f64).abs()).fold(0.0, f64::max),
+        ArrData::I16(v) => v.iter().map(|&x| (x as f64).abs()).fold(0.0, f64::max),
+        ArrData::I32(v) => v.iter().map(|&x| (x as f64).abs()).fold(0.0, f64::max),
+        ArrData::F64(v) => v.iter().map(|&x| x.abs()).fold(0.0, f64::max),
+        _ => return None,
+    })
+}
+
+/// True when every partial sum over `arr` fits in i32, so a GPU add-scan or
+/// add-reduce accumulating in i32 cannot overflow. BUG(fixed): the GPU scan
+/// returned 24290808380480 for `+´+`↕10000000` because only the inputs were bounded.
+fn gpu_sum_fits_i32(arr: &BqnArr) -> bool {
+    match max_abs_int(arr) {
+        Some(m) => m * (arr.ia() as f64) < 2_147_483_648.0,
+        None => false,
+    }
+}
+
+/// True when an i32 product-reduce over `arr` cannot overflow: every |x| ≤ 1.
+fn gpu_product_fits_i32(arr: &BqnArr) -> bool {
+    matches!(max_abs_int(arr), Some(m) if m <= 1.0)
+}
+
 /// Returns true if the array can be safely dispatched to GPU as i32 data.
 /// Integer-typed arrays (I8/I16/I32/Bit) are always safe.
 /// F64 arrays are safe only when all values pass `gpu_safe_integer`.
@@ -332,6 +360,10 @@ fn gpu_fold_inner(f: B, arr: &BqnArr) -> Option<B> {
         7 => "max", // ceil
         _ => return None,
     };
+    // The kernels accumulate in i32; bound the result, not just the inputs.
+    if (op == "add" && !gpu_sum_fits_i32(arr)) || (op == "mul" && !gpu_product_fits_i32(arr)) {
+        return None;
+    }
     let buf = arr_to_gpu_i32(gpu, arr)?;
     let result_buf = {
         let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -374,6 +406,10 @@ fn gpu_scan_inner(f: B, arr: &BqnArr) -> Option<B> {
     match prim_idx_of(f)? {
         0 => {}
         _ => return None,
+    }
+    // Prefix sums accumulate in i32; every partial sum must fit.
+    if !gpu_sum_fits_i32(arr) {
+        return None;
     }
     let buf = arr_to_gpu_i32(gpu, arr)?;
     let result_buf = {
