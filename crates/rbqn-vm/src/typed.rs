@@ -62,13 +62,155 @@ fn get_num(arr: &BqnArr, i: usize) -> Option<f64> {
     })
 }
 
+/// Integer-typed (I8/I16/I32/Bit) arrays only.
+fn is_int_arr(arr: &BqnArr) -> bool {
+    matches!(arr.data, ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) | ArrData::Bit(_))
+}
+
+/// Largest magnitude at which every integer is exactly representable in f64.
+const EXACT: i64 = 1 << 53;
+
+/// Number of set bits among the first n bits of a packed Bit array.
+fn bit_count(v: &[u64], n: usize) -> i64 {
+    let full = n / 64;
+    let mut c: i64 = v[..full].iter().map(|w| w.count_ones() as i64).sum();
+    if n % 64 != 0 {
+        c += (v[full] & ((1u64 << (n % 64)) - 1)).count_ones() as i64;
+    }
+    c
+}
+
+/// Exact i64 fold for + × ⌊ ⌈ over integer arrays. All of these are
+/// associative and commutative on integers, so order does not matter.
+/// None when not applicable (non-integer init, × leaving the exactly
+/// representable range) so the caller falls back to the f64 chain.
+fn int_fold(idx: usize, arr: &BqnArr, init: Option<f64>) -> Option<f64> {
+    if !is_int_arr(arr) || !matches!(idx, ADD | MUL | MIN | MAX) {
+        return None;
+    }
+    let n = arr.ia();
+    let init = match init {
+        Some(a) if a.fract() == 0.0 && a.abs() < EXACT as f64 => Some(a as i64),
+        Some(_) => return None,
+        None => None,
+    };
+    let r: i64 = match (&arr.data, idx) {
+        (ArrData::I32(v), ADD) => v.iter().map(|&a| a as i64).sum::<i64>() + init.unwrap_or(0),
+        (ArrData::I16(v), ADD) => v.iter().map(|&a| a as i64).sum::<i64>() + init.unwrap_or(0),
+        (ArrData::I8(v), ADD) => v.iter().map(|&a| a as i64).sum::<i64>() + init.unwrap_or(0),
+        (ArrData::Bit(v), ADD) => bit_count(v, n) + init.unwrap_or(0),
+        (ArrData::Bit(v), MAX) => {
+            let c = (bit_count(v, n) > 0) as i64;
+            init.map_or(c, |i| i.max(c))
+        }
+        (ArrData::Bit(v), MIN) => {
+            let c = (bit_count(v, n) == n as i64) as i64;
+            init.map_or(c, |i| i.min(c))
+        }
+        (ArrData::Bit(v), MUL) => {
+            let c = (bit_count(v, n) == n as i64) as i64;
+            init.map_or(c, |i| i * c)
+        }
+        (ArrData::I32(v), MAX) => v.iter().copied().max().map(|a| a as i64).into_iter().chain(init).max()?,
+        (ArrData::I16(v), MAX) => v.iter().copied().max().map(|a| a as i64).into_iter().chain(init).max()?,
+        (ArrData::I8(v), MAX) => v.iter().copied().max().map(|a| a as i64).into_iter().chain(init).max()?,
+        (ArrData::I32(v), MIN) => v.iter().copied().min().map(|a| a as i64).into_iter().chain(init).min()?,
+        (ArrData::I16(v), MIN) => v.iter().copied().min().map(|a| a as i64).into_iter().chain(init).min()?,
+        (ArrData::I8(v), MIN) => v.iter().copied().min().map(|a| a as i64).into_iter().chain(init).min()?,
+        (_, MUL) => {
+            // Every partial product must stay exactly representable in f64 so
+            // the result equals the f64 chain; otherwise fall back.
+            let mut acc = init.unwrap_or(1);
+            let ok = match &arr.data {
+                ArrData::I32(v) => v.iter().all(|&a| mul_exact(&mut acc, a as i64)),
+                ArrData::I16(v) => v.iter().all(|&a| mul_exact(&mut acc, a as i64)),
+                ArrData::I8(v) => v.iter().all(|&a| mul_exact(&mut acc, a as i64)),
+                _ => false,
+            };
+            if !ok {
+                return None;
+            }
+            acc
+        }
+        _ => return None,
+    };
+    if r.abs() > EXACT && idx != ADD {
+        return None;
+    }
+    Some(r as f64)
+}
+
+#[inline]
+fn mul_exact(acc: &mut i64, a: i64) -> bool {
+    match acc.checked_mul(a) {
+        Some(p) if p.abs() <= EXACT => {
+            *acc = p;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Same observable result as squeeze_num on the f64 values.
+fn squeeze_i64(v: Vec<i64>) -> BqnArr {
+    let (mn, mx) = v.iter().fold((i64::MAX, i64::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+    if mn >= 0 && mx <= 1 {
+        let mut words = vec![0u64; v.len().div_ceil(64)];
+        for (i, &x) in v.iter().enumerate() {
+            words[i / 64] |= (x as u64) << (i % 64);
+        }
+        BqnArr { shape: vec![v.len()], data: ArrData::Bit(words), fill: None }
+    } else if mn >= i8::MIN as i64 && mx <= i8::MAX as i64 {
+        BqnArr { shape: vec![v.len()], data: ArrData::I8(v.iter().map(|&x| x as i8).collect()), fill: None }
+    } else if mn >= i16::MIN as i64 && mx <= i16::MAX as i64 {
+        BqnArr { shape: vec![v.len()], data: ArrData::I16(v.iter().map(|&x| x as i16).collect()), fill: None }
+    } else if mn >= i32::MIN as i64 && mx <= i32::MAX as i64 {
+        BqnArr::new_vec_i32(v.iter().map(|&x| x as i32).collect())
+    } else {
+        BqnArr::new_vec_f64(v.iter().map(|&x| x as f64).collect())
+    }
+}
+
+/// Exact i64 scan for + ⌊ ⌈ over integer arrays (n ≥ 1).
+fn int_scan(idx: usize, arr: &BqnArr) -> Option<BqnArr> {
+    if !is_int_arr(arr) || !matches!(idx, ADD | MIN | MAX) {
+        return None;
+    }
+    let n = arr.ia();
+    let mut out: Vec<i64> = Vec::with_capacity(n);
+    macro_rules! run {
+        ($it:expr) => {{
+            let mut it = $it;
+            let mut acc: i64 = it.next()?;
+            out.push(acc);
+            match idx {
+                ADD => for a in it { acc += a; out.push(acc); },
+                MIN => for a in it { acc = acc.min(a); out.push(acc); },
+                _ => for a in it { acc = acc.max(a); out.push(acc); },
+            }
+        }};
+    }
+    match &arr.data {
+        ArrData::I32(v) => run!(v.iter().map(|&a| a as i64)),
+        ArrData::I16(v) => run!(v.iter().map(|&a| a as i64)),
+        ArrData::I8(v) => run!(v.iter().map(|&a| a as i64)),
+        ArrData::Bit(v) => run!((0..n).map(|i| ((v[i / 64] >> (i % 64)) & 1) as i64)),
+        _ => return None,
+    }
+    Some(squeeze_i64(out))
+}
+
 /// F´ (or 𝕨 F´) on a numeric list with F one of + × ⌊ ⌈ ∧ ∨.
 /// Returns None when the fast path does not apply.
 pub fn fold(f: B, arr: &BqnArr, init: Option<f64>) -> Option<B> {
     if arr.rank() != 1 || (init.is_none() && arr.ia() == 0) {
         return None;
     }
-    let r = match native_fn_idx(f)? {
+    let idx = native_fn_idx(f)?;
+    if let Some(r) = int_fold(idx, arr, init) {
+        return Some(B::m_f64(r));
+    }
+    let r = match idx {
         ADD => fold_with(arr, init, |a, b| a + b),
         MUL | AND => fold_with(arr, init, |a, b| a * b),
         MIN => fold_with(arr, init, f64::min),
@@ -104,7 +246,12 @@ pub fn scan(f: B, arr: &BqnArr) -> Option<BqnArr> {
     if arr.rank() != 1 || arr.ia() == 0 {
         return None;
     }
-    let r = match native_fn_idx(f)? {
+    let idx = native_fn_idx(f)?;
+    if let Some(mut out) = int_scan(idx, arr) {
+        out.fill = arr.fill;
+        return Some(out);
+    }
+    let r = match idx {
         ADD => scan_with(arr, |a, b| a + b),
         MUL | AND => scan_with(arr, |a, b| a * b),
         MIN => scan_with(arr, f64::min),
