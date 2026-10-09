@@ -57,20 +57,63 @@ impl Drop for SummaryGuard {
     }
 }
 
-/// Record CLI GPU settings. Called from main.rs after CLI parse.
-/// The device itself is created lazily by `get()` on the first dispatch that
-/// passes its size threshold, so startup never pays for adapter/device setup.
+/// Background device init started by `init()`; joined by the first `get()`.
+static INIT_THREAD: Mutex<Option<std::thread::JoinHandle<Option<GpuRuntime>>>> = Mutex::new(None);
+
+/// Create the context and cache. Pure device work: it never touches the
+/// interpreter's thread-local registries.
+fn build_runtime() -> Option<GpuRuntime> {
+    let t_init = std::time::Instant::now();
+    let ctx = pollster::block_on(GpuContext::new())?;
+    rbqn_gpu::stats::DEVICE_INIT_US.store(t_init.elapsed().as_micros() as u64, Ordering::Relaxed);
+    let cache = Mutex::new(PipelineCache::new(ctx.device.clone()));
+    Some(GpuRuntime { ctx, cache })
+}
+
+/// Compile the i32 arith/reduce/scan pipelines by running them once on tiny buffers.
+/// NOTE: the dispatch/submit counters include these warmup runs.
+fn precompile(rt: &GpuRuntime) {
+    use rbqn_gpu::kernels::{arith, reduce, scan};
+    let (d, q) = (&rt.ctx.device, &rt.ctx.queue);
+    let mut cache = rt.cache.lock().unwrap_or_else(|e| e.into_inner());
+    // Larger than one scan workgroup so the block-sum and propagate pipelines compile too.
+    let data = vec![1i32; 4096];
+    let a = upload_i32(d, q, &data);
+    let out = GpuBuffer::storage(d, ElementKind::I32, data.len());
+    for op in ["add", "sub", "mul"] {
+        arith::arith_binary(d, q, &mut cache, op, &a, &a, &out);
+    }
+    for op in ["add", "max", "min"] {
+        let _ = reduce::reduce(d, q, &mut cache, op, &a);
+    }
+    let _ = scan::inclusive_scan(d, q, &mut cache, &a);
+}
+
+/// Record CLI GPU settings and start device creation on a background thread so
+/// it overlaps the compile phase. Disabled (`--no-gpu`, RBQN_GPU=off): no thread.
+/// `get()` joins the thread on the first dispatch that needs the device.
 pub fn init(no_gpu: bool) {
     if std::env::var("RBQN_GPU_DEBUG").is_ok() {
         GPU_DEBUG.store(true, Ordering::Relaxed);
     }
     if no_gpu || gpu_mode() == GpuMode::Off {
         GPU_DISABLED.store(true, Ordering::Relaxed);
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("rbqn-gpu-init".into()).spawn(|| {
+        let rt = std::panic::catch_unwind(build_runtime).ok().flatten();
+        if let Some(rt) = &rt {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| precompile(rt)));
+        }
+        rt
+    });
+    if let Ok(h) = spawned {
+        *INIT_THREAD.lock().unwrap() = Some(h);
     }
 }
 
-/// Get the GPU runtime, creating it on first call. None when disabled
-/// (`--no-gpu`) or when no adapter is available.
+/// Get the GPU runtime, waiting for the init thread on first call. None when
+/// disabled (`--no-gpu`) or when no adapter is available.
 /// NOTE: Callers must apply their size threshold before calling this.
 pub fn get() -> Option<&'static GpuRuntime> {
     if GPU_DISABLED.load(Ordering::Relaxed) {
@@ -78,14 +121,15 @@ pub fn get() -> Option<&'static GpuRuntime> {
     }
     GPU_RUNTIME
         .get_or_init(|| {
-            if debug_enabled() {
-                eprintln!("[gpu] initializing device on thread {:?}", std::thread::current().name());
+            let handle = INIT_THREAD.lock().ok().and_then(|mut g| g.take());
+            let rt = match handle {
+                Some(h) => h.join().ok().flatten(),
+                None => build_runtime(),
+            };
+            if rt.is_none() && debug_enabled() {
+                eprintln!("[gpu] device init failed; using CPU path");
             }
-            let t_init = std::time::Instant::now();
-            let ctx = pollster::block_on(GpuContext::new())?;
-            rbqn_gpu::stats::DEVICE_INIT_US.store(t_init.elapsed().as_micros() as u64, Ordering::Relaxed);
-            let cache = Mutex::new(PipelineCache::new(ctx.device.clone()));
-            Some(GpuRuntime { ctx, cache })
+            rt
         })
         .as_ref()
 }
