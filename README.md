@@ -6,15 +6,15 @@ A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array langu
 
 ## What works
 
-- **Self-hosting** — compiles its own BQN compiler, runtime, and formatter. No external BQN implementation needed to build. Fixpoint-verified (round 2 produces identical bytecode).
-- **All primitives** — arithmetic, comparison, structural (`⥊↑↓↕⌽⍉`), search/sort (`⊐⊒∊⍋⍒`), modifiers (`˘¨⌜´˝`), combinators (`∘○⊸⟜⊘◶⍟`), etc.
-- **System values** — `•BQN`, `•Show`, `•Out`, `•Fmt`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•args`, `•Exit`
-- **`•math` namespace** — `Sin`, `Cos`, `Tan`, `ASin`, `ACos`, `ATan`, `Log`, `Cbrt`, `Hypot`, `Erf`, `Comb`, `MatMul`, `Softmax`, `Pi`
-- **`•file` namespace** — `Lines`, `Chars`, `Bytes`, `List`, `At`, `Name`, `Parent`, `Exists`, `Type`, `CreateDir`, `Remove`, `Rename`
-- **`•term` namespace** — `RawMode`, `CharB`, `CharN`, `Flush`, `OutRaw`, `ErrRaw`
-- **`•bit` namespace** — `_cast`, `_not`, `_neg`, and binary bit operations across widths
-- **Other** — `•Import`, `•ParseFloat`, `•Hash`, `•FromUTF8`, `•ToUTF8`, inverse (`⁼`) for many primitives, headers/predicates, block bodies, REPL
-- **GPU kernels** (wgpu) — elementwise arithmetic, reductions, prefix scan, sort, gather, softmax, matmul. Auto-dispatches to GPU above size thresholds (~10M+ elements on Apple Silicon). Fused kernel support.
+- **Self-hosting**: compiles its own BQN compiler, runtime, and formatter. No external BQN implementation needed to build. Fixpoint-verified (round 2 produces identical bytecode).
+- **All primitives**: arithmetic, comparison, structural (`⥊↑↓↕⌽⍉`), search/sort (`⊐⊒∊⍋⍒`), modifiers (`˘¨⌜´˝`), combinators (`∘○⊸⟜⊘◶⍟`), etc.
+- **System values**: `•BQN`, `•Show`, `•Out`, `•Fmt`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•args`, `•Exit`
+- **`•math` namespace**: `Sin`, `Cos`, `Tan`, `ASin`, `ACos`, `ATan`, `Log`, `Cbrt`, `Hypot`, `Erf`, `Comb`, `MatMul`, `Softmax`, `Pi`
+- **`•file` namespace**: `Lines`, `Chars`, `Bytes`, `List`, `At`, `Name`, `Parent`, `Exists`, `Type`, `CreateDir`, `Remove`, `Rename`
+- **`•term` namespace**: `RawMode`, `CharB`, `CharN`, `Flush`, `OutRaw`, `ErrRaw`
+- **`•bit` namespace**: `_cast`, `_not`, `_neg`, and binary bit operations across widths
+- **Other**: `•Import`, `•ParseFloat`, `•Hash`, `•FromUTF8`, `•ToUTF8`, inverse (`⁼`) for many primitives, headers/predicates, block bodies, REPL
+- **GPU kernels** (wgpu): elementwise arithmetic, reductions, prefix scan, sort, gather, softmax, matmul. Auto-dispatches to GPU above size thresholds (~10M+ elements on Apple Silicon). Fused kernel support.
 
 ## What doesn't
 
@@ -24,7 +24,7 @@ A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array langu
 - `•file.Open` not implemented
 - Error messages are often unhelpful
 - No namespace support beyond the built-in ones
-- Edge cases in lesser-used primitives — passes most but not all of the BQN test suite
+- Edge cases in lesser-used primitives: passes most but not all of the BQN test suite
 
 ## Usage
 
@@ -77,7 +77,7 @@ BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -
 
 **BQN** was designed by [Marshall Lochbaum](https://mlochbaum.github.io/). The language spec, compiler source (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`), and reference test suite are his work and are licensed under the ISC License. RBQN embeds bytecode compiled from those source files. The language itself is Marshall's creation.
 
-**CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN was originally bootstrapped from CBQN-compiled bytecode and is now self-hosting. CBQN's internals — the bytecode format, provide array layout, and runtime structure documented in `load.c` — were essential reference material throughout development.
+**CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN was originally bootstrapped from CBQN-compiled bytecode and is now self-hosting. CBQN's internals, the bytecode format, provide array layout, and runtime structure documented in `load.c`, were essential reference material throughout development.
 
 - BQN: https://mlochbaum.github.io/BQN/
 - CBQN: https://github.com/dzaima/CBQN

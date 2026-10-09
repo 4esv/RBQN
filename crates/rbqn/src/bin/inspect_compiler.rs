@@ -55,6 +55,7 @@ fn dump_summary(path: &str) {
 }
 
 fn main() {
-    dump_summary("$HOME/Code/forks/RBQN/crates/rbqn/src/embedded/compiler.bin");
-    dump_summary("$HOME/Code/forks/RBQN/crates/rbqn/src/embedded/self-compiled/compiler.bin");
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/embedded");
+    dump_summary(&format!("{root}/compiler.bin"));
+    dump_summary(&format!("{root}/self-compiled/compiler.bin"));
 }
