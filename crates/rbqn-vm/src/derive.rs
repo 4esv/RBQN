@@ -713,7 +713,7 @@ pub fn c1(f: B, x: B) -> B {
                         .unwrap_or_else(|| prim.glyph.to_string());
                     eprintln!("[PRIM c1] {} x={}", glyph, crate::vm::fmt_b_short(x));
                 }
-                let result = match c1_fn(x, x_arr.as_ref()) {
+                let result = match c1_fn(x, x_arr.as_deref()) {
                     Ok(r) => r,
                     Err(e) => rbqn_core::error::throw_bqn(e),
                 };
@@ -914,7 +914,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     eprintln!("[PRIM c2] w={} {} x={} (prim_idx={})",
                         crate::vm::fmt_b_short(w), glyph, crate::vm::fmt_b_short(x), prim_idx);
                 }
-                let result = match c2_fn(w, w_arr.as_ref(), x, x_arr.as_ref()) {
+                let result = match c2_fn(w, w_arr.as_deref(), x, x_arr.as_deref()) {
                     Ok(r) => r,
                     Err(e) => {
                         if crate::vm::prim_trace_enabled() {
@@ -1108,7 +1108,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
     let x_arr = crate::vm::get_arr(x);
     match idx {
         0 => { // •Type
-            call_prim(rbqn_prim::sysfn::type_fn(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::sysfn::type_fn(x, x_arr.as_deref()))
         }
         1 => { // •Decompose
             dispatch_sys_decompose_c1(x)
@@ -1120,7 +1120,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             dispatch_sys_primind_c1(x)
         }
         7 => { // •Fill / •FillFn
-            call_prim(rbqn_prim::sysfn::fill_fn(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::sysfn::fill_fn(x, x_arr.as_deref()))
         }
         8 => { // setInvReg: stores x (a BQN function) as the inverse-reg resolver,
                // returns nativeInvReg (sys_idx=10)
@@ -1160,10 +1160,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             m_lazy_inv_swap(x)
         }
         22 => { // •_groupLen
-            call_prim(rbqn_prim::group::group_len(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::group::group_len(x, x_arr.as_deref()))
         }
         23 => { // •_groupOrd
-            call_prim(rbqn_prim::group::group_ord(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::group::group_ord(x, x_arr.as_deref()))
         }
         // NOTE: •ReBQN (alias for •BQN for now)
         31 => {
@@ -1326,20 +1326,20 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             native_repr_c1(x)
         }
         201 => { // Internal: /⁼ (inverse of indices)
-            call_prim(rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_deref()))
         }
         // NOTE: Internal inverse functions registered in native_inverse_reg
         202 => { // ⋆⁼ = ln(x) — natural logarithm
-            call_prim(rbqn_prim::arith_monad::log_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::arith_monad::log_c1(x, x_arr.as_deref()))
         }
         203 => { // √⁼ = x^2 — square
-            call_prim(rbqn_prim::arith_monad::square_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::arith_monad::square_c1(x, x_arr.as_deref()))
         }
         204 => { // +˜⁼ = x÷2 — halve
-            call_prim(rbqn_prim::arith_monad::halve_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::arith_monad::halve_c1(x, x_arr.as_deref()))
         }
         205 => { // ⍉⁼ = inverse transpose (rank≤2: same as ⍉; rank>2: move first axis to last)
-            call_prim(rbqn_prim::structural::transpose_inv_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::structural::transpose_inv_c1(x, x_arr.as_deref()))
         }
         206 => { // <⁼ = unbox: extract content from rank-0 array
             if let Some(ref arr) = x_arr {
@@ -1543,10 +1543,10 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             c2(inv_fn, w, x)
         }
         22 => { // •_groupLen dyadic: w is desired length, x is indices
-            dispatch_sys_group_len_c2(w, x, x_arr.as_ref())
+            dispatch_sys_group_len_c2(w, x, x_arr.as_deref())
         }
         23 => { // •_groupOrd dyadic: w is lengths, x is indices
-            dispatch_sys_group_ord_c2(w, w_arr.as_ref(), x, x_arr.as_ref())
+            dispatch_sys_group_ord_c2(w, w_arr.as_deref(), x, x_arr.as_deref())
         }
         // NOTE: •file.Lines dyadic — write array of strings to file
         50 => file_lines_c2(w, x),
@@ -1564,7 +1564,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             B::SENTINEL
         }
         201 => { // Internal: w /⁼ x (dyadic inverse of indices)
-            call_prim(rbqn_prim::slash::indices_inverse_c2(w, w_arr.as_ref(), x, x_arr.as_ref()))
+            call_prim(rbqn_prim::slash::indices_inverse_c2(w, w_arr.as_deref(), x, x_arr.as_deref()))
         }
         202 => { // Dyadic ⋆⁼: w⋆⁼x = log_w(x) = ln(x)/ln(w) — apply to each element pair
             // For numeric scalar args:
@@ -1657,12 +1657,12 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         145 => sh_exec_c2(w, x),
         // NOTE: w(+˜)⁼x = x - w  (dyadic: +˜ swaps: w +˜ y = y+w, inverse = y = x - w)
         204 => {
-            call_prim(rbqn_prim::arith_dyad::sub_c2(x, x_arr.as_ref(), w, w_arr.as_ref()))
+            call_prim(rbqn_prim::arith_dyad::sub_c2(x, x_arr.as_deref(), w, w_arr.as_deref()))
         }
         // NOTE: w√⁼x = x^w (dyadic sqrt-inverse = power with args swapped)
         // √⁼ monadic is x^2 (sys 203 c1); dyadic is x raised to the power w.
         203 => {
-            call_prim(rbqn_prim::arith_dyad::pow_c2(x, x_arr.as_ref(), w, w_arr.as_ref()))
+            call_prim(rbqn_prim::arith_dyad::pow_c2(x, x_arr.as_deref(), w, w_arr.as_deref()))
         }
         205 => { // w⍉⁼x = inverse-permutation(w)⍉x
             // For a bijective permutation p, inv_perm[j] = i where p[i] = j.
@@ -1698,7 +1698,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                             let inv_arr = rbqn_core::array::BqnArr::new_vec_i32(inv_perm);
                             let inv_b = crate::vm::tag_arr(inv_arr);
                             let inv_b_arr = crate::vm::get_arr(inv_b);
-                            return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref()));
+                            return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_deref(), x, x_arr.as_deref()));
                         }
                     }
             // Partial permutation (len(w) < rank(x)): extend to full permutation, then invert.
@@ -1742,7 +1742,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                     let inv_arr = rbqn_core::array::BqnArr::new_vec_i32(inv_perm);
                     let inv_b = crate::vm::tag_arr(inv_arr);
                     let inv_b_arr = crate::vm::get_arr(inv_b);
-                    return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref()));
+                    return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_deref(), x, x_arr.as_deref()));
                 }
             }
             rbqn_core::error::throw("⍉⁼: cannot compute inverse for given permutation")

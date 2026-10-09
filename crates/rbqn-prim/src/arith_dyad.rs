@@ -86,7 +86,7 @@ fn pervasive_boxed_scalar_arr(
     for i in 0..n {
         let xi = xa_arr.get(i)?;
         let xi_arr = get_arr(xi);
-        let r = pervasive_dyad(w_eff, w_eff_arr_opt.as_ref(), xi, xi_arr.as_ref(), scalar_fn, name)?;
+        let r = pervasive_dyad(w_eff, w_eff_arr_opt.as_deref(), xi, xi_arr.as_deref(), scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
     let result_fill = pervasive_fill(&results, xa_arr.fill);
@@ -112,7 +112,7 @@ fn pervasive_boxed_arr_scalar(
             for i in 0..n {
                 let wi = wa_arr.get(i)?;
                 let wi_arr = get_arr(wi);
-                let r = pervasive_dyad(wi, wi_arr.as_ref(), x_content, x_content_arr.as_ref(), scalar_fn, name)?;
+                let r = pervasive_dyad(wi, wi_arr.as_deref(), x_content, x_content_arr.as_deref(), scalar_fn, name)?;
                 results.push(prim_result_to_b(r));
             }
             let result_fill = pervasive_fill(&results, wa_arr.fill);
@@ -124,7 +124,7 @@ fn pervasive_boxed_arr_scalar(
     for i in 0..n {
         let wi = wa_arr.get(i)?;
         let wi_arr = get_arr(wi);
-        let r = pervasive_dyad(wi, wi_arr.as_ref(), x, None, scalar_fn, name)?;
+        let r = pervasive_dyad(wi, wi_arr.as_deref(), x, None, scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
     let result_fill = pervasive_fill(&results, wa_arr.fill);
@@ -151,7 +151,7 @@ fn pervasive_boxed_arr_arr(
         let xi = xa_arr.get(i)?;
         let wi_arr = get_arr(wi);
         let xi_arr = get_arr(xi);
-        let r = pervasive_dyad(wi, wi_arr.as_ref(), xi, xi_arr.as_ref(), scalar_fn, name)?;
+        let r = pervasive_dyad(wi, wi_arr.as_deref(), xi, xi_arr.as_deref(), scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
     // NOTE: Compute fill from result elements (not wa_arr.fill) since the result
@@ -192,11 +192,11 @@ fn pervasive_dyad(
             // If either side is a box (rank-0 array), open it and recurse.
             if x.is_arr() {
                 let xa_arr = get_arr(x);
-                return pervasive_dyad(w, None, x, xa_arr.as_ref(), scalar_fn, name);
+                return pervasive_dyad(w, None, x, xa_arr.as_deref(), scalar_fn, name);
             }
             if w.is_arr() {
                 let wa_arr = get_arr(w);
-                return pervasive_dyad(w, wa_arr.as_ref(), x, None, scalar_fn, name);
+                return pervasive_dyad(w, wa_arr.as_deref(), x, None, scalar_fn, name);
             }
             let wf = w.to_f64().map_err(|_| BqnError::Type(format!("𝕨{name}𝕩: Unexpected argument types")))?;
             let xf = x.to_f64().map_err(|_| BqnError::Type(format!("𝕨{name}𝕩: Unexpected argument types")))?;
@@ -368,7 +368,7 @@ fn pervasive_mixed_boxed(
                 for i in 0..n {
                     let xi = xa_a.get(i).unwrap_or(B::SENTINEL);
                     let xi_a = get_arr(xi);
-                    results.push(to_b(op_fn(inner, inner_arr.as_ref(), xi, xi_a.as_ref())?));
+                    results.push(to_b(op_fn(inner, inner_arr.as_deref(), xi, xi_a.as_deref())?));
                 }
                 let result_fill = results.first().copied().map(crate::structural::prototype_of);
                 return Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, xa_a.shape.clone(), result_fill)));
@@ -382,7 +382,7 @@ fn pervasive_mixed_boxed(
                 for i in 0..n {
                     let wi = wa_a.get(i).unwrap_or(B::SENTINEL);
                     let wi_a = get_arr(wi);
-                    results.push(to_b(op_fn(wi, wi_a.as_ref(), inner, inner_arr.as_ref())?));
+                    results.push(to_b(op_fn(wi, wi_a.as_deref(), inner, inner_arr.as_deref())?));
                 }
                 let result_fill = results.first().copied().map(crate::structural::prototype_of);
                 return Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)));
@@ -399,7 +399,7 @@ fn pervasive_mixed_boxed(
                 let xi = xa_a.get(i)?;
                 let wi_a = get_arr(wi);
                 let xi_a = get_arr(xi);
-                results.push(to_b(op_fn(wi, wi_a.as_ref(), xi, xi_a.as_ref())?));
+                results.push(to_b(op_fn(wi, wi_a.as_deref(), xi, xi_a.as_deref())?));
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
             Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)))
@@ -411,7 +411,7 @@ fn pervasive_mixed_boxed(
             for i in 0..n {
                 let xi = xa_a.get(i)?;
                 let xi_a = get_arr(xi);
-                results.push(to_b(op_fn(w, w_a.as_ref(), xi, xi_a.as_ref())?));
+                results.push(to_b(op_fn(w, w_a.as_deref(), xi, xi_a.as_deref())?));
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
             Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, xa_a.shape.clone(), result_fill)))
@@ -423,7 +423,7 @@ fn pervasive_mixed_boxed(
             for i in 0..n {
                 let wi = wa_a.get(i)?;
                 let wi_a = get_arr(wi);
-                results.push(to_b(op_fn(wi, wi_a.as_ref(), x, x_a.as_ref())?));
+                results.push(to_b(op_fn(wi, wi_a.as_deref(), x, x_a.as_deref())?));
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
             Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)))
@@ -432,7 +432,7 @@ fn pervasive_mixed_boxed(
             let wa2 = get_arr(w);
             let xa2 = get_arr(x);
             if wa2.is_some() || xa2.is_some() {
-                return pervasive_mixed_boxed(w, wa2.as_ref(), x, xa2.as_ref(), op_fn);
+                return pervasive_mixed_boxed(w, wa2.as_deref(), x, xa2.as_deref(), op_fn);
             }
             Err(BqnError::Type("Unexpected argument types".into()))
         }

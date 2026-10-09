@@ -640,7 +640,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let content = arr.get(0)?;
         if content.is_arr() {
             return match get_arr(content) {
-                Some(a) => Ok(PrimResult::Array(a)),
+                Some(a) => Ok(PrimResult::Array((*a).clone())),
                 None => Ok(PrimResult::Scalar(content)),
             };
         }

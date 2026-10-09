@@ -254,7 +254,7 @@ fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
         return results_to_arr(results, lead_shape);
     }
     // All arrays with same cell shape → merge into higher-rank
-    let arrs: Vec<BqnArr> = results.iter()
+    let arrs: Vec<std::sync::Arc<BqnArr>> = results.iter()
         .filter_map(|b| crate::vm::get_arr(*b))
         .collect();
     if arrs.len() == results.len() && !arrs.is_empty() {
@@ -278,7 +278,7 @@ fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
     crate::vm::tag_arr(out)
 }
 
-fn arr_of(x: B) -> BqnArr {
+fn arr_of(x: B) -> std::sync::Arc<BqnArr> {
     crate::vm::get_arr(x)
         .unwrap_or_else(|| rbqn_core::error::throw("Expected array argument"))
 }
@@ -789,7 +789,7 @@ fn scan_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
-        return crate::vm::tag_arr(arr.clone());
+        return crate::vm::tag_arr((*arr).clone());
     }
     let lead = arr.shape[0];
     if rank == 1 {
@@ -847,7 +847,7 @@ pub fn scan_inv_c1(f: B, x: B) -> B {
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
-        return crate::vm::tag_arr(arr.clone());
+        return crate::vm::tag_arr((*arr).clone());
     }
     let lead = arr.shape[0];
     if lead == 0 {
@@ -896,7 +896,7 @@ pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
-        return crate::vm::tag_arr(arr.clone());
+        return crate::vm::tag_arr((*arr).clone());
     }
     let lead = arr.shape[0];
     let f_inv = crate::derive::inv_reg(f);
@@ -1665,7 +1665,7 @@ fn pick_from(w: B, x: B) -> B {
     let c2_fn = pick_prim.c2.unwrap();
     let wa = crate::vm::get_arr(w);
     let xa = crate::vm::get_arr(x);
-    let result = c2_fn(w, wa.as_ref(), x, xa.as_ref())
+    let result = c2_fn(w, wa.as_deref(), x, xa.as_deref())
         .unwrap_or_else(|e| rbqn_core::error::throw(format!("◶: pick failed: {}", e)));
     match result {
         rbqn_prim::PrimResult::Scalar(b) => b,

@@ -1001,7 +1001,7 @@ fn bqn_merge(elems: Vec<B>) -> B {
     }
     // If all elements are arrays, merge them
     if elems.iter().all(|b| b.is_arr()) {
-        let arrs: Vec<BqnArr> = elems.iter().filter_map(|b| get_arr(*b)).collect();
+        let arrs: Vec<std::sync::Arc<BqnArr>> = elems.iter().filter_map(|b| get_arr(*b)).collect();
         if arrs.len() == elems.len() {
             let inner_shape = &arrs[0].shape;
             let inner_ia: usize = inner_shape.iter().product();
@@ -1031,7 +1031,7 @@ pub fn tag_arr(arr: BqnArr) -> B {
     rbqn_core::tag_arr(arr)
 }
 
-pub fn get_arr(b: B) -> Option<BqnArr> {
+pub fn get_arr(b: B) -> Option<std::sync::Arc<BqnArr>> {
     rbqn_core::get_arr(b)
 }
 

@@ -20,7 +20,7 @@ pub fn first_cell_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             if v.is_arr() {
                 // Return the inner array directly
                 if let Some(inner) = get_arr(v) {
-                    return Ok(PrimResult::Array(inner));
+                    return Ok(PrimResult::Array((*inner).clone()));
                 }
             }
             return Ok(PrimResult::Scalar(v));
