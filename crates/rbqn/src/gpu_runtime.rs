@@ -10,6 +10,9 @@ use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::expr::Expr;
 use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
 use rbqn_gpu::pipeline::PipelineCache;
+use rbqn_gpu::dispatch::{Kind, Work};
+
+use crate::gpu_host::{self, HostLeaf, Source};
 
 // NOTE: Singleton GPU runtime — initialized lazily on first qualifying dispatch.
 pub struct GpuRuntime {
@@ -137,11 +140,62 @@ pub fn init(no_gpu: bool) {
         GPU_DISABLED.store(true, Ordering::Relaxed);
         return;
     }
+    let _ = INIT_START.set(std::time::Instant::now());
     let _ = std::thread::Builder::new().name("rbqn-gpu-init".into()).spawn(|| {
         if let Some(rt) = GPU_RUNTIME.get_or_init(build_runtime_logged) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| precompile(rt)));
         }
     });
+}
+
+static INIT_START: OnceLock<std::time::Instant> = OnceLock::new();
+
+/// False when the GPU is disabled or device creation already failed. Never blocks.
+fn gpu_possible() -> bool {
+    !GPU_DISABLED.load(Ordering::Relaxed) && !matches!(GPU_RUNTIME.get(), Some(None))
+}
+
+/// Part of device creation a dispatch issued now would still wait for (ms).
+fn exposed_init_ms() -> f64 {
+    if GPU_RUNTIME.get().is_some() {
+        return 0.0;
+    }
+    let el = INIT_START.get().map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e3);
+    (rbqn_gpu::dispatch::GPU_INIT_MS - el).max(0.0)
+}
+
+/// The Step 6 decision: run `w` on the GPU when its modelled cost beats the
+/// host's. Force mode always says GPU; `wide` trees need SHADER_INT64.
+fn decide(kind: Kind, w: &Work, wide: bool) -> bool {
+    if !gpu_possible() {
+        return false;
+    }
+    if wide && let Some(Some(rt)) = GPU_RUNTIME.get() && !rt.ctx.shader_int64 {
+        return false;
+    }
+    let init = exposed_init_ms();
+    let g = rbqn_gpu::dispatch::gpu_ms(kind, w, init);
+    let c = rbqn_gpu::dispatch::cpu_ms(kind, w);
+    let gpu = gpu_mode() == GpuMode::Force || g < c;
+    if debug_enabled() {
+        eprintln!(
+            "[gpu] decide {} n={:e} ops={} gpu={g:.2}ms cpu={c:.2}ms (init {init:.1}ms) → {}",
+            kind.name(), w.n as f64, w.ops, if gpu { "gpu" } else { "cpu" }
+        );
+    }
+    gpu
+}
+
+/// `get()` after a GPU decision, logging how long the init thread was waited for.
+fn get_decided() -> Option<&'static GpuRuntime> {
+    if !debug_enabled() || GPU_RUNTIME.get().is_some() {
+        return get();
+    }
+    let t = std::time::Instant::now();
+    let r = get();
+    let since = INIT_START.get().map_or(0.0, |s| s.elapsed().as_secs_f64() * 1e3);
+    eprintln!("[gpu] init wait {:.2}ms ({since:.1}ms after init start)", t.elapsed().as_secs_f64() * 1e3);
+    r
 }
 
 /// Get the GPU runtime, waiting for device creation on first call. None when
@@ -348,6 +402,8 @@ pub struct GpuArr {
     maxb: f64,
     /// Evaluates (or is stored) as i64.
     wide: bool,
+    /// A fold/scan already decided this tree runs on the host.
+    host_pref: Cell<bool>,
 }
 
 enum State {
@@ -358,10 +414,35 @@ enum State {
 impl GpuArr {
     fn new(buf: Arc<GpuBuffer>, shape: Vec<usize>, fill: Option<B>, bound: f64) -> Self {
         let wide = buf.element_type() == ElementKind::I64;
-        GpuArr { state: RefCell::new(State::Buf(buf)), shape, fill, bound: Cell::new(bound), maxb: bound, wide }
+        GpuArr { state: RefCell::new(State::Buf(buf)), shape, fill, bound: Cell::new(bound), maxb: bound, wide, host_pref: Cell::new(false) }
     }
     fn lazy(e: Rc<Expr>, shape: Vec<usize>, fill: Option<B>, bound: f64, maxb: f64, wide: bool) -> Self {
-        GpuArr { state: RefCell::new(State::Lazy(e)), shape, fill, bound: Cell::new(bound), maxb, wide }
+        GpuArr { state: RefCell::new(State::Lazy(e)), shape, fill, bound: Cell::new(bound), maxb, wide, host_pref: Cell::new(false) }
+    }
+    fn lazy_expr(&self) -> Option<Rc<Expr>> {
+        match &*self.state.borrow() {
+            State::Lazy(e) => Some(e.clone()),
+            State::Buf(_) => None,
+        }
+    }
+    /// Evaluate a lazy tree for a consumer that needs a buffer-or-leaf (tree
+    /// over the node limit): GPU into a resident buffer, or the host into a
+    /// host leaf, by the cost model.
+    fn evaluate(&self) {
+        let Some(e) = self.lazy_expr() else { return };
+        if matches!(*e, Expr::Host(_)) {
+            return;
+        }
+        let w = tree_work(&e, self.n(), self.out_kind());
+        if !self.host_pref.get() && decide(Kind::Map, &w, self.wide)
+            && let Some(gpu) = get_decided()
+            && guarded("map", || Some(self.force(gpu))).is_some()
+        {
+            return;
+        }
+        let arr = Arc::new(BqnArr { shape: self.shape.clone(), data: self.host_eval(&e), fill: self.fill });
+        let leaf = HostLeaf { arr, key: 0, bound: self.bound.get() };
+        *self.state.borrow_mut() = State::Lazy(Rc::new(Expr::Host(Rc::new(leaf))));
     }
     fn n(&self) -> usize {
         self.shape.iter().product()
@@ -388,6 +469,7 @@ impl GpuArr {
             State::Lazy(e) => e.clone(),
         };
         let n = self.n();
+        let e = resolve(gpu, &e);
         let out = pooled_out(gpu, self.out_kind(), n);
         let r = {
             let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -397,28 +479,97 @@ impl GpuArr {
         *self.state.borrow_mut() = State::Buf(out.clone());
         out
     }
-    /// Host evaluation of the tree (fallback when the device path panicked).
-    fn host_eval(&self, gpu: &GpuRuntime, e: &Rc<Expr>) -> ArrData {
-        let leaves: Vec<(Arc<GpuBuffer>, Vec<i64>)> = rbqn_gpu::expr::leaves(e)
-            .into_iter()
-            .map(|b| {
-                let v = match b.element_type() {
-                    ElementKind::I64 => pollster::block_on(download_i64(&gpu.ctx.device, &gpu.ctx.queue, &b)),
-                    _ => pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &b))
-                        .into_iter().map(|x| x as i64).collect(),
-                };
-                (b, v)
-            })
-            .collect();
-        let v: Vec<i64> = (0..self.n())
-            .map(|i| {
-                rbqn_gpu::expr::eval_host(e, i, &|b| {
-                    leaves.iter().find(|(lb, _)| Arc::ptr_eq(lb, b)).map(|(_, d)| d[i]).unwrap_or(0)
-                })
-            })
-            .collect();
-        i64_to_data(v)
+    /// Host evaluation of the tree (the CPU side of a decision, and the
+    /// fallback when the device path panicked). Host leaves are read in place.
+    fn host_eval(&self, e: &Rc<Expr>) -> ArrData {
+        let n = self.n();
+        let prog = host_prog(e);
+        if self.wide {
+            i64_to_data(prog.eval_i64(n))
+        } else {
+            squeeze_i32(prog.eval_i32(n))
+        }
     }
+}
+
+/// Compile a tree for the host evaluator; device leaves are downloaded.
+fn host_prog(e: &Rc<Expr>) -> gpu_host::Prog {
+    gpu_host::compile(e, &mut |b| {
+        let gpu = get().expect("device leaf without a GPU runtime");
+        match b.element_type() {
+            ElementKind::I64 => Source::I64(pollster::block_on(download_i64(&gpu.ctx.device, &gpu.ctx.queue, b))),
+            _ => Source::I32(pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, b))),
+        }
+    })
+}
+
+/// Replace host leaves with uploaded buffers (cached by `B` bits), keeping
+/// shared nodes shared. Called only once the GPU path was chosen.
+fn resolve(gpu: &GpuRuntime, e: &Rc<Expr>) -> Rc<Expr> {
+    fn go(gpu: &GpuRuntime, e: &Rc<Expr>, memo: &mut Vec<(*const Expr, Rc<Expr>)>) -> Rc<Expr> {
+        let p = Rc::as_ptr(e);
+        if let Some((_, r)) = memo.iter().find(|(q, _)| *q == p) {
+            return r.clone();
+        }
+        let r = match &**e {
+            Expr::Host(h) => {
+                let leaf = h.downcast_ref::<HostLeaf>().expect("host leaf type");
+                let buf = upload_cached(gpu, leaf.key, &leaf.arr, leaf.bound);
+                Rc::new(Expr::Leaf(buf))
+            }
+            Expr::Bin(op, l, r) => {
+                let (nl, nr) = (go(gpu, l, memo), go(gpu, r, memo));
+                if Rc::ptr_eq(&nl, l) && Rc::ptr_eq(&nr, r) { e.clone() } else { Rc::new(Expr::Bin(*op, nl, nr)) }
+            }
+            _ => e.clone(),
+        };
+        memo.push((p, r.clone()));
+        r
+    }
+    go(gpu, e, &mut Vec::new())
+}
+
+/// Element/byte counts of a tree for the cost model.
+fn tree_work(e: &Rc<Expr>, n: usize, out: ElementKind) -> Work {
+    let mut seen: Vec<*const Expr> = Vec::new();
+    let mut w = Work { n, out_elem_bytes: if out == ElementKind::I64 { 8 } else { 4 }, ..Work::default() };
+    fn go(e: &Rc<Expr>, seen: &mut Vec<*const Expr>, w: &mut Work, srcs: &mut Vec<*const ()>) {
+        let p = Rc::as_ptr(e);
+        if seen.contains(&p) {
+            return;
+        }
+        seen.push(p);
+        match &**e {
+            Expr::Bin(_, l, r) => {
+                w.ops += 1;
+                go(l, seen, w, srcs);
+                go(r, seen, w, srcs);
+            }
+            Expr::Iota => w.leaves += 1,
+            Expr::Scalar(_) => {}
+            Expr::Leaf(b) => {
+                let k = Arc::as_ptr(b) as *const ();
+                if !srcs.contains(&k) {
+                    srcs.push(k);
+                    w.leaves += 1;
+                    w.dev_bytes += b.size() as usize;
+                }
+            }
+            Expr::Host(h) => {
+                let k = Rc::as_ptr(h) as *const ();
+                if !srcs.contains(&k) {
+                    srcs.push(k);
+                    w.leaves += 1;
+                    let leaf = h.downcast_ref::<HostLeaf>().expect("host leaf type");
+                    if !upload_is_cached(leaf.key) {
+                        w.up_bytes += 4 * leaf.arr.ia();
+                    }
+                }
+            }
+        }
+    }
+    go(e, &mut seen, &mut w, &mut Vec::new());
+    w
 }
 
 fn i64_to_data(v: Vec<i64>) -> ArrData {
@@ -458,11 +609,18 @@ impl DeviceValue for GpuArr {
             let data = ArrData::I32((0..self.n() as i32).collect());
             return BqnArr { shape: self.shape.clone(), data, fill: self.fill };
         }
-        let gpu = get().expect("pending GPU value without a GPU runtime");
-        let lazy = match &*self.state.borrow() {
-            State::Lazy(e) => Some(e.clone()),
-            State::Buf(_) => None,
-        };
+        let lazy = self.lazy_expr();
+        if let Some(e) = &lazy {
+            if let Expr::Host(h) = &**e {
+                let leaf = h.downcast_ref::<HostLeaf>().expect("host leaf type");
+                return (*leaf.arr).clone();
+            }
+            let w = tree_work(e, self.n(), self.out_kind());
+            if self.host_pref.get() || !decide(Kind::Materialize, &w, self.wide) {
+                return BqnArr { shape: self.shape.clone(), data: self.host_eval(e), fill: self.fill };
+            }
+        }
+        let gpu = get_decided().expect("pending GPU value without a GPU runtime");
         let dev = guarded("materialize", || {
             let buf = self.force(gpu);
             Some(match buf.element_type() {
@@ -476,7 +634,7 @@ impl DeviceValue for GpuArr {
                 if debug_enabled() {
                     eprintln!("[gpu] fused eval failed, host evaluation");
                 }
-                self.host_eval(gpu, &e)
+                self.host_eval(&e)
             }
             (None, None) => panic!("GPU readback failed"),
         };
@@ -565,30 +723,85 @@ struct Operand {
     wide: bool,
 }
 
+fn upload_is_cached(key: u64) -> bool {
+    key != 0 && UPLOAD_CACHE.with(|c| c.borrow().iter().any(|(k, _, _)| *k == key))
+}
+
+/// Upload a host leaf (an upload-cache hit when `key` was uploaded recently).
+fn upload_cached(gpu: &GpuRuntime, key: u64, arr: &BqnArr, bound: f64) -> Arc<GpuBuffer> {
+    if let Some(hit) = UPLOAD_CACHE.with(|c| c.borrow().iter().find(|(k, _, _)| key != 0 && *k == key).map(|(_, b, _)| b.clone())) {
+        return hit;
+    }
+    let (buf, _) = arr_to_gpu_i32_bound(gpu, arr).expect("host leaf is integer-safe");
+    let buf = Arc::new(buf);
+    if key != 0 {
+        UPLOAD_CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= UPLOAD_CACHE_LEN {
+                c.remove(0);
+            }
+            c.push((key, buf.clone(), bound));
+        });
+    }
+    buf
+}
+
+// Host leaves of recent host operands keyed by `B` bits, so `a+a` shares one
+// leaf (one upload, one read) and the max |v| pass runs once per array.
+std::thread_local! {
+    static HOST_LEAVES: RefCell<Vec<(u64, Rc<Expr>, f64)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A host array as a tree leaf (no upload): (leaf, exact max |v|).
+fn host_leaf(b: B, arr: &Arc<BqnArr>) -> Option<(Rc<Expr>, f64)> {
+    if let Some(hit) = HOST_LEAVES.with(|c| c.borrow().iter().find(|(k, _, _)| *k == b.0).map(|(_, e, m)| (e.clone(), *m))) {
+        return Some(hit);
+    }
+    // NOTE: a cached upload already knows the bound.
+    let bound = match UPLOAD_CACHE.with(|c| c.borrow().iter().find(|(k, _, _)| *k == b.0).map(|(_, _, m)| *m)) {
+        Some(m) => m,
+        None => gpu_host::max_abs(arr)?,
+    };
+    let arc = arr.clone();
+    let e = Rc::new(Expr::Host(Rc::new(HostLeaf { arr: arc, key: b.0, bound })));
+    HOST_LEAVES.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= UPLOAD_CACHE_LEN {
+            c.remove(0);
+        }
+        c.push((b.0, e.clone(), bound));
+    });
+    Some((e, bound))
+}
+
 /// Pending values contribute their tree (or their buffer as a leaf) without
-/// any dispatch; host arrays are uploaded as leaves.
-fn operand_expr(gpu: &GpuRuntime, b: B, host: Option<&BqnArr>) -> Option<Operand> {
+/// any dispatch; host arrays become host leaves (uploaded only if the GPU
+/// path is chosen later).
+fn operand_expr(b: B, host: Option<&Arc<BqnArr>>) -> Option<Operand> {
     if let Some(d) = peek_device(b) {
         let g = device_arr(&d)?;
         return Some(Operand { e: g.expr(), bound: g.bound.get(), maxb: g.maxb.max(g.bound.get()), wide: g.wide });
     }
-    let (buf, bound) = upload_operand(gpu, b, host)?;
-    Some(Operand { e: Rc::new(Expr::Leaf(buf)), bound, maxb: bound, wide: false })
+    let (e, bound) = host_leaf(b, host?)?;
+    Some(Operand { e, bound, maxb: bound, wide: false })
 }
 
-/// Evaluate a lazy operand to a buffer so the next tree starts from a leaf.
-fn force_operand(gpu: &GpuRuntime, b: B) {
+/// Evaluate a lazy operand (GPU buffer or host leaf) so the next tree starts from a leaf.
+fn force_operand(b: B) {
     if let Some(d) = peek_device(b)
         && let Some(g) = device_arr(&d)
     {
-        g.force(gpu);
+        g.evaluate();
     }
 }
 
-fn over_limit(gpu: &GpuRuntime, e: &Rc<Expr>) -> bool {
+fn over_limit(e: &Rc<Expr>) -> bool {
     let (nodes, leaves) = rbqn_gpu::expr::counts(e);
     // Bindings: leaves + scalars + out + partials.
-    let budget = (gpu.ctx.device.limits().max_storage_buffers_per_shader_stage as usize).saturating_sub(3);
+    let budget = match GPU_RUNTIME.get() {
+        Some(Some(gpu)) => (gpu.ctx.device.limits().max_storage_buffers_per_shader_stage as usize).saturating_sub(3),
+        _ => usize::MAX,
+    };
     nodes > rbqn_gpu::expr::MAX_NODES || leaves > rbqn_gpu::expr::MAX_LEAVES.min(budget)
 }
 
@@ -596,13 +809,14 @@ fn over_limit(gpu: &GpuRuntime, e: &Rc<Expr>) -> bool {
 /// (one tiny readback). Returns the new bound, or None when `b` is not a
 /// pending I32 buffer (host uploads already carry their exact max |v|; lazy
 /// trees are not evaluated for this).
-fn refine_bound(gpu: &GpuRuntime, b: B) -> Option<f64> {
+fn refine_bound(b: B) -> Option<f64> {
     let d = peek_device(b)?;
     let g = device_arr(&d)?;
     let buf = g.buf()?;
     if buf.element_type() != ElementKind::I32 || buf.is_empty() {
         return None;
     }
+    let gpu = get()?;
     let mm = {
         let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
         rbqn_gpu::kernels::minmax::minmax_i32(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &buf)
@@ -633,7 +847,6 @@ fn arith_bound(op: &str, wb: f64, xb: f64) -> f64 {
 /// When the tree outgrows MAX_NODES / MAX_LEAVES the operands are evaluated
 /// to buffers first and the node starts from two leaves.
 fn lazy_node(
-    gpu: &GpuRuntime,
     op: &str,
     mk: &dyn Fn() -> Option<(Operand, Operand)>,
     operands: &[B],
@@ -644,16 +857,15 @@ fn lazy_node(
     let eop = rbqn_gpu::expr::Op::from_name(op)?;
     let (mut l, mut r) = mk()?;
     let mut e = Rc::new(Expr::Bin(eop, l.e.clone(), r.e.clone()));
-    if over_limit(gpu, &e) {
+    if over_limit(&e) {
         for &b in operands {
-            force_operand(gpu, b);
+            force_operand(b);
         }
         (l, r) = mk()?;
         e = Rc::new(Expr::Bin(eop, l.e, r.e));
     }
     let maxb = l.maxb.max(r.maxb).max(bound);
     let wide = l.wide || r.wide || maxb >= I32_LIM;
-    if wide && !gpu.ctx.shader_int64 { return None; }
     if debug_enabled() {
         eprintln!("[gpu] lazy {op} ({})", if wide { "i64" } else { "i32" });
     }
@@ -666,7 +878,7 @@ fn lazy_node(
 /// when < 2^53, else None (CPU). `÷` is never taken (non-integer results).
 /// Registered as GPU_ARITH_HOOK in rbqn-prim at startup.
 pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
-    if gpu_mode() == GpuMode::Off || GPU_DISABLED.load(Ordering::Relaxed) { return None; }
+    if gpu_mode() == GpuMode::Off || !gpu_possible() { return None; }
     if !w.is_arr() { return gpu_arith_scalar(op, w.o2f(), true, x); }
     if !x.is_arr() { return gpu_arith_scalar(op, x.o2f(), false, w); }
     if !matches!(op, "add" | "sub" | "mul") { return None; }
@@ -678,18 +890,17 @@ pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
         if n == 0 || n >= i32::MAX as usize || !should_dispatch("arith", n) { return None; }
         if let Some(a) = &wh && !gpu_safe_arr(a) { return None; }
         if let Some(a) = &xh && !gpu_safe_arr(a) { return None; }
-        let gpu = get()?;
-        let mk = || Some((operand_expr(gpu, w, wh.as_deref())?, operand_expr(gpu, x, xh.as_deref())?));
+        let mk = || Some((operand_expr(w, wh.as_ref())?, operand_expr(x, xh.as_ref())?));
         let (lw, lx) = mk()?;
         let mut bound = arith_bound(op, lw.bound, lx.bound);
         if bound >= EXACT_LIM {
-            let wb = refine_bound(gpu, w).unwrap_or(lw.bound);
-            let xb = refine_bound(gpu, x).unwrap_or(lx.bound);
+            let wb = refine_bound(w).unwrap_or(lw.bound);
+            let xb = refine_bound(x).unwrap_or(lx.bound);
             bound = arith_bound(op, wb, xb);
             if bound >= EXACT_LIM { return None; }
         }
         let fill = fill_of(w, wh.as_deref());
-        lazy_node(gpu, op, &mk, &[w, x], wshape, fill, bound)
+        lazy_node(op, &mk, &[w, x], wshape, fill, bound)
     })
 }
 
@@ -716,21 +927,20 @@ fn gpu_arith_scalar(op: &str, s: f64, scalar_left: bool, a: B) -> Option<B> {
         // Pending values dispatch at any size; host arrays honour the threshold.
         if host.is_some() && !should_dispatch("arith", n) { return None; }
         if let Some(h) = &host && !gpu_safe_arr(h) { return None; }
-        let gpu = get()?;
         let mk = || {
-            let o = operand_expr(gpu, a, host.as_deref())?;
+            let o = operand_expr(a, host.as_ref())?;
             let sc = Operand { e: Rc::new(Expr::Scalar(si)), bound: s.abs(), maxb: s.abs(), wide: false };
             Some(if scalar_left { (sc, o) } else { (o, sc) })
         };
-        let o = operand_expr(gpu, a, host.as_deref())?;
+        let o = operand_expr(a, host.as_ref())?;
         let mut bound = scalar_bound(op, o.bound, s);
         if bound >= EXACT_LIM {
-            let b = refine_bound(gpu, a).unwrap_or(o.bound);
+            let b = refine_bound(a).unwrap_or(o.bound);
             bound = scalar_bound(op, b, s);
             if bound >= EXACT_LIM { return None; }
         }
         let fill = fill_of(a, host.as_deref());
-        lazy_node(gpu, op, &mk, &[a], shape, fill, bound)
+        lazy_node(op, &mk, &[a], shape, fill, bound)
     })
 }
 
@@ -739,8 +949,7 @@ fn gpu_arith_scalar(op: &str, s: f64, scalar_left: bool, a: B) -> Option<B> {
 /// Registered as GPU_IOTA_HOOK in rbqn-prim at startup.
 pub fn gpu_iota(n: usize) -> Option<B> {
     if gpu_mode() == GpuMode::Off || GPU_DISABLED.load(Ordering::Relaxed) { return None; }
-    if n == 0 || n >= i32::MAX as usize || !should_dispatch("arith", n) { return None; }
-    get()?;
+    if n == 0 || n >= i32::MAX as usize || !should_dispatch("arith", n) || !gpu_possible() { return None; }
     let b = (n - 1) as f64;
     Some(tag_device(Arc::new(GpuArr::lazy(Rc::new(Expr::Iota), vec![n], Some(B::m_i32(0)), b, b, false))))
 }
@@ -894,15 +1103,6 @@ fn gpu_fold_inner(f: B, x: B) -> Option<B> {
         _ => return None,
     };
     if let Some(a) = &host && !gpu_safe_arr(a) { return None; }
-    let gpu = get()?;
-    let lazy = peek_device(x).filter(|d| device_arr(d).is_some_and(|g| g.buf().is_none()));
-    let (buf, mut bound) = match &lazy {
-        Some(d) => (None, device_arr(d)?.bound.get()),
-        None => {
-            let (b, bd) = operand_buf(gpu, x, host.as_deref())?;
-            (Some(b), bd)
-        }
-    };
     let out_bound = |b: f64| match op {
         "add" => b * n as f64,
         // Products only when every |v| <= 1 (bound stays 1).
@@ -913,15 +1113,38 @@ fn gpu_fold_inner(f: B, x: B) -> Option<B> {
     // is at least as accurate as the CPU's f64 chain: allow up to 2^63 here
     // (elementwise and scan results stay under 2^53 so later ops see exact f64).
     let fold_lim = if op == "add" { I64_LIM } else { EXACT_LIM };
+    let lazy = peek_device(x).filter(|d| device_arr(d).is_some_and(|g| g.buf().is_none()));
+    if let Some(d) = &lazy {
+        let g = device_arr(d)?;
+        let rb = out_bound(g.bound.get());
+        if rb >= fold_lim { return None; }
+        let e = g.lazy_expr()?;
+        let w = tree_work(&e, n, g.out_kind());
+        if decide(Kind::Fold, &w, g.wide || rb >= I32_LIM)
+            && let Some(gpu) = get_decided()
+        {
+            return fused_fold(gpu, g, op, n, rb);
+        }
+        // Host: one fused pass over blocks, nothing materialized or uploaded.
+        g.host_pref.set(true);
+        let v = host_prog(&e).fold(n, op, g.wide);
+        if debug_enabled() {
+            eprintln!("[gpu] host fold_{op} {n} elements");
+        }
+        return Some(B::m_f64(v as f64));
+    }
+    if host.is_some() {
+        let up = if upload_is_cached(x.0) { 0 } else { 4 * n };
+        let w = Work { n, leaves: 1, up_bytes: up, out_elem_bytes: 4, ..Work::default() };
+        if !decide(Kind::FoldPlain, &w, false) { return None; }
+    }
+    let gpu = get_decided()?;
+    let (buf, mut bound) = operand_buf(gpu, x, host.as_deref())?;
     if out_bound(bound) >= fold_lim {
-        bound = refine_bound(gpu, x).unwrap_or(bound);
+        bound = refine_bound(x).unwrap_or(bound);
         if out_bound(bound) >= fold_lim { return None; }
     }
     let rb = out_bound(bound);
-    if let Some(d) = &lazy {
-        return fused_fold(gpu, device_arr(d)?, op, n, rb);
-    }
-    let buf = buf?;
     let is_i32 = buf.element_type() == ElementKind::I32;
     let (result, kind) = if is_i32 && rb < I32_LIM {
         let result_buf = {
@@ -954,7 +1177,7 @@ fn fused_fold(gpu: &GpuRuntime, g: &GpuArr, op: &str, n: usize, rb: f64) -> Opti
     let acc_wide = g.wide || rb >= I32_LIM;
     if acc_wide && !gpu.ctx.shader_int64 { return None; }
     let acc = if acc_wide { ElementKind::I64 } else { ElementKind::I32 };
-    let e = g.expr();
+    let e = resolve(gpu, &g.expr());
     let out = pooled_out(gpu, g.out_kind(), n);
     let (dev, q) = (&gpu.ctx.device, &gpu.ctx.queue);
     let result_buf = {
@@ -998,10 +1221,30 @@ fn gpu_scan_inner(f: B, x: B) -> Option<B> {
         return None;
     }
     if let Some(a) = &host && !gpu_safe_arr(a) { return None; }
-    let gpu = get()?;
+    let dev = peek_device(x);
+    let g = dev.as_ref().and_then(device_arr);
+    let mut w = match g {
+        Some(g) => match g.lazy_expr() {
+            Some(e) => tree_work(&e, n, g.out_kind()),
+            None => Work { n, leaves: 1, dev_bytes: g.buf()?.size() as usize, ..Work::default() },
+        },
+        None => Work { n, leaves: 1, up_bytes: if upload_is_cached(x.0) { 0 } else { 4 * n }, ..Work::default() },
+    };
+    // Scan output width (host input: bound unknown before the upload, assume i64).
+    w.out_elem_bytes = match g {
+        Some(g) if g.bound.get() * (n as f64) < I32_LIM => 4,
+        _ => 8,
+    };
+    if !decide(Kind::Scan, &w, g.is_some_and(|g| g.wide)) {
+        if let Some(g) = g {
+            g.host_pref.set(true);
+        }
+        return None;
+    }
+    let gpu = get_decided()?;
     let (buf, mut bound) = operand_buf(gpu, x, host.as_deref())?;
     if bound * n as f64 >= EXACT_LIM {
-        bound = refine_bound(gpu, x).unwrap_or(bound);
+        bound = refine_bound(x).unwrap_or(bound);
         if bound * n as f64 >= EXACT_LIM { return None; }
     }
     let out_bound = bound * n as f64;

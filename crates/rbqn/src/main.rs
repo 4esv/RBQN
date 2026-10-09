@@ -1,4 +1,5 @@
 mod cli;
+mod gpu_host;
 mod gpu_runtime;
 mod repl;
 

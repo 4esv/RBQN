@@ -42,7 +42,7 @@ impl Op {
             _ => return None,
         })
     }
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Op::Add => "add",
             Op::Sub => "sub",
@@ -79,6 +79,10 @@ pub enum Expr {
     /// The element index itself (`↕n` never uploaded).
     Iota,
     Bin(Op, Rc<Expr>, Rc<Expr>),
+    /// A host array not uploaded yet (opaque to this crate). The runtime
+    /// replaces it with a `Leaf` before `run`, or evaluates the tree on the
+    /// host without ever uploading it.
+    Host(Rc<dyn std::any::Any>),
 }
 
 /// Unique node and leaf counts of a tree.
@@ -94,6 +98,12 @@ pub fn counts(e: &Rc<Expr>) -> (usize, usize) {
         match &**e {
             Expr::Leaf(b) => {
                 let bp = Arc::as_ptr(b);
+                if !leaves.contains(&bp) {
+                    leaves.push(bp);
+                }
+            }
+            Expr::Host(h) => {
+                let bp = Rc::as_ptr(h) as *const GpuBuffer;
                 if !leaves.contains(&bp) {
                     leaves.push(bp);
                 }
@@ -151,6 +161,7 @@ fn flatten(root: &Rc<Expr>, ty: &str) -> Flat {
                     (format!("{ty}(sc[{k}])"), format!("S{}", k - 1))
                 }
                 Expr::Iota => (format!("{ty}(i32(i))"), "iota".to_string()),
+                Expr::Host(_) => panic!("rbqn-gpu: host leaf reached codegen (resolve it first)"),
                 Expr::Bin(op, l, r) => {
                     let (lv, ld) = self.go(l);
                     let (rv, rd) = self.go(r);
@@ -324,6 +335,7 @@ pub fn eval_host(e: &Expr, i: usize, leaf: &dyn Fn(&Arc<GpuBuffer>) -> i64) -> i
         Expr::Scalar(s) => *s as i64,
         Expr::Iota => i as i64,
         Expr::Bin(op, l, r) => op.apply_i64(eval_host(l, i, leaf), eval_host(r, i, leaf)),
+        Expr::Host(_) => panic!("rbqn-gpu: eval_host on a host leaf"),
     }
 }
 
