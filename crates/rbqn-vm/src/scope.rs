@@ -38,6 +38,24 @@ impl Vars {
     }
 }
 
+impl Vars {
+    /// Reinitialise in place: copy `init`, fill the remaining slots with NO_VAR.
+    #[inline]
+    pub fn reset(&mut self, var_am: usize, init: &[B]) {
+        let init = &init[..init.len().min(var_am)];
+        match self {
+            Vars::Inline(a, n) if var_am <= INLINE_VARS => {
+                a[..init.len()].copy_from_slice(init);
+                for v in &mut a[init.len()..var_am] {
+                    *v = B::NO_VAR;
+                }
+                *n = var_am as u8;
+            }
+            _ => *self = Vars::new(var_am, init),
+        }
+    }
+}
+
 impl std::ops::Deref for Vars {
     type Target = [B];
     #[inline]
@@ -93,7 +111,8 @@ pub struct Tls {
     /// Current block-evaluation nesting depth.
     pub depth: std::cell::Cell<u32>,
     /// Recycled uniquely-owned scopes.
-    pub scopes: std::cell::RefCell<Vec<std::rc::Rc<Scope>>>,
+    /// Only touched inside `new_rc`/`recycle`, which never re-enter while holding it.
+    pub scopes: std::cell::UnsafeCell<Vec<std::rc::Rc<Scope>>>,
     /// Recycled (operand stack, scope-chain) vector pairs. Only touched by
     /// `Frame::enter`/`Frame::drop`, which never re-enter while holding it.
     pub frames: std::cell::UnsafeCell<Vec<(Vec<B>, Vec<ScRef>)>>,
@@ -103,7 +122,7 @@ std::thread_local! {
     pub static TLS: std::mem::ManuallyDrop<Tls> = const {
         std::mem::ManuallyDrop::new(Tls {
             depth: std::cell::Cell::new(0),
-            scopes: std::cell::RefCell::new(Vec::new()),
+            scopes: std::cell::UnsafeCell::new(Vec::new()),
             frames: std::cell::UnsafeCell::new(Vec::new()),
         })
     };
@@ -134,7 +153,7 @@ impl Scope {
     #[inline]
     pub fn new_rc(body: &Arc<Body>, psc: std::rc::Rc<Scope>, var_am: u16, init_vars: &[B]) -> std::rc::Rc<Scope> {
         let recycled = TLS
-            .try_with(|t| t.scopes.try_borrow_mut().ok().and_then(|mut f| f.pop()))
+            .try_with(|t| unsafe { (*t.scopes.get()).pop() })
             .ok()
             .flatten();
         if let Some(mut rc) = recycled
@@ -145,7 +164,7 @@ impl Scope {
                 s.body = body.clone();
             }
             s.var_am = var_am;
-            *s.vars.get_mut() = Vars::new(var_am as usize, init_vars);
+            s.vars.get_mut().reset(var_am as usize, init_vars);
             return rc;
         }
         std::rc::Rc::new(Scope::new(body.clone(), Some(psc), var_am, init_vars))
@@ -159,9 +178,9 @@ impl Scope {
             let parent = s.psc.take();
             s.ext = None;
             let _ = TLS.try_with(|t| {
-                if let Ok(mut f) = t.scopes.try_borrow_mut()
-                    && f.len() < 64
-                {
+                // SAFETY: single-threaded; nothing re-enters while borrowed.
+                let f = unsafe { &mut *t.scopes.get() };
+                if f.len() < 64 {
                     f.push(rc);
                 }
             });
