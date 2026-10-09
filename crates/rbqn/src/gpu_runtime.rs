@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rbqn_core::array::{ArrData, BqnArr, squeeze_num, squeeze_i32};
 use rbqn_core::{B, DeviceValue, peek_device, tag_device};
-use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32, upload_f32, download_i32, download_i64, download_f32};
+use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32, upload_i32_with, upload_f32, download_i32, download_i64, download_f32};
 use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
 use rbqn_gpu::pipeline::PipelineCache;
@@ -206,19 +206,6 @@ pub fn gpu_safe_integer(data: &[f64]) -> bool {
     })
 }
 
-/// Largest absolute value in an integer-safe array (see `gpu_safe_arr`), or None for
-/// types the GPU never takes.
-fn max_abs_int(arr: &BqnArr) -> Option<f64> {
-    Some(match &arr.data {
-        ArrData::Bit(_) => 1.0,
-        ArrData::I8(v) => v.iter().map(|&x| (x as f64).abs()).fold(0.0, f64::max),
-        ArrData::I16(v) => v.iter().map(|&x| (x as f64).abs()).fold(0.0, f64::max),
-        ArrData::I32(v) => v.iter().map(|&x| (x as f64).abs()).fold(0.0, f64::max),
-        ArrData::F64(v) => v.iter().map(|&x| x.abs()).fold(0.0, f64::max),
-        _ => return None,
-    })
-}
-
 /// Returns true if the array can be safely dispatched to GPU as i32 data.
 /// Integer-typed arrays (I8/I16/I32/Bit) are always safe.
 /// F64 arrays are safe only when all values pass `gpu_safe_integer`.
@@ -235,22 +222,42 @@ pub fn gpu_safe_arr(arr: &BqnArr) -> bool {
 /// Caller must have verified `gpu_safe_arr` for F64 arrays.
 /// Returns None for unsupported types (chars, boxed).
 pub fn arr_to_gpu_i32(gpu: &GpuRuntime, arr: &BqnArr) -> Option<GpuBuffer> {
-    let device = &gpu.ctx.device;
-    let queue = &gpu.ctx.queue;
+    arr_to_gpu_i32_bound(gpu, arr).map(|(b, _)| b)
+}
 
-    let data_i32: Vec<i32> = match &arr.data {
-        ArrData::I32(v) => v.clone(),
-        ArrData::I8(v) => v.iter().map(|&x| x as i32).collect(),
-        ArrData::I16(v) => v.iter().map(|&x| x as i32).collect(),
-        ArrData::Bit(v) => {
-            let ia = arr.ia();
-            (0..ia).map(|i| ((v[i / 64] >> (i % 64)) & 1) as i32).collect()
-        }
-        ArrData::F64(v) => v.iter().map(|&x| x as i32).collect(),
+/// Max |x| over a slice, folded into the copy loop below.
+#[inline]
+fn copy_max<T: Copy>(src: &[T], dst: &mut [i32], f: impl Fn(T) -> i32) -> f64 {
+    let mut m = 0u32;
+    for (d, &x) in dst.iter_mut().zip(src) {
+        let v = f(x);
+        *d = v;
+        m = m.max(v.unsigned_abs());
+    }
+    m as f64
+}
+
+/// `arr_to_gpu_i32` plus the exact max |element| (Bit: 1), computed in the same
+/// pass that writes the source into the mapped upload buffer.
+pub fn arr_to_gpu_i32_bound(gpu: &GpuRuntime, arr: &BqnArr) -> Option<(GpuBuffer, f64)> {
+    let (device, queue) = (&gpu.ctx.device, &gpu.ctx.queue);
+    let n = arr.ia();
+    Some(match &arr.data {
+        ArrData::I32(v) => upload_i32_with(device, queue, n, |d| copy_max(v, d, |x| x)),
+        ArrData::I8(v) => upload_i32_with(device, queue, n, |d| copy_max(v, d, |x| x as i32)),
+        ArrData::I16(v) => upload_i32_with(device, queue, n, |d| copy_max(v, d, |x| x as i32)),
+        // F64 already passed gpu_safe_integer, so the cast is exact.
+        ArrData::F64(v) => upload_i32_with(device, queue, n, |d| copy_max(v, d, |x| x as i32)),
+        ArrData::Bit(v) => upload_i32_with(device, queue, n, |d| {
+            for (chunk, &w) in d.chunks_mut(64).zip(v.iter()) {
+                for (j, o) in chunk.iter_mut().enumerate() {
+                    *o = ((w >> j) & 1) as i32;
+                }
+            }
+            1.0
+        }),
         ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) | ArrData::Boxed(_) => return None,
-    };
-
-    Some(upload_i32(device, queue, &data_i32))
+    })
 }
 
 /// Download a GPU i32 buffer back to a BqnArr.
@@ -385,8 +392,8 @@ fn operand_buf(gpu: &GpuRuntime, b: B, host: Option<&BqnArr>) -> Option<(Arc<Gpu
     if !gpu_safe_arr(arr) {
         return None;
     }
-    let bound = max_abs_int(arr)?;
-    let buf = Arc::new(arr_to_gpu_i32(gpu, arr)?);
+    let (buf, bound) = arr_to_gpu_i32_bound(gpu, arr)?;
+    let buf = Arc::new(buf);
     UPLOAD_CACHE.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() >= UPLOAD_CACHE_LEN {

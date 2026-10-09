@@ -280,6 +280,45 @@ fn upload_raw<T: bytemuck::Pod>(
     GpuBuffer { buffer, size, element_type: kind, len: data.len() }
 }
 
+/// Upload `len` i32 values written by `fill` straight into the destination:
+/// on mappable devices `fill` writes into the mapped range of a fresh
+/// MAP_WRITE buffer (no intermediate Vec); otherwise into a host Vec that is
+/// then `write_buffer`ed. Returns the buffer and whatever `fill` returns
+/// (callers fold a bound computation into the same pass).
+pub fn upload_i32_with<R>(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    len: usize,
+    fill: impl FnOnce(&mut [i32]) -> R,
+) -> (GpuBuffer, R) {
+    crate::stats::BYTES_UP.fetch_add(len as u64 * 4, std::sync::atomic::Ordering::Relaxed);
+    if !mappable() || len == 0 {
+        let mut v = vec![0i32; len];
+        let r = fill(&mut v);
+        let buf = GpuBuffer::storage(device, ElementKind::I32, len);
+        if len > 0 {
+            queue.write_buffer(&buf.buffer, 0, bytemuck::cast_slice(&v));
+        }
+        return (buf, r);
+    }
+    let size = len as u64 * 4;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size,
+        usage: wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_SRC
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::MAP_WRITE,
+        mapped_at_creation: true,
+    });
+    let r = {
+        let mut view = buffer.slice(..).get_mapped_range_mut();
+        fill(bytemuck::cast_slice_mut(&mut view))
+    };
+    buffer.unmap();
+    (GpuBuffer { buffer, size, element_type: ElementKind::I32, len }, r)
+}
+
 async fn download_raw<T: bytemuck::Pod>(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
