@@ -426,10 +426,45 @@ pub fn deshape_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Ok(PrimResult::Array(typed_arr(vec![x], vec![1], None)));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⥊𝕩: 𝕩 must be an array".into()))?;
+    // NOTE: callers hand us a &BqnArr cloned out of the registry (get_arr clones, no Arc),
+    // so there is nothing to unwrap; one typed Vec clone is the floor.
     let ia = arr.ia();
-    let mut out = arr.clone();
-    out.shape = vec![ia];
-    Ok(PrimResult::Array(out))
+    Ok(PrimResult::Array(BqnArr {
+        shape: vec![ia],
+        data: arr.data.clone(),
+        fill: arr.fill,
+    }))
+}
+
+/// Repeat `src` cyclically to exactly `total` elements using whole-slice copies.
+fn repeat_to<T: Copy>(src: &[T], total: usize) -> Vec<T> {
+    let n = src.len();
+    if total == 0 || n == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(total);
+    let mut rem = total;
+    while rem >= n {
+        out.extend_from_slice(src);
+        rem -= n;
+    }
+    out.extend_from_slice(&src[..rem]);
+    out
+}
+
+fn repeat_bits(src: &[u64], n: usize, total: usize) -> Vec<u64> {
+    let mut out = vec![0u64; total.div_ceil(64)];
+    let mut j = 0usize;
+    for i in 0..total {
+        if (src[j / 64] >> (j % 64)) & 1 != 0 {
+            out[i / 64] |= 1u64 << (i % 64);
+        }
+        j += 1;
+        if j == n {
+            j = 0;
+        }
+    }
+    out
 }
 
 // ⥊ dyad: reshape
@@ -492,11 +527,43 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         arr.fill
     };
 
-    let mut result = Vec::with_capacity(new_ia);
-    for i in 0..new_ia {
-        result.push(arr.get(i % old_ia)?);
-    }
-    Ok(PrimResult::Array(typed_arr(result, new_shape, result_fill)))
+    let num_fill = arr.fill.or(Some(B::m_f64(0.0)));
+    let chr_fill = arr.fill.or(Some(B::m_c32(b' ' as u32)));
+    // Only the first m source elements can appear in the result.
+    let m = old_ia.min(new_ia);
+    // NOTE: numeric sources are re-squeezed on the first m elements (the old path squeezed
+    // the whole result; the element set is identical so the narrowed type is identical).
+    // Downstream fast paths key on the squeezed type, so keeping the source type is a 40x regression.
+    let narrowed = |f: Vec<f64>| {
+        array::squeeze_num(BqnArr { shape: vec![m], data: ArrData::F64(f), fill: None }).data
+    };
+    let src = match &arr.data {
+        ArrData::I8(v) => narrowed(v[..m].iter().map(|&x| x as f64).collect()),
+        ArrData::I16(v) => narrowed(v[..m].iter().map(|&x| x as f64).collect()),
+        ArrData::I32(v) => narrowed(v[..m].iter().map(|&x| x as f64).collect()),
+        ArrData::F64(v) => narrowed(v[..m].to_vec()),
+        ArrData::Bit(v) => ArrData::Bit(v[..m.div_ceil(64)].to_vec()),
+        ArrData::C8(v) => ArrData::C8(v[..m].to_vec()),
+        ArrData::C16(v) => ArrData::C16(v[..m].to_vec()),
+        ArrData::C32(v) => ArrData::C32(v[..m].to_vec()),
+        ArrData::Boxed(v) => {
+            // Boxed keeps the old path's re-typing (all-number / all-char boxed collapse).
+            let result = repeat_to(&v[..m], new_ia);
+            return Ok(PrimResult::Array(typed_arr(result, new_shape, result_fill)));
+        }
+    };
+    let (data, fill) = match &src {
+        ArrData::Bit(v) => (ArrData::Bit(repeat_bits(v.as_slice(), m, new_ia)), num_fill),
+        ArrData::I8(v) => (ArrData::I8(repeat_to(v.as_slice(), new_ia)), num_fill),
+        ArrData::I16(v) => (ArrData::I16(repeat_to(v.as_slice(), new_ia)), num_fill),
+        ArrData::I32(v) => (ArrData::I32(repeat_to(v.as_slice(), new_ia)), num_fill),
+        ArrData::F64(v) => (ArrData::F64(repeat_to(v.as_slice(), new_ia)), num_fill),
+        ArrData::C8(v) => (ArrData::C8(repeat_to(v.as_slice(), new_ia)), chr_fill),
+        ArrData::C16(v) => (ArrData::C16(repeat_to(v.as_slice(), new_ia)), chr_fill),
+        ArrData::C32(v) => (ArrData::C32(repeat_to(v.as_slice(), new_ia)), chr_fill),
+        ArrData::Boxed(_) => unreachable!(),
+    };
+    Ok(PrimResult::Array(BqnArr { shape: new_shape, data, fill }))
 }
 
 /// Handle reshape with computed dimension (shape contains ∘, ⌊, ⌽, or ↑).
