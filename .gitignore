@@ -7,3 +7,4 @@ Cargo.lock
 .claude/
 /src/preprocessed/
 .test-results/run-*
+/bench/probes/target/

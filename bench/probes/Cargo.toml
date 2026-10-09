@@ -1,0 +1,38 @@
+[package]
+name = "gpu-probes"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+rbqn-gpu = { path = "../../crates/rbqn-gpu" }
+wgpu = "24"
+pollster = "0.4"
+bytemuck = "1"
+rayon = "1"
+[profile.release]
+opt-level = 3
+
+[[bin]]
+name="feat"
+path="src/feat.rs"
+
+[[bin]]
+name="monkey"
+path="src/monkey.rs"
+
+[[bin]]
+name="floor"
+path="src/floor.rs"
+
+[[bin]]
+name="par"
+path="src/par.rs"
+
+[[bin]]
+name="sortb"
+path="src/sortb.rs"
+
+[[bin]]
+name="sortd"
+path="src/sortd.rs"
+
+[workspace]
