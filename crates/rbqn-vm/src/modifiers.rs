@@ -383,13 +383,13 @@ fn each_c1(f: B, x: B) -> B {
     if f.is_fun() {
         let d = crate::derive::get_derived((f.0 & 0xFFFFFFFFFFFF) >> 3);
         if d.kind == crate::derive::DerivedKind::FunBlock {
-            let bl = d.bl.as_ref().unwrap().clone();
-            let psc = d.sc.as_ref().unwrap().clone();
-            let body = bl.bodies[0].clone();
+            let bl = d.bl.as_ref().unwrap();
+            let psc = d.sc.as_ref().unwrap();
+            let body = &bl.bodies[0];
             for i in 0..n {
                 let elem = get_elem(&arr, i);
                 results.push(crate::vm::exec_block_with_args(
-                    &bl, body.clone(), psc.clone(), &[f, elem, B::SENTINEL],
+                    bl, body, psc.clone(), &[f, elem, B::SENTINEL],
                 ));
             }
             return results_to_arr(results, arr.shape.clone());

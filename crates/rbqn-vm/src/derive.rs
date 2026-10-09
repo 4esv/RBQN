@@ -604,7 +604,7 @@ pub fn m1_d(m: B, f: B) -> B {
             if bl.imm {
                 let psc = md.sc.as_ref().unwrap().clone();
                 let body = bl.bodies[0].clone();
-                return crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[m, f]);
+                return crate::vm::exec_block_with_args(&bl, &body, psc.clone(), &[m, f]);
             }
         }
         m_md1d(m, f)
@@ -625,7 +625,7 @@ pub fn m2_d(m: B, f: B, g: B) -> B {
             if bl.imm {
                 let psc = md.sc.as_ref().unwrap().clone();
                 let body = bl.bodies[0].clone();
-                return crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[m, f, g]);
+                return crate::vm::exec_block_with_args(&bl, &body, psc.clone(), &[m, f, g]);
             }
         }
         m_md2d(m, f, g)
@@ -653,10 +653,9 @@ pub fn c1(f: B, x: B) -> B {
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c1] id={} x={}", id, crate::vm::fmt_b_short(x));
                 }
-                let bl = d.bl.as_ref().unwrap().clone();
+                let bl = d.bl.as_ref().unwrap();
                 let psc = d.sc.as_ref().unwrap().clone();
-                let body = bl.bodies[0].clone();
-                let result = crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, B::SENTINEL]);
+                let result = crate::vm::exec_block_with_args(bl, &bl.bodies[0], psc, &[f, x, B::SENTINEL]);
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c1] id={} -> {}", id, crate::vm::fmt_b_short(result));
                 }
@@ -674,7 +673,7 @@ pub fn c1(f: B, x: B) -> B {
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.bodies[0].clone();
                         return crate::vm::exec_block_with_args(
-                            &bl, body, psc.clone(),
+                            &bl, &body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand],
                         );
                     }
@@ -706,7 +705,7 @@ pub fn c1(f: B, x: B) -> B {
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.bodies[0].clone();
                         return crate::vm::exec_block_with_args(
-                            &bl, body, psc.clone(),
+                            &bl, &body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand_f, operand_g],
                         );
                     }
@@ -792,7 +791,7 @@ pub fn c1(f: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     // Reconstruct the forward block function for 𝕊 binding
                     let forward_fn = m_fun_block(bl.clone(), psc.clone());
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_fn, x, B::SENTINEL])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_fn, x, B::SENTINEL])
                 } else {
                     rbqn_core::error::throw("Block has no monadic inverse header (𝕊⁼:)")
                 }
@@ -808,7 +807,7 @@ pub fn c1(f: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     let modifier_val = make_md1_block_val(&bl, &psc);
                     let forward_derived = m_md1d(modifier_val, operand);
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, operand])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, operand])
                 } else {
                     rbqn_core::error::throw("Modifier block has no inverse header (𝔽_𝕣⁼:)")
                 }
@@ -825,7 +824,7 @@ pub fn c1(f: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     let modifier_val = make_md2_block_val(&bl, &psc);
                     let forward_derived = m_md2d(modifier_val, f_operand, g_operand);
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, f_operand, g_operand])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, f_operand, g_operand])
                 } else {
                     rbqn_core::error::throw("2-modifier block has no inverse header")
                 }
@@ -860,10 +859,10 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c2] id={} w={} x={}", id, crate::vm::fmt_b_short(w), crate::vm::fmt_b_short(x));
                 }
-                let bl = d.bl.as_ref().unwrap().clone();
+                let bl = d.bl.as_ref().unwrap();
                 let psc = d.sc.as_ref().unwrap().clone();
-                let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
-                let result = crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, w]);
+                let body = bl.dy_body.as_ref().unwrap_or_else(|| &bl.bodies[0]);
+                let result = crate::vm::exec_block_with_args(bl, body, psc, &[f, x, w]);
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c2] id={} -> {}", id, crate::vm::fmt_b_short(result));
                 }
@@ -880,7 +879,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
                         return crate::vm::exec_block_with_args(
-                            &bl, body, psc.clone(),
+                            &bl, &body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand],
                         );
                     }
@@ -915,7 +914,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                             rbqn_core::error::throw("This block cannot be called dyadically");
                         };
                         return crate::vm::exec_block_with_args(
-                            &bl, body, psc.clone(),
+                            &bl, &body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand_f, operand_g],
                         );
                     }
@@ -1016,7 +1015,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     .or_else(|| bl.inv_x_body.clone());
                 if let Some(body) = inv_body {
                     let forward_fn = m_fun_block(bl.clone(), psc.clone());
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_fn, x, w])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_fn, x, w])
                 } else {
                     rbqn_core::error::throw("Block has no dyadic inverse header (𝕊⁼𝕨:)")
                 }
@@ -1034,7 +1033,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     let modifier_val = make_md1_block_val(&bl, &psc);
                     let forward_derived = m_md1d(modifier_val, operand);
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, operand])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_derived, x, w, modifier_val, operand])
                 } else {
                     rbqn_core::error::throw("Modifier block has no dyadic inverse header")
                 }
@@ -1050,7 +1049,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     let modifier_val = make_md2_block_val(&bl, &psc);
                     let forward_derived = m_md2d(modifier_val, f_operand, g_operand);
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, f_operand, g_operand])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_derived, x, w, modifier_val, f_operand, g_operand])
                 } else {
                     rbqn_core::error::throw("2-modifier block has no dyadic inverse header")
                 }

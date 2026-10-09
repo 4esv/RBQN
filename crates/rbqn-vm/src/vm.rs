@@ -15,10 +15,10 @@ pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
     eval_bc(&body, sc, bl)
 }
 
-pub fn exec_block_with_args(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
+pub fn exec_block_with_args(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
     let var_am = body.var_am.max(args.len() as u16);
-    let sc = Scope::new_rc(&body, psc, var_am, args);
-    eval_bc(&body, sc, bl)
+    let sc = Scope::new_rc(body, psc, var_am, args);
+    eval_bc(body, sc, bl)
 }
 
 /// Fill `pscs` with the scope chain starting at `sc`, up to `max_psc` entries.
