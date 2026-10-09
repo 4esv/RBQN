@@ -24,6 +24,10 @@ pub fn self_indexOf_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if arr.rank() == 0 {
         return Err(BqnError::Rank("⊐𝕩: 𝕩 must have rank ≥ 1".into()));
     }
+    if arr.rank() == 1
+        && let Some(r) = fast_classify(arr) {
+            return Ok(r);
+        }
     let lead = arr.shape[0];
     let cell_size: usize = if arr.rank() > 1 { arr.shape[1..].iter().product() } else { 1 };
     let mut result = Vec::with_capacity(lead);
@@ -79,6 +83,11 @@ pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
     let w_cell_shape = &warr.shape[1..];
     let w_cell_size: usize = w_cell_shape.iter().product::<usize>().max(1);
     let w_lead = warr.shape[0];
+    if w_rank == 1 && !x.is_atom()
+        && let Some(xarr) = xa
+        && let Some(r) = fast_index_of(warr, xarr) {
+            return Ok(r);
+        }
 
     // Determine x's rank and shape
     let (x_rank, x_shape_owned) = if x.is_atom() {
@@ -157,6 +166,10 @@ pub fn self_count_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if arr.rank() == 0 {
         return Err(BqnError::Rank("⊒𝕩: 𝕩 must have rank ≥ 1".into()));
     }
+    if arr.rank() == 1
+        && let Some(r) = fast_occurrence(arr) {
+            return Ok(r);
+        }
     let lead = arr.shape[0];
     let cell_size: usize = if arr.rank() > 1 { arr.shape[1..].iter().product() } else { 1 };
     let mut result = Vec::with_capacity(lead);
@@ -194,6 +207,11 @@ pub fn count_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
     let w_cell_shape = &warr.shape[1..];
     let w_cell_size: usize = w_cell_shape.iter().product::<usize>().max(1);
     let w_lead = warr.shape[0];
+    if w_rank == 1 && !x.is_atom()
+        && let Some(xarr) = xa
+        && let Some(r) = fast_progressive_index_of(warr, xarr) {
+            return Ok(r);
+        }
 
     // Determine x's rank and shape
     let (x_rank, x_shape_owned) = if x.is_atom() {
@@ -270,6 +288,10 @@ pub fn mark_firsts_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if arr.rank() == 0 {
         return Err(BqnError::Rank("∊𝕩: 𝕩 must have rank ≥ 1".into()));
     }
+    if arr.rank() == 1
+        && let Some(r) = fast_mark_firsts(arr) {
+            return Ok(r);
+        }
     let lead = arr.shape[0];
     let cell_size: usize = if arr.rank() > 1 { arr.shape[1..].iter().product() } else { 1 };
     let mut result = Vec::with_capacity(lead);
@@ -328,6 +350,10 @@ pub fn member_of_c2(_w: B, wa: Option<&BqnArr>, w_raw: B, xa: Option<&BqnArr>) -
 
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨∊𝕩: 𝕨 must be an array".into()))?;
     let w_rank = warr.rank() as usize;
+    if x_rank == 1
+        && let Some(r) = fast_member_of(warr, xarr) {
+            return Ok(r);
+        }
 
     // w's trailing shape must match x's cell shape
     if w_rank < x_cell_rank {
@@ -380,6 +406,13 @@ pub fn member_of_c2(_w: B, wa: Option<&BqnArr>, w_raw: B, xa: Option<&BqnArr>) -
 // ⍷ monad: deduplicate
 pub fn deduplicate_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍷𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 1
+        && let Some(idx) = fast_first_indices(arr) {
+            let mut result = Vec::with_capacity(idx.len());
+            for i in idx { result.push(arr.get(i)?); }
+            let len = result.len();
+            return Ok(PrimResult::Array(typed_arr_from_b_vec(result, vec![len], arr.fill)));
+        }
     let ia = arr.ia();
     let mut result = Vec::new();
     for i in 0..ia {
@@ -523,4 +556,192 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
     }
 
     Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(result), fill: None }))
+}
+
+// ---------------------------------------------------------------------------
+// Fast paths: intern atom elements to dense ids, then search with flat tables.
+// Matches deep_equal on atoms: numbers compare by f64 value (so 0 = ¯0 and NaN
+// never matches), characters by code point, and numbers never equal characters.
+// Arrays holding anything else (nested arrays, functions) return None and use
+// the generic deep_equal path.
+// ---------------------------------------------------------------------------
+
+/// Id for an element that can never match anything (NaN).
+const NO_ID: u32 = u32::MAX;
+
+/// Integer contents of a small-int array, without boxing.
+fn int_slice(a: &BqnArr) -> Option<Vec<i32>> {
+    match &a.data {
+        ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) => a.i32_iter().ok(),
+        ArrData::I32(v) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+#[inline]
+fn num_key(f: f64) -> Option<u128> {
+    if f.is_nan() { return None; }
+    let f = if f == 0.0 { 0.0 } else { f };
+    Some(f.to_bits() as u128)
+}
+
+#[inline]
+fn chr_key(c: u32) -> Option<u128> {
+    Some((1u128 << 64) | c as u128)
+}
+
+/// Per-element keys, or None if some element is not a number or character.
+fn atom_keys(a: &BqnArr) -> Option<Vec<Option<u128>>> {
+    Some(match &a.data {
+        ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) =>
+            a.i32_iter().ok()?.into_iter().map(|x| num_key(x as f64)).collect(),
+        ArrData::F64(v) => v.iter().map(|&x| num_key(x)).collect(),
+        ArrData::C8(v) => v.iter().map(|&c| chr_key(c as u32)).collect(),
+        ArrData::C16(v) => v.iter().map(|&c| chr_key(c as u32)).collect(),
+        ArrData::C32(v) => v.iter().map(|&c| chr_key(c)).collect(),
+        ArrData::Boxed(v) => {
+            let mut out = Vec::with_capacity(v.len());
+            for &b in v {
+                if b.is_f64() { out.push(num_key(b.o2f())); }
+                else if b.is_c32() { out.push(chr_key(b.0 as u32)); }
+                else { return None; }
+            }
+            out
+        }
+    })
+}
+
+/// Map the elements of every array to ids in 0..k (NO_ID for NaN), with equal
+/// elements getting equal ids across all arrays. Returns (ids per array, k).
+fn intern(arrs: &[&BqnArr]) -> Option<(Vec<Vec<u32>>, usize)> {
+    // Dense path: all small ints in a compact range, id = value - min.
+    let ints: Vec<Option<Vec<i32>>> = arrs.iter().map(|a| int_slice(a)).collect();
+    if ints.iter().all(|v| v.is_some()) {
+        let ints: Vec<Vec<i32>> = ints.into_iter().map(|v| v.unwrap()).collect();
+        let total: usize = ints.iter().map(|v| v.len()).sum();
+        let mut lo = i32::MAX;
+        let mut hi = i32::MIN;
+        for v in &ints { for &x in v { lo = lo.min(x); hi = hi.max(x); } }
+        if total == 0 { return Some((ints.into_iter().map(|_| vec![]).collect(), 0)); }
+        let range = (hi as i64 - lo as i64 + 1) as usize;
+        if range <= (4 * total).max(1 << 16) {
+            let ids = ints.into_iter()
+                .map(|v| v.into_iter().map(|x| (x as i64 - lo as i64) as u32).collect())
+                .collect();
+            return Some((ids, range));
+        }
+    }
+    // Hash path.
+    let mut map: std::collections::HashMap<u128, u32, std::hash::BuildHasherDefault<IdHasher>> =
+        Default::default();
+    let mut out = Vec::with_capacity(arrs.len());
+    for a in arrs {
+        let keys = atom_keys(a)?;
+        let ids = keys.into_iter().map(|k| match k {
+            None => NO_ID,
+            Some(k) => { let n = map.len() as u32; *map.entry(k).or_insert(n) }
+        }).collect();
+        out.push(ids);
+    }
+    let k = map.len();
+    Some((out, k))
+}
+
+fn i32_result(v: Vec<i32>, shape: Vec<usize>) -> PrimResult {
+    PrimResult::Array(BqnArr { shape, data: ArrData::I32(v), fill: Some(B::m_i32(0)) })
+}
+
+/// ⊐𝕩 on a list of atoms.
+fn fast_classify(arr: &BqnArr) -> Option<PrimResult> {
+    let (ids, k) = intern(&[arr])?;
+    let mut cls = vec![-1i32; k];
+    let mut next = 0i32;
+    let r = ids[0].iter().map(|&id| {
+        if id == NO_ID { next += 1; return next - 1; }
+        let c = &mut cls[id as usize];
+        if *c < 0 { *c = next; next += 1; }
+        *c
+    }).collect();
+    Some(i32_result(r, vec![arr.ia()]))
+}
+
+/// ⊒𝕩 on a list of atoms.
+fn fast_occurrence(arr: &BqnArr) -> Option<PrimResult> {
+    let (ids, k) = intern(&[arr])?;
+    let mut cnt = vec![0i32; k];
+    let r = ids[0].iter().map(|&id| {
+        if id == NO_ID { return 0; }
+        let c = &mut cnt[id as usize];
+        *c += 1;
+        *c - 1
+    }).collect();
+    Some(i32_result(r, vec![arr.ia()]))
+}
+
+/// ∊𝕩 on a list of atoms.
+fn fast_mark_firsts(arr: &BqnArr) -> Option<PrimResult> {
+    let (ids, k) = intern(&[arr])?;
+    let mut seen = vec![false; k];
+    let r = ids[0].iter().map(|&id| {
+        if id == NO_ID { return 1; }
+        let s = &mut seen[id as usize];
+        let first = !*s;
+        *s = true;
+        first as i32
+    }).collect();
+    Some(i32_result(r, vec![arr.ia()]))
+}
+
+/// Indices of first occurrences, for ⍷𝕩.
+fn fast_first_indices(arr: &BqnArr) -> Option<Vec<usize>> {
+    let (ids, k) = intern(&[arr])?;
+    let mut seen = vec![false; k];
+    Some(ids[0].iter().enumerate().filter_map(|(i, &id)| {
+        if id == NO_ID { return Some(i); }
+        let s = &mut seen[id as usize];
+        if *s { None } else { *s = true; Some(i) }
+    }).collect())
+}
+
+/// 𝕨⊐𝕩 with 𝕨 a list of atoms and 𝕩 an array of atoms.
+fn fast_index_of(warr: &BqnArr, xarr: &BqnArr) -> Option<PrimResult> {
+    let (ids, k) = intern(&[warr, xarr])?;
+    let n = warr.ia() as i32;
+    let mut pos = vec![n; k];
+    for (i, &id) in ids[0].iter().enumerate().rev() {
+        if id != NO_ID { pos[id as usize] = i as i32; }
+    }
+    let r = ids[1].iter().map(|&id| if id == NO_ID { n } else { pos[id as usize] }).collect();
+    Some(i32_result(r, xarr.shape.clone()))
+}
+
+/// 𝕨⊒𝕩 with 𝕨 a list of atoms and 𝕩 an array of atoms.
+fn fast_progressive_index_of(warr: &BqnArr, xarr: &BqnArr) -> Option<PrimResult> {
+    let (ids, k) = intern(&[warr, xarr])?;
+    let n = warr.ia() as i32;
+    // Bucket w's indices by id (counting sort), then hand them out in order.
+    let mut start = vec![0usize; k + 1];
+    for &id in &ids[0] { if id != NO_ID { start[id as usize + 1] += 1; } }
+    for i in 0..k { start[i + 1] += start[i]; }
+    let mut fill = start.clone();
+    let mut slots = vec![0i32; start[k]];
+    for (i, &id) in ids[0].iter().enumerate() {
+        if id != NO_ID { slots[fill[id as usize]] = i as i32; fill[id as usize] += 1; }
+    }
+    let mut next = start.clone();
+    let r = ids[1].iter().map(|&id| {
+        if id == NO_ID { return n; }
+        let j = id as usize;
+        if next[j] < start[j + 1] { next[j] += 1; slots[next[j] - 1] } else { n }
+    }).collect();
+    Some(i32_result(r, xarr.shape.clone()))
+}
+
+/// 𝕨∊𝕩 with 𝕩 a list of atoms and 𝕨 an array of atoms.
+fn fast_member_of(warr: &BqnArr, xarr: &BqnArr) -> Option<PrimResult> {
+    let (ids, k) = intern(&[warr, xarr])?;
+    let mut present = vec![false; k];
+    for &id in &ids[1] { if id != NO_ID { present[id as usize] = true; } }
+    let r = ids[0].iter().map(|&id| (id != NO_ID && present[id as usize]) as i32).collect();
+    Some(i32_result(r, warr.shape.clone()))
 }

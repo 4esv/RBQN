@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use crate::array::BqnArr;
 use crate::value::{B, ARR_TAG, tagu64};
 
-/// Hasher for sequential u64 ids: one multiply (Fibonacci hashing) instead of SipHash.
-/// The multiply spreads ids into the high bits hashbrown uses for its control bytes.
+/// Fast hasher for u64/u128 keys: a splitmix64 finalizer instead of SipHash.
+/// Mixes every input bit into both the low (bucket) and high (control byte) bits,
+/// so it works for sequential ids and for f64 bit patterns alike.
 #[derive(Default, Clone, Copy)]
 pub struct IdHasher(u64);
 
@@ -20,8 +21,18 @@ impl std::hash::Hasher for IdHasher {
         }
     }
     fn write_u64(&mut self, n: u64) {
-        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = mix64(self.0 ^ n);
     }
+    fn write_u128(&mut self, n: u128) {
+        self.0 = mix64(mix64(self.0 ^ n as u64) ^ (n >> 64) as u64);
+    }
+}
+
+#[inline]
+fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 pub type IdMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<IdHasher>>;
