@@ -7,7 +7,7 @@ use crate::block::{Block, Body, eval_fun_block, m_md1_block, m_md2_block};
 use crate::bytecode::Op;
 use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_partial_r};
 use crate::namespace::{self, NS, get_ns, store_ns};
-use crate::scope::{ScRef, Scope, v_get, v_set, v_seth, v_check_bad_read};
+use crate::scope::{ScRef, Scope, TLS, v_get, v_set, v_seth, v_check_bad_read};
 
 pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
     let var_am = body.var_am;
@@ -35,59 +35,6 @@ fn build_pscs(pscs: &mut Vec<ScRef>, sc: &std::rc::Rc<Scope>, max_psc: u16) {
                 }
                 None => break,
             }
-        }
-    }
-}
-
-type Pool<T> = std::cell::RefCell<Vec<Vec<T>>>;
-
-std::thread_local! {
-    static STACK_POOL: Pool<B> = const { std::cell::RefCell::new(Vec::new()) };
-    static PSCS_POOL: Pool<ScRef> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-/// A Vec borrowed from a thread-local free list and returned (cleared) on drop,
-/// so each block call reuses buffers instead of allocating a stack and a scope
-/// chain. Pool access uses try_with/try_borrow_mut, so it never panics; on any
-/// failure it just allocates or frees normally.
-struct PoolVec<T: 'static> {
-    v: Vec<T>,
-    pool: &'static std::thread::LocalKey<Pool<T>>,
-}
-
-impl<T: 'static> PoolVec<T> {
-    fn take(pool: &'static std::thread::LocalKey<Pool<T>>, cap: usize) -> Self {
-        let mut v = pool
-            .try_with(|p| p.try_borrow_mut().ok().and_then(|mut p| p.pop()))
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        v.reserve(cap);
-        PoolVec { v, pool }
-    }
-}
-
-impl<T: 'static> std::ops::Deref for PoolVec<T> {
-    type Target = Vec<T>;
-    fn deref(&self) -> &Vec<T> { &self.v }
-}
-
-impl<T: 'static> std::ops::DerefMut for PoolVec<T> {
-    fn deref_mut(&mut self) -> &mut Vec<T> { &mut self.v }
-}
-
-impl<T: 'static> Drop for PoolVec<T> {
-    fn drop(&mut self) {
-        let mut v = std::mem::take(&mut self.v);
-        // Drop elements before touching the pool (dropping a scope may run other drops).
-        v.clear();
-        if v.capacity() <= 4096 {
-            let _ = self.pool.try_with(|p| {
-                if let Ok(mut p) = p.try_borrow_mut()
-                    && p.len() < 1024 {
-                        p.push(v);
-                    }
-            });
         }
     }
 }
@@ -312,30 +259,57 @@ pub fn fmt_b_detail(b: B) -> String {
 /// most ~50 MB, a 10x margin under the 512 MB interpreter thread stack.
 pub const MAX_EVAL_DEPTH: u32 = 20_000;
 
-std::thread_local! {
-    static EVAL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+/// One block evaluation's pooled buffers plus the depth count. Entering takes
+/// both vectors from the thread-local pool and bumps the depth in a single TLS
+/// access; Drop (also on unwinding from a BQN error) returns them in one more.
+struct Frame {
+    stack: Vec<B>,
+    pscs: Vec<ScRef>,
 }
 
-/// Decrements the depth on scope exit, including unwinding from a BQN error.
-struct DepthGuard;
+impl Frame {
+    #[inline]
+    fn enter(max_stack: usize, max_psc: usize) -> Frame {
+        let (depth, mut stack, mut pscs) = TLS.with(|t| {
+            let n = t.depth.get() + 1;
+            t.depth.set(n);
+            let st = t.stacks.try_borrow_mut().ok().and_then(|mut p| p.pop()).unwrap_or_default();
+            let ps = t.pscs.try_borrow_mut().ok().and_then(|mut p| p.pop()).unwrap_or_default();
+            (n, st, ps)
+        });
+        stack.reserve(max_stack);
+        pscs.reserve(max_psc);
+        let fr = Frame { stack, pscs };
+        if depth > MAX_EVAL_DEPTH {
+            rbqn_core::error::throw("Stack overflow");
+        }
+        fr
+    }
+}
 
-impl Drop for DepthGuard {
+impl Drop for Frame {
+    #[inline]
     fn drop(&mut self) {
-        EVAL_DEPTH.with(|d| d.set(d.get() - 1));
+        let mut stack = std::mem::take(&mut self.stack);
+        let mut pscs = std::mem::take(&mut self.pscs);
+        stack.clear();
+        pscs.clear();
+        TLS.with(|t| {
+            t.depth.set(t.depth.get() - 1);
+            if stack.capacity() <= 4096
+                && let Ok(mut p) = t.stacks.try_borrow_mut()
+                && p.len() < 1024
+            {
+                p.push(stack);
+            }
+            if pscs.capacity() <= 4096
+                && let Ok(mut p) = t.pscs.try_borrow_mut()
+                && p.len() < 1024
+            {
+                p.push(pscs);
+            }
+        });
     }
-}
-
-fn enter_eval() -> DepthGuard {
-    let depth = EVAL_DEPTH.with(|d| {
-        let n = d.get() + 1;
-        d.set(n);
-        n
-    });
-    let guard = DepthGuard;
-    if depth > MAX_EVAL_DEPTH {
-        rbqn_core::error::throw("Stack overflow");
-    }
-    guard
 }
 
 /// Switch `current_sc` to `next_body` for a header/predicate retry, carrying the
@@ -567,13 +541,13 @@ fn ret_d(body: &Body, stack: &mut Vec<B>, pscs: &[ScRef], current_sc: &std::rc::
 }
 
 pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
-    let _depth = enter_eval();
+    let mut frame = Frame::enter(body.max_stack as usize, body.max_psc as usize);
+    let mut stack = &mut frame.stack;
+    let mut pscs = &mut frame.pscs;
     let bc: &[i32] = &bl.bc;
     let mut pc = body.bc_offset;
-    let mut stack = PoolVec::take(&STACK_POOL, body.max_stack as usize);
     let mut current_sc = sc;
-    let mut pscs = PoolVec::take(&PSCS_POOL, body.max_psc as usize);
-    build_pscs(&mut pscs, &current_sc, body.max_psc);
+    build_pscs(pscs, &current_sc, body.max_psc);
 
     macro_rules! pop {
         () => {

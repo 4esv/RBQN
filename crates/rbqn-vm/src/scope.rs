@@ -86,8 +86,29 @@ impl std::ops::Deref for ScRef {
     fn deref(&self) -> &Scope { unsafe { &*self.0 } }
 }
 
+/// Per-thread interpreter state, kept in one thread-local so a block call
+/// pays for the TLS lookup once per phase instead of once per field.
+/// ManuallyDrop: no destructor registration (never torn down; leaks at exit).
+pub struct Tls {
+    /// Current block-evaluation nesting depth.
+    pub depth: std::cell::Cell<u32>,
+    /// Recycled uniquely-owned scopes.
+    pub scopes: std::cell::RefCell<Vec<std::rc::Rc<Scope>>>,
+    /// Recycled operand stacks.
+    pub stacks: std::cell::RefCell<Vec<Vec<B>>>,
+    /// Recycled scope-chain vectors.
+    pub pscs: std::cell::RefCell<Vec<Vec<ScRef>>>,
+}
+
 std::thread_local! {
-    static SCOPE_FREE: std::cell::RefCell<Vec<std::rc::Rc<Scope>>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub static TLS: std::mem::ManuallyDrop<Tls> = const {
+        std::mem::ManuallyDrop::new(Tls {
+            depth: std::cell::Cell::new(0),
+            scopes: std::cell::RefCell::new(Vec::new()),
+            stacks: std::cell::RefCell::new(Vec::new()),
+            pscs: std::cell::RefCell::new(Vec::new()),
+        })
+    };
 }
 
 #[derive(Debug)]
@@ -114,8 +135,8 @@ impl Scope {
     /// Build an `Rc<Scope>`, reusing a recycled allocation when one is available.
     #[inline]
     pub fn new_rc(body: &Arc<Body>, psc: std::rc::Rc<Scope>, var_am: u16, init_vars: &[B]) -> std::rc::Rc<Scope> {
-        let recycled = SCOPE_FREE
-            .try_with(|f| f.try_borrow_mut().ok().and_then(|mut f| f.pop()))
+        let recycled = TLS
+            .try_with(|t| t.scopes.try_borrow_mut().ok().and_then(|mut f| f.pop()))
             .ok()
             .flatten();
         if let Some(mut rc) = recycled
@@ -139,8 +160,8 @@ impl Scope {
         if let Some(s) = std::rc::Rc::get_mut(&mut rc) {
             let parent = s.psc.take();
             s.ext = None;
-            let _ = SCOPE_FREE.try_with(|f| {
-                if let Ok(mut f) = f.try_borrow_mut()
+            let _ = TLS.try_with(|t| {
+                if let Ok(mut f) = t.scopes.try_borrow_mut()
                     && f.len() < 64
                 {
                     f.push(rc);
