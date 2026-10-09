@@ -11,20 +11,66 @@ pub struct ScopeExt {
     pub vars: std::cell::RefCell<Vec<B>>,
 }
 
+/// Scope variable storage: up to INLINE_VARS slots live inside the Scope
+/// itself (one allocation per call instead of two); larger scopes use a Vec.
+#[derive(Debug, Clone)]
+pub enum Vars {
+    Inline([B; INLINE_VARS], u8),
+    Heap(Vec<B>),
+}
+
+pub const INLINE_VARS: usize = 8;
+
+impl Vars {
+    #[inline]
+    pub fn new(var_am: usize, init: &[B]) -> Vars {
+        let init = &init[..init.len().min(var_am)];
+        if var_am <= INLINE_VARS {
+            let mut a = [B::NO_VAR; INLINE_VARS];
+            a[..init.len()].copy_from_slice(init);
+            Vars::Inline(a, var_am as u8)
+        } else {
+            let mut v = Vec::with_capacity(var_am);
+            v.extend_from_slice(init);
+            v.resize(var_am, B::NO_VAR);
+            Vars::Heap(v)
+        }
+    }
+}
+
+impl std::ops::Deref for Vars {
+    type Target = [B];
+    #[inline]
+    fn deref(&self) -> &[B] {
+        match self {
+            Vars::Inline(a, n) => &a[..*n as usize],
+            Vars::Heap(v) => v,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Vars {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [B] {
+        match self {
+            Vars::Inline(a, n) => &mut a[..*n as usize],
+            Vars::Heap(v) => v,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Scope {
     pub psc: Option<std::rc::Rc<Scope>>,
     pub body: Arc<Body>,
     pub var_am: u16,
     pub ext: Option<ScopeExt>,
-    pub vars: std::cell::RefCell<Vec<B>>,
+    pub vars: std::cell::RefCell<Vars>,
 }
 
 impl Scope {
     pub fn new(body: Arc<Body>, psc: Option<std::rc::Rc<Scope>>, var_am: u16, init_vars: &[B]) -> Self {
-        let mut vars = Vec::with_capacity(var_am as usize);
-        vars.extend_from_slice(init_vars);
-        vars.resize(var_am as usize, B::NO_VAR);
+        let vars = Vars::new(var_am as usize, init_vars);
         Scope {
             psc,
             body,
