@@ -35,12 +35,13 @@ pub fn first_cell_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
     // Rank >= 2: return first major cell (rank n-1 subarray)
     let cell_shape = &arr.shape[1..];
-    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+    let cell_size: usize = cell_shape.iter().product::<usize>();
     let mut result = Vec::with_capacity(cell_size);
     for j in 0..cell_size {
         result.push(arr.get(j)?);
     }
-    let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), arr.fill);
+    let fill = if arr.el_type() == ElType::B { arr.fill } else { typed_fill(arr) };
+    let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), fill);
     Ok(PrimResult::Array(out))
 }
 
@@ -159,7 +160,9 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
     // NOTE: BQN ⊏ selects along the first axis
     let first_dim = if arr.shape.is_empty() { arr.ia() } else { arr.shape[0] };
     let cell_shape: &[usize] = if arr.shape.len() > 1 { &arr.shape[1..] } else { &[] };
-    let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+    // NOTE: no .max(1): a zero-size cell (e.g. 3‿0⥊0) selects to an empty result.
+    let cell_size: usize = cell_shape.iter().product::<usize>();
+    let cell_fill = if arr.el_type() == ElType::B { arr.fill } else { typed_fill(arr) };
 
     if w.is_f64() {
         let wi = validate_integer_index(w, "𝕨⊏𝕩")?;
@@ -181,7 +184,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
             return Ok(PrimResult::Array(out));
         }
         // Multi-dimensional: return the selected cell
-        if cell_size > 0 && arr.ia() > 0 {
+        if arr.el_type() != ElType::B {
             if let Some(data) = gather_cells(&arr.data, &[idx], cell_size) {
                 return Ok(PrimResult::Array(BqnArr { shape: cell_shape.to_vec(), data, fill: typed_fill(arr) }));
             }
@@ -190,7 +193,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         for j in 0..cell_size {
             result.push(arr.get(idx * cell_size + j)?);
         }
-        let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), arr.fill);
+        let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), cell_fill);
         return Ok(PrimResult::Array(out));
     }
 
@@ -209,7 +212,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
                 for j in 0..cell_size {
                     result.push(arr.get(idx * cell_size + j)?);
                 }
-                let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), arr.fill);
+                let out = typed_arr_from_b_vec(result, cell_shape.to_vec(), cell_fill);
                 return Ok(PrimResult::Array(out));
             }
             if inner.is_arr() {
@@ -234,7 +237,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
                     }
                     let mut out_shape = inner_arr.shape.clone();
                     out_shape.extend_from_slice(cell_shape);
-                    let out = typed_arr_from_b_vec(result, out_shape, arr.fill);
+                    let out = typed_arr_from_b_vec(result, out_shape, cell_fill);
                     return Ok(PrimResult::Array(out));
                 }
             }
@@ -421,7 +424,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 
     // Fast path: typed integer 𝕨, typed 𝕩, non-empty result.
     let real_cell: usize = cell_shape.iter().product();
-    if warr.ia() > 0 && arr.rank() >= 1 && real_cell > 0 && arr.el_type() != ElType::B {
+    if warr.ia() > 0 && arr.rank() >= 1 && arr.el_type() != ElType::B {
         if let Some(r) = resolve_typed_indices(warr, first_dim) {
             let idx = r?;
             if let Some(data) = gather_cells(&arr.data, &idx, real_cell) {
@@ -454,7 +457,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         }
         let mut out_shape = warr.shape.clone();
         out_shape.extend_from_slice(cell_shape);
-        let out = typed_arr_from_b_vec(result, out_shape, arr.fill);
+        let out = typed_arr_from_b_vec(result, out_shape, cell_fill);
         Ok(PrimResult::Array(out))
     }
 }
