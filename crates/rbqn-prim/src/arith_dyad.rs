@@ -257,21 +257,22 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
                     out.shape = wa_arr.shape.clone();
                     return Ok(PrimResult::Array(array::squeeze_num(out)));
                 } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
-                    let w_ia = wa_arr.ia().max(1);
+                    // Each w element pairs with a contiguous block of x (leading axis agreement).
+                    let rep = (xa_arr.ia() / wa_arr.ia().max(1)).max(1);
                     let result: Vec<f64> = xvals
                         .iter()
                         .enumerate()
-                        .map(|(i, &xv)| scalar_fn(wvals[i % w_ia], xv))
+                        .map(|(i, &xv)| scalar_fn(wvals[i / rep], xv))
                         .collect();
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = xa_arr.shape.clone();
                     return Ok(PrimResult::Array(array::squeeze_num(out)));
                 } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
-                    let x_ia = xa_arr.ia().max(1);
+                    let rep = (wa_arr.ia() / xa_arr.ia().max(1)).max(1);
                     let result: Vec<f64> = wvals
                         .iter()
                         .enumerate()
-                        .map(|(i, &wv)| scalar_fn(wv, xvals[i % x_ia]))
+                        .map(|(i, &wv)| scalar_fn(wv, xvals[i / rep]))
                         .collect();
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = wa_arr.shape.clone();
@@ -508,9 +509,9 @@ fn pervasive_char_add(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>, w_is
                 out.shape = ca_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else if is_shape_prefix(&ca_arr.shape, &na_arr.shape) {
-                let c_ia = ca_arr.ia().max(1);
+                let rep = (na_arr.ia() / ca_arr.ia().max(1)).max(1);
                 let result: std::result::Result<Vec<u32>, _> = nums.iter().enumerate().map(|(i, &n)| {
-                    let r = chars[i % c_ia] as i64 + n as i64;
+                    let r = chars[i / rep] as i64 + n as i64;
                     if r < 0 || r > value::CHR_MAX as i64 {
                         Err(BqnError::Domain("𝕨+𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
@@ -519,9 +520,9 @@ fn pervasive_char_add(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>, w_is
                 out.shape = na_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else if is_shape_prefix(&na_arr.shape, &ca_arr.shape) {
-                let n_ia = na_arr.ia().max(1);
+                let rep = (ca_arr.ia() / na_arr.ia().max(1)).max(1);
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().enumerate().map(|(i, &c)| {
-                    let r = c as i64 + nums[i % n_ia] as i64;
+                    let r = c as i64 + nums[i / rep] as i64;
                     if r < 0 || r > value::CHR_MAX as i64 {
                         Err(BqnError::Domain("𝕨+𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
@@ -595,9 +596,10 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
                 out.shape = wa_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
-                let w_ia = wa_arr.ia().max(1);
+                // Each w element pairs with a contiguous block of x (leading axis agreement).
+                    let rep = (xa_arr.ia() / wa_arr.ia().max(1)).max(1);
                 let result: std::result::Result<Vec<u32>, _> = nums.iter().enumerate().map(|(i, &n)| {
-                    let r = chars[i % w_ia] as i64 - n as i64;
+                    let r = chars[i / rep] as i64 - n as i64;
                     if r < 0 || r > value::CHR_MAX as i64 {
                         Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
@@ -606,9 +608,9 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
                 out.shape = xa_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
-                let x_ia = xa_arr.ia().max(1);
+                let rep = (wa_arr.ia() / xa_arr.ia().max(1)).max(1);
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().enumerate().map(|(i, &c)| {
-                    let r = c as i64 - nums[i % x_ia] as i64;
+                    let r = c as i64 - nums[i / rep] as i64;
                     if r < 0 || r > value::CHR_MAX as i64 {
                         Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
@@ -660,16 +662,17 @@ fn pervasive_char_sub_char(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>)
                 out.shape = wa_arr.shape.clone();
                 Ok(PrimResult::Array(array::squeeze_num(out)))
             } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
-                let w_ia = wa_arr.ia().max(1);
+                // Each w element pairs with a contiguous block of x (leading axis agreement).
+                    let rep = (xa_arr.ia() / wa_arr.ia().max(1)).max(1);
                 let result: Vec<f64> = xchars.iter().enumerate()
-                    .map(|(i, &xc)| (wchars[i % w_ia] as i64 - xc as i64) as f64).collect();
+                    .map(|(i, &xc)| (wchars[i / rep] as i64 - xc as i64) as f64).collect();
                 let mut out = BqnArr::new_vec_f64(result);
                 out.shape = xa_arr.shape.clone();
                 Ok(PrimResult::Array(array::squeeze_num(out)))
             } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
-                let x_ia = xa_arr.ia().max(1);
+                let rep = (wa_arr.ia() / xa_arr.ia().max(1)).max(1);
                 let result: Vec<f64> = wchars.iter().enumerate()
-                    .map(|(i, &wc)| (wc as i64 - xchars[i % x_ia] as i64) as f64).collect();
+                    .map(|(i, &wc)| (wc as i64 - xchars[i / rep] as i64) as f64).collect();
                 let mut out = BqnArr::new_vec_f64(result);
                 out.shape = wa_arr.shape.clone();
                 Ok(PrimResult::Array(array::squeeze_num(out)))
