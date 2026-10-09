@@ -56,7 +56,7 @@ pub fn matmul(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+        pass.dispatch_workgroups(workgroups_x, workgroups_y, 1); crate::stats::dispatch();
     }
-    queue.submit(std::iter::once(encoder.finish()));
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 }

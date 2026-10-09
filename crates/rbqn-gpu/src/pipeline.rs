@@ -71,7 +71,7 @@ impl PipelineCache {
                 compilation_options: Default::default(),
                 cache: None,
             });
-            self.pipelines.insert(key.clone(), pipeline);
+            self.pipelines.insert(key.clone(), pipeline); crate::stats::PIPELINE_COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         &self.pipelines[key]
     }

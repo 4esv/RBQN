@@ -44,9 +44,9 @@ fn dispatch_scan_pass(
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         let (gx, gy) = workgroup_grid(num_groups as u32);
-        pass.dispatch_workgroups(gx, gy, 1);
+        pass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
     }
-    queue.submit(std::iter::once(encoder.finish()));
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 }
 
 fn dispatch_propagate(
@@ -76,9 +76,9 @@ fn dispatch_propagate(
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         let (gx, gy) = workgroup_grid(num_groups as u32);
-        pass.dispatch_workgroups(gx, gy, 1);
+        pass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
     }
-    queue.submit(std::iter::once(encoder.finish()));
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 }
 
 pub fn exclusive_scan(

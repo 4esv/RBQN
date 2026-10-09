@@ -236,6 +236,7 @@ fn upload_raw<T: bytemuck::Pod>(
     kind: ElementKind,
     data: &[T],
 ) -> GpuBuffer {
+    crate::stats::BYTES_UP.fetch_add(std::mem::size_of_val(data) as u64, std::sync::atomic::Ordering::Relaxed);
     if !mappable() || data.is_empty() {
         let buf = GpuBuffer::storage(device, kind, data.len());
         queue.write_buffer(&buf.buffer, 0, bytemuck::cast_slice(data));
@@ -287,12 +288,12 @@ async fn download_raw<T: bytemuck::Pod>(
 
     let mut encoder = device.create_command_encoder(&Default::default());
     encoder.copy_buffer_to_buffer(&buf.buffer, 0, &staging, 0, buf.size);
-    queue.submit(std::iter::once(encoder.finish()));
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 
     let slice = staging.slice(..);
     map_sync(device, slice, wgpu::MapMode::Read);
 
-    let view = slice.get_mapped_range();
+    let view = slice.get_mapped_range(); crate::stats::READBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); crate::stats::BYTES_DOWN.fetch_add(buf.size, std::sync::atomic::Ordering::Relaxed);
     let result: Vec<T> = bytemuck::cast_slice(&view).to_vec();
     drop(view);
     staging.unmap();

@@ -4,3 +4,4 @@ pub mod pipeline;
 pub mod dispatch;
 pub mod fusion;
 pub mod kernels;
+pub mod stats;

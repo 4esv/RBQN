@@ -38,6 +38,7 @@ fn main() {
 
 fn interp_main(mut t: std::time::Instant) {
     rbqn::timing::lap(&mut t, "thread spawn");
+    let _gpu_summary = gpu_runtime::SummaryGuard;
     // Suppress default panic output: BQN errors use panic-based throw()
     // and we catch them with catch_unwind for clean error messages.
     // GPU dispatch panics are still reported under RBQN_GPU_DEBUG=1.
@@ -130,6 +131,7 @@ fn interp_main(mut t: std::time::Instant) {
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");
+            gpu_runtime::print_summary();
             std::process::exit(1);
         }
         rbqn::timing::lap(&mut t, "action eval");

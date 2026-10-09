@@ -27,7 +27,7 @@ pub fn radix_sort_u32(
     {
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(input.inner(), 0, buf_a.inner(), 0, input.size());
-        queue.submit(std::iter::once(encoder.finish()));
+        queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
     }
 
     for pass in 0..NUM_PASSES {
@@ -70,9 +70,9 @@ pub fn radix_sort_u32(
             cpass.set_pipeline(hist_pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
             let (gx, gy) = grid_for(n, WORKGROUP_SIZE);
-        cpass.dispatch_workgroups(gx, gy, 1);
+        cpass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
         }
-        queue.submit(std::iter::once(encoder.finish()));
+        queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 
         // CPU-side prefix sum on the small histogram (16 buckets)
         let histogram_data = pollster::block_on(
@@ -127,9 +127,9 @@ pub fn radix_sort_u32(
             cpass.set_pipeline(scatter_pipeline);
             cpass.set_bind_group(0, &scatter_bg, &[]);
             let (gx, gy) = grid_for(n, WORKGROUP_SIZE);
-        cpass.dispatch_workgroups(gx, gy, 1);
+        cpass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
         }
-        queue.submit(std::iter::once(encoder.finish()));
+        queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 
         std::mem::swap(&mut buf_a, &mut buf_b);
     }

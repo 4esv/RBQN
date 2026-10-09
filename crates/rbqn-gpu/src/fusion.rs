@@ -147,9 +147,9 @@ impl FusionBuilder {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             let (gx, gy) = grid_for(out.len(), WORKGROUP_SIZE);
-        pass.dispatch_workgroups(gx, gy, 1);
+        pass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
         }
-        queue.submit(std::iter::once(encoder.finish()));
+        queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
     }
 
     pub fn clear(&mut self) {

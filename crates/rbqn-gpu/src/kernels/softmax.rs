@@ -53,9 +53,9 @@ fn softmax_single_workgroup(
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         // Single workgroup — the shader handles all 256 lanes internally.
-        pass.dispatch_workgroups(1, 1, 1);
+        pass.dispatch_workgroups(1, 1, 1); crate::stats::dispatch();
     }
-    queue.submit(std::iter::once(encoder.finish()));
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 }
 
 /// Multi-pass softmax for vectors larger than 256 elements.
@@ -83,7 +83,7 @@ fn softmax_multi_pass(
         });
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(max_buf.inner(), 0, &staging, 0, 4);
-        queue.submit(std::iter::once(encoder.finish()));
+        queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 
         let slice = staging.slice(..);
         crate::buffer::map_sync(device, slice, wgpu::MapMode::Read);
@@ -115,7 +115,7 @@ fn softmax_multi_pass(
         });
         let mut encoder = device.create_command_encoder(&Default::default());
         encoder.copy_buffer_to_buffer(sum_buf.inner(), 0, &staging, 0, 4);
-        queue.submit(std::iter::once(encoder.finish()));
+        queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 
         let slice = staging.slice(..);
         crate::buffer::map_sync(device, slice, wgpu::MapMode::Read);

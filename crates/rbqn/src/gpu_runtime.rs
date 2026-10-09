@@ -18,6 +18,44 @@ static GPU_RUNTIME: OnceLock<Option<GpuRuntime>> = OnceLock::new();
 static GPU_DISABLED: AtomicBool = AtomicBool::new(false);
 static GPU_DEBUG: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GpuMode {
+    Default,
+    Off,
+    Force,
+}
+
+/// RBQN_GPU=off|force, read once. Anything else (or unset) keeps the thresholds.
+fn gpu_mode() -> GpuMode {
+    static MODE: OnceLock<GpuMode> = OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("RBQN_GPU").as_deref() {
+        Ok("off") => GpuMode::Off,
+        Ok("force") => GpuMode::Force,
+        _ => GpuMode::Default,
+    })
+}
+
+/// One-line GPU counter summary on stderr; no-op unless RBQN_GPU_DEBUG=1.
+pub fn print_summary() {
+    if !debug_enabled() {
+        return;
+    }
+    let s = rbqn_gpu::stats::snapshot();
+    eprintln!(
+        "gpu: dispatches={} submits={} readbacks={} up={}B down={}B init={:.1}ms compiles={}",
+        s.dispatches, s.submits, s.readbacks, s.bytes_up, s.bytes_down,
+        s.device_init_us as f64 / 1000.0, s.pipeline_compiles
+    );
+}
+
+/// Prints the summary when dropped (end of the interpreter thread, also on unwind).
+pub struct SummaryGuard;
+impl Drop for SummaryGuard {
+    fn drop(&mut self) {
+        print_summary();
+    }
+}
+
 /// Record CLI GPU settings. Called from main.rs after CLI parse.
 /// The device itself is created lazily by `get()` on the first dispatch that
 /// passes its size threshold, so startup never pays for adapter/device setup.
@@ -25,7 +63,7 @@ pub fn init(no_gpu: bool) {
     if std::env::var("RBQN_GPU_DEBUG").is_ok() {
         GPU_DEBUG.store(true, Ordering::Relaxed);
     }
-    if no_gpu {
+    if no_gpu || gpu_mode() == GpuMode::Off {
         GPU_DISABLED.store(true, Ordering::Relaxed);
     }
 }
@@ -42,7 +80,9 @@ pub fn get() -> Option<&'static GpuRuntime> {
             if debug_enabled() {
                 eprintln!("[gpu] initializing device on thread {:?}", std::thread::current().name());
             }
+            let t_init = std::time::Instant::now();
             let ctx = pollster::block_on(GpuContext::new())?;
+            rbqn_gpu::stats::DEVICE_INIT_US.store(t_init.elapsed().as_micros() as u64, Ordering::Relaxed);
             let cache = Mutex::new(PipelineCache::new(ctx.device.clone()));
             Some(GpuRuntime { ctx, cache })
         })
@@ -210,7 +250,14 @@ pub fn gpu_i32_to_arr(gpu: &GpuRuntime, buf: &GpuBuffer, shape: Vec<usize>, fill
 
 /// Check whether an operation on `len` elements should use the GPU.
 pub fn should_dispatch(op: &str, len: usize) -> bool {
-    rbqn_gpu::dispatch::should_use_gpu(op, len)
+    match gpu_mode() {
+        GpuMode::Off => false,
+        // HACK: GPU sort/grade return wrong results on small arrays (e.g. `⍋3‿1‿1`
+        // gives 0 1 2), and the compiler sorts, so forcing sort to 0 breaks every
+        // program. Force lowers its threshold to 1M instead.
+        GpuMode::Force => len >= if op == "sort" { 1_000_000 } else { 1 },
+        GpuMode::Default => rbqn_gpu::dispatch::should_use_gpu(op, len),
+    }
 }
 
 /// GPU-accelerated binary arithmetic: w_arr op x_arr → result.
@@ -514,7 +561,7 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
 
         // NOTE: Threshold check — dispatch to GPU for larger matrices.
         // For small matrices, CPU is faster due to transfer overhead.
-        if m * k + k * n < 50_000 { return None; }
+        if gpu_mode() != GpuMode::Force && m * k + k * n < 50_000 { return None; }
         let gpu = get()?;
 
         // Extract f64 data from arrays; skip if char/boxed
@@ -574,7 +621,7 @@ pub fn gpu_softmax(x: B) -> Option<B> {
         let n = xa.ia();
 
         // NOTE: Dispatch threshold — softmax GPU overhead only pays off for larger arrays.
-        if n < 256 { return None; }
+        if gpu_mode() != GpuMode::Force && n < 256 { return None; }
         let gpu = get()?;
 
         let x_f64: Vec<f64> = arr_to_f64(&xa)?;
