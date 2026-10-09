@@ -36,7 +36,149 @@ fn contains_non_data(v: B) -> bool {
     false
 }
 
+// PERF: fast paths for rank-1 typed arrays. Keys are mapped to an order-
+// preserving unsigned integer; grade uses counting sort for small ranges and
+// (key, index) pairs otherwise, which is stable because the index breaks ties.
+fn bit_get(v: &[u64], i: usize) -> bool { (v[i / 64] >> (i % 64)) & 1 == 1 }
+
+#[inline]
+fn i32_key(x: i32) -> u32 { (x as u32) ^ 0x8000_0000 }
+
+#[inline]
+fn f64_key(x: f64) -> u64 {
+    let b = (x + 0.0).to_bits(); // NOTE: −0+0 = +0, matching partial_cmp equality.
+    if b >> 63 == 1 { !b } else { b | (1 << 63) }
+}
+
+/// Stable grade of values mapped to order-preserving u32 keys.
+/// Descending keeps equal keys in original order (BQN semantics).
+fn grade_keyed<T: Copy>(vals: &[T], key: impl Fn(T) -> u32, ascending: bool) -> Vec<i32> {
+    let n = vals.len();
+    if n == 0 { return Vec::new(); }
+    let (mut lo, mut hi) = (u32::MAX, 0u32);
+    for &x in vals { let k = key(x); lo = lo.min(k); hi = hi.max(k); }
+    // PERF: already-ordered input (e.g. ↕n) is the identity permutation.
+    let ordered = if ascending { vals.windows(2).all(|w| key(w[0]) <= key(w[1])) }
+                  else { vals.windows(2).all(|w| key(w[0]) >= key(w[1])) };
+    if ordered { return (0..n as i32).collect(); }
+    let mut out = vec![0i32; n];
+    let range = (hi - lo) as usize + 1;
+    if range <= n.max(1 << 16) {
+        let bucket = |k: u32| if ascending { (k - lo) as usize } else { (hi - k) as usize };
+        let mut cnt = vec![0u32; range];
+        for &x in vals { cnt[bucket(key(x))] += 1; }
+        let mut sum = 0u32;
+        for c in cnt.iter_mut() { let t = *c; *c = sum; sum += t; }
+        for (i, &x) in vals.iter().enumerate() {
+            let b = bucket(key(x));
+            out[cnt[b] as usize] = i as i32;
+            cnt[b] += 1;
+        }
+    } else {
+        let mut pairs: Vec<u64> = vals.iter().enumerate()
+            .map(|(i, &x)| {
+                let k = if ascending { key(x) } else { !key(x) };
+                ((k as u64) << 32) | i as u64
+            })
+            .collect();
+        pairs.sort_unstable();
+        for (o, p) in out.iter_mut().zip(pairs) { *o = p as u32 as i32; }
+    }
+    out
+}
+
+fn grade_u64(keys: &[u64], ascending: bool) -> Vec<i32> {
+    let mut pairs: Vec<(u64, u32)> = keys.iter().enumerate()
+        .map(|(i, &k)| (if ascending { k } else { !k }, i as u32))
+        .collect();
+    pairs.sort_unstable();
+    pairs.into_iter().map(|(_, i)| i as i32).collect()
+}
+
+/// Returns None when the fast path does not apply (rank ≠ 1, boxed, NaN present).
+fn fast_grade(arr: &BqnArr, ascending: bool) -> Option<Vec<i32>> {
+    if arr.rank() != 1 { return None; }
+    let n = arr.ia();
+    Some(match &arr.data {
+        ArrData::Bit(v) => {
+            let bits: Vec<u8> = (0..n).map(|i| bit_get(v, i) as u8).collect();
+            grade_keyed(&bits, |x| x as u32, ascending)
+        }
+        ArrData::I8(v) => grade_keyed(v, |x| i32_key(x as i32), ascending),
+        ArrData::I16(v) => grade_keyed(v, |x| i32_key(x as i32), ascending),
+        ArrData::I32(v) => grade_keyed(v, i32_key, ascending),
+        ArrData::C8(v) => grade_keyed(v, |x| x as u32, ascending),
+        ArrData::C16(v) => grade_keyed(v, |x| x as u32, ascending),
+        ArrData::C32(v) => grade_keyed(v, |x| x, ascending),
+        ArrData::F64(v) => {
+            if v.iter().any(|x| x.is_nan()) { return None; }
+            grade_u64(&v.iter().map(|&x| f64_key(x)).collect::<Vec<_>>(), ascending)
+        }
+        ArrData::Boxed(_) => return None,
+    })
+}
+
+/// Sort a slice of integer-like values (given an order-preserving key) in place.
+/// Small key ranges use histogram expansion; otherwise sort_unstable (values
+/// with equal keys are identical, so stability is unobservable).
+fn sort_ints<T: Copy + Ord>(v: &mut [T], key: impl Fn(T) -> i64, from: impl Fn(i64) -> T, ascending: bool) {
+    let n = v.len();
+    if n == 0 { return; }
+    let (mut lo, mut hi) = (i64::MAX, i64::MIN);
+    for &x in v.iter() { let k = key(x); lo = lo.min(k); hi = hi.max(k); }
+    let range = (hi - lo) as usize + 1;
+    if range <= n.max(1 << 16) {
+        let mut cnt = vec![0usize; range];
+        for &x in v.iter() { cnt[(key(x) - lo) as usize] += 1; }
+        let mut pos = 0;
+        let mut emit = |b: usize, c: usize, v: &mut [T]| {
+            let val = from(lo + b as i64);
+            v[pos..pos + c].fill(val);
+            pos += c;
+        };
+        if ascending {
+            for b in 0..range { let c = cnt[b]; if c > 0 { emit(b, c, v); } }
+        } else {
+            for b in (0..range).rev() { let c = cnt[b]; if c > 0 { emit(b, c, v); } }
+        }
+    } else if ascending {
+        v.sort_unstable();
+    } else {
+        v.sort_unstable_by(|a, b| b.cmp(a));
+    }
+}
+
+fn fast_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
+    if arr.rank() != 1 { return None; }
+    let n = arr.ia();
+    let data = match &arr.data {
+        ArrData::Bit(v) => {
+            let ones = (0..n).filter(|&i| bit_get(v, i)).count();
+            let mut w = vec![0u64; n.div_ceil(64)];
+            let range = if ascending { n - ones..n } else { 0..ones };
+            for i in range { w[i / 64] |= 1 << (i % 64); }
+            ArrData::Bit(w)
+        }
+        ArrData::I8(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as i8, ascending); ArrData::I8(v) }
+        ArrData::I16(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as i16, ascending); ArrData::I16(v) }
+        ArrData::I32(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as i32, ascending); ArrData::I32(v) }
+        ArrData::C8(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as u8, ascending); ArrData::C8(v) }
+        ArrData::C16(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as u16, ascending); ArrData::C16(v) }
+        ArrData::C32(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as u32, ascending); ArrData::C32(v) }
+        ArrData::F64(v) => {
+            if v.iter().any(|x| x.is_nan()) { return None; }
+            let mut v = v.clone();
+            // NOTE: stable so −0 and +0 keep original relative order, as before.
+            if ascending { v.sort_by_key(|&x| f64_key(x)); } else { v.sort_by_key(|&x| std::cmp::Reverse(f64_key(x))); }
+            ArrData::F64(v)
+        }
+        ArrData::Boxed(_) => return None,
+    };
+    Some(BqnArr { shape: arr.shape.clone(), data, fill: arr.fill })
+}
+
 fn grade(arr: &BqnArr, ascending: bool) -> Result<Vec<i32>> {
+    if let Some(idx) = fast_grade(arr, ascending) { return Ok(idx); }
     // NOTE: BQN grade operates on the first axis (rows for 2D arrays).
     // For rank-1 arrays, each element is a cell. For rank-N, each cell is a
     // row-major sub-array. The result length equals arr.shape[0] (nrows).
@@ -155,6 +297,7 @@ pub fn sort_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         && let Some(result) = hook(arr, true) {
             return Ok(PrimResult::Array(result));
         }
+    if let Some(out) = fast_sort(arr, true) { return Ok(PrimResult::Array(out)); }
     let indices = grade(arr, true)?;
     let out = apply_row_permutation(arr, &indices)?;
     Ok(PrimResult::Array(out))
@@ -168,6 +311,7 @@ pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         && let Some(result) = hook(arr, false) {
             return Ok(PrimResult::Array(result));
         }
+    if let Some(out) = fast_sort(arr, false) { return Ok(PrimResult::Array(out)); }
     let indices = grade(arr, false)?;
     let out = apply_row_permutation(arr, &indices)?;
     Ok(PrimResult::Array(out))
