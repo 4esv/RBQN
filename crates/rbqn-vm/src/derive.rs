@@ -127,13 +127,20 @@ fn next_derived_id() -> u64 {
 pub fn store_derived(d: Derived) -> u64 {
     let id = next_derived_id();
     let d = std::rc::Rc::new(d);
-    DERIVED_STORE.with(|s| s.borrow_mut().insert(id, d));
+    DERIVED_STORE.with(|s| {
+        let mut v = s.borrow_mut();
+        let i = id as usize;
+        if v.len() <= i {
+            v.resize(i + 1, None);
+        }
+        v[i] = Some(d);
+    });
     id
 }
 
 /// Derived object by id, or None for an unknown id.
 pub fn try_get_derived(id: u64) -> Option<std::rc::Rc<Derived>> {
-    DERIVED_STORE.with(|s| s.borrow().get(&id).cloned())
+    DERIVED_STORE.with(|s| s.borrow().get(id as usize).and_then(|d| d.clone()))
 }
 
 pub fn get_derived(id: u64) -> std::rc::Rc<Derived> {
@@ -150,8 +157,10 @@ use std::sync::Mutex;
 // panic, so catch_unwind (⎊) can never observe a live borrow.
 // ManuallyDrop: values are never freed today, so skip a teardown walk at exit.
 std::thread_local! {
-    static DERIVED_STORE: std::mem::ManuallyDrop<std::cell::RefCell<rbqn_core::IdMap<std::rc::Rc<Derived>>>> =
-        std::mem::ManuallyDrop::new(std::cell::RefCell::new(rbqn_core::IdMap::default()));
+    // NOTE: indexed by the sequential id from next_derived_id (never freed, never reused);
+    // slots this thread did not allocate stay None.
+    static DERIVED_STORE: std::mem::ManuallyDrop<std::cell::RefCell<Vec<Option<std::rc::Rc<Derived>>>>> =
+        const { std::mem::ManuallyDrop::new(std::cell::RefCell::new(Vec::new())) };
 }
 
 // Global inverse lookup functions, set by setInv callback during bootstrap.

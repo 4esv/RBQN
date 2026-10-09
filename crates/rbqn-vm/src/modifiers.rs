@@ -379,6 +379,22 @@ fn each_c1(f: B, x: B) -> B {
     }
     let n = arr.ia();
     let mut results = Vec::with_capacity(n);
+    // Resolve a block operand once instead of per element (same call c1 makes for FunBlock).
+    if f.is_fun() {
+        let d = crate::derive::get_derived((f.0 & 0xFFFFFFFFFFFF) >> 3);
+        if d.kind == crate::derive::DerivedKind::FunBlock {
+            let bl = d.bl.as_ref().unwrap().clone();
+            let psc = d.sc.as_ref().unwrap().clone();
+            let body = bl.bodies[0].clone();
+            for i in 0..n {
+                let elem = get_elem(&arr, i);
+                results.push(crate::vm::exec_block_with_args(
+                    &bl, body.clone(), psc.clone(), &[f, elem, B::SENTINEL],
+                ));
+            }
+            return results_to_arr(results, arr.shape.clone());
+        }
+    }
     for i in 0..n {
         let elem = get_elem(&arr, i);
         let result = c1(f, elem);
