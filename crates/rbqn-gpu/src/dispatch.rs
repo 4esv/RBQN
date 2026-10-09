@@ -7,13 +7,13 @@
 
 /// Smallest array (elements) a hook turns into a lazy node in default mode.
 pub const FLOOR: usize = 65_536;
-/// Sort/grade. Measured force / off (ms): 1e5 8.9/7.8, 3e5 15.2/13.4,
-/// 1e6 25.0/31.1, 3e6 33.1/57.0, 1e7 65.4/232.2. Force never sorts below 1M on
-/// the GPU (small-sort HACK in gpu_runtime), so the 1e5/3e5 force rows are the
-/// CPU plus init; the crossover is in (3e5, 1e6], × 1.5 = 1.5M. At 1M the
-/// README row `+´ (⊢ ⍋⊸⊏ ⊢) 1000000⥊3‿1‿2` went 17 → 30 ms on the GPU (CPU grade
-/// of 3 distinct values is cheap), so 1M itself stays on the CPU.
-pub const SORT_MIN: usize = 1_500_000;
+/// Sort/grade of wide-range keys (the CPU counting sort handles the rest, see
+/// gpu_runtime::sort_on_gpu). Measured force / off (ms over the same program
+/// without the sort, 2026-10-09, keys `(2⋆31)|48271×↕n`): 1e6 19/11, 2e6
+/// 22/21, 3e6 29/36, 1e7 60/122. Force has device init started at entry;
+/// default mode starts it at the first large array, so ~5 ms more is exposed
+/// at the sort and the gate sits above the 2-3e6 crossover.
+pub const SORT_MIN: usize = 4_000_000;
 
 // GPU (fit.json, 2026-10-09, M3 Pro). Per element / byte in ns, fixed in ms.
 /// Submit + wait + scalar readback + compile of a new tree shape (fold intercept).

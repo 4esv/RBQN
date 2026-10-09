@@ -309,6 +309,37 @@ pub fn gpu_safe_arr(arr: &BqnArr) -> bool {
     }
 }
 
+/// Sort/grade gate. The CPU counts (O(n)) when the key range is at most
+/// max(n, 2^16), and that beats the GPU at every size (1e7 of 3 keys: 21 ms
+/// CPU grade vs 44 ms forced). Wide-range keys take the CPU's comparison
+/// sort, which the GPU beats from ~3e6 elements with device init already
+/// exposed (1e7: 122 ms CPU vs 60-78 GPU; 2e6: equal). Default mode starts
+/// device init at the first large array, so SORT_MIN sits above the
+/// measured crossover. Force mode keeps its own size gate.
+fn sort_on_gpu(arr: &BqnArr) -> bool {
+    let n = arr.ia();
+    if gpu_mode() == GpuMode::Force {
+        return should_dispatch("sort", n);
+    }
+    if !should_dispatch("sort", n) {
+        return false;
+    }
+    let (lo, hi) = match &arr.data {
+        ArrData::I32(v) => {
+            let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+            for &x in v { lo = lo.min(x); hi = hi.max(x); }
+            (lo as f64, hi as f64)
+        }
+        ArrData::F64(v) => {
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &x in v { lo = lo.min(x); hi = hi.max(x); }
+            (lo, hi)
+        }
+        _ => return false, // Bit/I8/I16: range ≤ 2^16, always counted on the CPU
+    };
+    hi - lo + 1.0 > n.max(1 << 16) as f64
+}
+
 /// Transfer BqnArr to a GPU i32 buffer.
 /// Caller must have verified `gpu_safe_arr` for F64 arrays.
 /// Returns None for unsupported types (chars, boxed).
@@ -1290,7 +1321,7 @@ pub fn gpu_grade(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
     guarded("grade", || {
         // Only dispatch rank-1 numeric arrays above threshold
         if arr.rank() != 1 { return None; }
-        if !should_dispatch("sort", arr.ia()) { return None; }
+        if !sort_on_gpu(arr) { return None; }
         if !gpu_safe_arr(arr) { return None; }
         let gpu = get()?;
 
@@ -1299,14 +1330,14 @@ pub fn gpu_grade(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
 
         let input_buf = arr_to_gpu_i32(gpu, arr)?;
 
-        let mut indices = {
+        // The kernel grades in either direction and keeps earlier indices
+        // first among equal keys (BQN `⍒` is stable too; reversing an
+        // ascending grade would put them last).
+        let indices = {
             let mut cache = gpu.cache.lock().ok()?;
-            rbqn_gpu::kernels::sort::argsort_i32(device, queue, &mut cache, &input_buf)
+            let g = rbqn_gpu::kernels::sort::grade_i32(device, queue, &mut cache, &input_buf, !ascending);
+            pollster::block_on(rbqn_gpu::buffer::download_i32(device, queue, &g))
         };
-
-        if !ascending {
-            indices.reverse();
-        }
 
         let n = arr.ia();
         let mut out = BqnArr::new_vec_i32(indices);
@@ -1448,7 +1479,7 @@ pub fn gpu_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
     guarded("sort", || {
         // Only dispatch rank-1 numeric arrays above threshold
         if arr.rank() != 1 { return None; }
-        if !should_dispatch("sort", arr.ia()) { return None; }
+        if !sort_on_gpu(arr) { return None; }
         if !gpu_safe_arr(arr) { return None; }
         let gpu = get()?;
 
@@ -1459,25 +1490,11 @@ pub fn gpu_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
 
         let sorted_buf = {
             let mut cache = gpu.cache.lock().ok()?;
-            rbqn_gpu::kernels::sort::sort_i32(device, queue, &mut cache, &input_buf)
+            rbqn_gpu::kernels::sort::sort_i32_dir(device, queue, &mut cache, &input_buf, !ascending)
         };
 
         let n = arr.ia();
-        let mut result = gpu_i32_to_arr(gpu, &sorted_buf, vec![n], arr.fill);
-        if !ascending {
-            // Reverse the sorted array for descending order
-            if let rbqn_core::array::ArrData::I32(ref mut v) = result.data {
-                v.reverse();
-            } else {
-                // Convert to i32 for reversal if squeezed to smaller type
-                let vals: Vec<i32> = (0..result.ia()).filter_map(|i| {
-                    result.get(i).ok().and_then(|b| b.to_f64().ok()).map(|f| f as i32)
-                }).collect();
-                let mut reversed = vals;
-                reversed.reverse();
-                result.data = rbqn_core::array::ArrData::I32(reversed);
-            }
-        }
+        let result = gpu_i32_to_arr(gpu, &sorted_buf, vec![n], arr.fill);
         log_dispatch("sort", n, "i32");
         Some(result)
     })
