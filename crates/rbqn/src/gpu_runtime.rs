@@ -1,10 +1,10 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rbqn_core::array::{ArrData, BqnArr, squeeze_num, squeeze_i32};
 use rbqn_core::{B, DeviceValue, peek_device, tag_device};
-use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32, upload_f32, download_i32, download_f32};
+use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32, upload_f32, download_i32, download_i64, download_f32};
 use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
 use rbqn_gpu::pipeline::PipelineCache;
@@ -295,14 +295,27 @@ pub fn should_dispatch(op: &str, len: usize) -> bool {
     }
 }
 
-/// A pending i32 result living on the GPU (Step 2, lazy device values).
-/// `bound` is a conservative bound on |element|, so fold/scan can check i32
-/// overflow without reading the data back.
+/// Results whose bound is below this run in i32.
+const I32_LIM: f64 = 2_147_483_648.0;
+/// Results whose bound is below this run in i64 and convert to f64 exactly;
+/// anything larger goes to the CPU (f64 semantics, readback counted).
+const EXACT_LIM: f64 = 9_007_199_254_740_992.0;
+
+/// A pending integer result living on the GPU (Step 2/3, lazy device values).
+/// `kind` is I32 or I64. `bound` is a conservative bound on |element|, so
+/// arith/fold/scan pick i32, i64 or CPU without reading the data back; it can
+/// be tightened in place by a device min/max pass (`refine_bound`).
 pub struct GpuArr {
     buf: Arc<GpuBuffer>,
     shape: Vec<usize>,
     fill: Option<B>,
-    bound: f64,
+    bound: Cell<f64>,
+}
+
+impl GpuArr {
+    fn new(buf: GpuBuffer, shape: Vec<usize>, fill: Option<B>, bound: f64) -> Self {
+        GpuArr { buf: Arc::new(buf), shape, fill, bound: Cell::new(bound) }
+    }
 }
 
 impl DeviceValue for GpuArr {
@@ -314,8 +327,19 @@ impl DeviceValue for GpuArr {
     }
     fn materialize(&self) -> BqnArr {
         let gpu = get().expect("pending GPU value without a GPU runtime");
-        let data = pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &self.buf));
-        BqnArr { shape: self.shape.clone(), data: squeeze_i32(data), fill: self.fill }
+        let data = match self.buf.element_type() {
+            ElementKind::I64 => {
+                let v = pollster::block_on(download_i64(&gpu.ctx.device, &gpu.ctx.queue, &self.buf));
+                // NOTE: every I64 value is within ±2^53 (the guard), so f64 is exact.
+                if v.iter().all(|&x| x as i32 as i64 == x) {
+                    squeeze_i32(v.into_iter().map(|x| x as i32).collect())
+                } else {
+                    ArrData::F64(v.into_iter().map(|x| x as f64).collect())
+                }
+            }
+            _ => squeeze_i32(pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &self.buf))),
+        };
+        BqnArr { shape: self.shape.clone(), data, fill: self.fill }
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -343,11 +367,12 @@ fn operand_shape(b: B) -> Option<(Vec<usize>, Option<Arc<BqnArr>>)> {
 }
 
 /// Device buffer and |element| bound for an operand: the pending buffer itself,
-/// a cached upload, or a fresh upload. None for non-integer-safe host data.
+/// a cached upload, or a fresh upload (bound = exact max |v| from a host pass).
+/// None for non-integer-safe host data.
 fn operand_buf(gpu: &GpuRuntime, b: B, host: Option<&BqnArr>) -> Option<(Arc<GpuBuffer>, f64)> {
     if let Some(d) = peek_device(b) {
         let g = d.as_any().downcast_ref::<GpuArr>()?;
-        return Some((g.buf.clone(), g.bound));
+        return Some((g.buf.clone(), g.bound.get()));
     }
     if let Some(hit) = UPLOAD_CACHE.with(|c| {
         c.borrow().iter().find(|(k, _, _)| *k == b.0).map(|(_, buf, m)| (buf.clone(), *m))
@@ -370,6 +395,40 @@ fn operand_buf(gpu: &GpuRuntime, b: B, host: Option<&BqnArr>) -> Option<(Arc<Gpu
     Some((buf, bound))
 }
 
+/// Tighten the bound of a pending I32 operand with a device min/max pass
+/// (one tiny readback). Returns the new bound, or None when `b` is not a
+/// pending I32 value (host uploads already carry their exact max |v|).
+fn refine_bound(gpu: &GpuRuntime, b: B) -> Option<f64> {
+    let d = peek_device(b)?;
+    let g = d.as_any().downcast_ref::<GpuArr>()?;
+    if g.buf.element_type() != ElementKind::I32 || g.buf.is_empty() {
+        return None;
+    }
+    let mm = {
+        let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+        rbqn_gpu::kernels::minmax::minmax_i32(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &g.buf)
+    };
+    let v = pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &mm));
+    let nb = (v[0] as f64).abs().max((v[1] as f64).abs());
+    log_dispatch("minmax", g.buf.len(), "i32");
+    g.bound.set(g.bound.get().min(nb));
+    Some(g.bound.get())
+}
+
+/// Widen an I32 buffer to I64 on the device (max(a,a) through the widening
+/// kernel); I64 buffers pass through.
+fn widen_i64(gpu: &GpuRuntime, buf: Arc<GpuBuffer>) -> Arc<GpuBuffer> {
+    if buf.element_type() == ElementKind::I64 {
+        return buf;
+    }
+    let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I64, buf.len());
+    let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+    rbqn_gpu::kernels::arith_i64::arith_binary_i32_to_i64(
+        &gpu.ctx.device, &gpu.ctx.queue, &mut cache, "max", &buf, &buf, &out,
+    );
+    Arc::new(out)
+}
+
 fn fill_of(b: B, host: Option<&BqnArr>) -> Option<B> {
     match host {
         Some(a) => a.fill,
@@ -377,38 +436,68 @@ fn fill_of(b: B, host: Option<&BqnArr>) -> Option<B> {
     }
 }
 
-/// GPU-accelerated binary arithmetic on two same-shape arrays, given as raw `B`
-/// so pending device operands are used in place. Returns a pending device value.
-/// Returns None on any error (CPU fallback).
+fn arith_bound(op: &str, wb: f64, xb: f64) -> f64 {
+    match op {
+        "add" | "sub" => wb + xb,
+        _ => wb * xb,
+    }
+}
+
+/// GPU-accelerated binary arithmetic on two same-shape integer arrays, given as
+/// raw `B` so pending device operands are used in place. Returns a pending
+/// device value: i32 when the result bound is < 2^31, i64 when < 2^53, else
+/// None (CPU). `÷` is never taken (non-integer results).
 /// Registered as GPU_ARITH_HOOK in rbqn-prim at startup.
 pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
     if gpu_mode() == GpuMode::Off { return None; }
+    if !matches!(op, "add" | "sub" | "mul") { return None; }
     guarded("arith", || {
         let (wshape, wh) = operand_shape(w)?;
         let (xshape, xh) = operand_shape(x)?;
         if wshape.is_empty() || wshape != xshape { return None; }
         let n: usize = wshape.iter().product();
-        if !should_dispatch("arith", n) { return None; }
+        if n == 0 || !should_dispatch("arith", n) { return None; }
         if let Some(a) = &wh && !gpu_safe_arr(a) { return None; }
         if let Some(a) = &xh && !gpu_safe_arr(a) { return None; }
         let gpu = get()?;
-        let (w_buf, wb) = operand_buf(gpu, w, wh.as_deref())?;
-        let (x_buf, xb) = operand_buf(gpu, x, xh.as_deref())?;
-        let out_buf = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I32, n);
-        {
+        let (w_buf, mut wb) = operand_buf(gpu, w, wh.as_deref())?;
+        let (x_buf, mut xb) = operand_buf(gpu, x, xh.as_deref())?;
+        let mut bound = arith_bound(op, wb, xb);
+        if bound >= EXACT_LIM {
+            if let Some(b) = refine_bound(gpu, w) { wb = b; }
+            if let Some(b) = refine_bound(gpu, x) { xb = b; }
+            bound = arith_bound(op, wb, xb);
+            if bound >= EXACT_LIM { return None; }
+        }
+        let both_i32 = w_buf.element_type() == ElementKind::I32 && x_buf.element_type() == ElementKind::I32;
+        let (out_buf, kind) = if both_i32 && bound < I32_LIM {
+            let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I32, n);
             let mut cache = gpu.cache.lock().ok()?;
             rbqn_gpu::kernels::arith::arith_binary(
-                &gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &w_buf, &x_buf, &out_buf,
+                &gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &w_buf, &x_buf, &out,
             );
-        }
-        let bound = match op {
-            "add" | "sub" => wb + xb,
-            "mul" => wb * xb,
-            _ => wb,
+            (out, "i32")
+        } else {
+            if !gpu.ctx.shader_int64 { return None; }
+            let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I64, n);
+            if both_i32 {
+                let mut cache = gpu.cache.lock().ok()?;
+                rbqn_gpu::kernels::arith_i64::arith_binary_i32_to_i64(
+                    &gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &w_buf, &x_buf, &out,
+                );
+                (out, "i32→i64")
+            } else {
+                let (a, b) = (widen_i64(gpu, w_buf), widen_i64(gpu, x_buf));
+                let mut cache = gpu.cache.lock().ok()?;
+                rbqn_gpu::kernels::arith_i64::arith_binary_i64(
+                    &gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &a, &b, &out,
+                );
+                (out, "i64")
+            }
         };
-        log_dispatch("arith", n, "i32");
+        log_dispatch(&format!("arith_{op}"), n, kind);
         let fill = fill_of(w, wh.as_deref());
-        Some(tag_device(Arc::new(GpuArr { buf: Arc::new(out_buf), shape: wshape, fill, bound })))
+        Some(tag_device(Arc::new(GpuArr::new(out_buf, wshape, fill, bound))))
     })
 }
 
@@ -546,6 +635,7 @@ pub fn gpu_fold(f: B, x: B) -> Option<B> {
 
 fn gpu_fold_inner(f: B, x: B) -> Option<B> {
     let (shape, host) = operand_shape(x)?;
+    // NOTE: n = 0 stays on the CPU (identity element; the kernels assert n > 0).
     if shape.len() != 1 || shape[0] == 0 { return None; }
     let n = shape[0];
     if !should_dispatch("reduce", n) {
@@ -561,26 +651,46 @@ fn gpu_fold_inner(f: B, x: B) -> Option<B> {
     };
     if let Some(a) = &host && !gpu_safe_arr(a) { return None; }
     let gpu = get()?;
-    let (buf, bound) = operand_buf(gpu, x, host.as_deref())?;
-    // The kernels accumulate in i32; bound the result, not just the inputs.
-    if (op == "add" && bound * n as f64 >= 2_147_483_648.0) || (op == "mul" && bound > 1.0) {
-        return None;
-    }
-    let result_buf = {
-        let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
-        rbqn_gpu::kernels::reduce::reduce(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &buf)
+    let (buf, mut bound) = operand_buf(gpu, x, host.as_deref())?;
+    let out_bound = |b: f64| match op {
+        "add" => b * n as f64,
+        // Products only when every |v| <= 1 (bound stays 1).
+        "mul" => if b > 1.0 { f64::INFINITY } else { b },
+        _ => b,
     };
-    let result_data =
-        pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &result_buf));
-    if result_data.is_empty() {
-        return None;
+    if out_bound(bound) >= EXACT_LIM {
+        bound = refine_bound(gpu, x).unwrap_or(bound);
+        if out_bound(bound) >= EXACT_LIM { return None; }
     }
-    log_dispatch(&format!("reduce_{op}"), n, "i32");
-    Some(B::m_f64(result_data[0] as f64))
+    let rb = out_bound(bound);
+    let is_i32 = buf.element_type() == ElementKind::I32;
+    let (result, kind) = if is_i32 && rb < I32_LIM {
+        let result_buf = {
+            let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+            rbqn_gpu::kernels::reduce::reduce(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &buf)
+        };
+        let d = pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &result_buf));
+        (*d.first()? as f64, "i32")
+    } else {
+        if !gpu.ctx.shader_int64 { return None; }
+        let result_buf = {
+            let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+            if is_i32 {
+                rbqn_gpu::kernels::reduce_i64::reduce_i32_to_i64(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &buf)
+            } else {
+                rbqn_gpu::kernels::reduce_i64::reduce_i64(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &buf)
+            }
+        };
+        let d = pollster::block_on(download_i64(&gpu.ctx.device, &gpu.ctx.queue, &result_buf));
+        (*d.first()? as f64, if is_i32 { "i32→i64" } else { "i64" })
+    };
+    log_dispatch(&format!("reduce_{op}"), n, kind);
+    Some(B::m_f64(result))
 }
 
 /// GPU scan (inclusive prefix sum) for large rank-1 numeric arrays, given as raw `x`.
-/// Only supports + (prim_idx 0). Returns a pending device value.
+/// Only supports + (prim_idx 0). Returns a pending device value (i32 when every
+/// partial sum fits, else i64 while < 2^53, else None for the CPU).
 /// Returns None for unsupported ops or if GPU dispatch is unavailable.
 pub fn gpu_scan(f: B, x: B) -> Option<B> {
     if gpu_mode() == GpuMode::Off || !x.is_arr() { return None; }
@@ -600,22 +710,31 @@ fn gpu_scan_inner(f: B, x: B) -> Option<B> {
     }
     if let Some(a) = &host && !gpu_safe_arr(a) { return None; }
     let gpu = get()?;
-    let (buf, bound) = operand_buf(gpu, x, host.as_deref())?;
-    // Prefix sums accumulate in i32; every partial sum must fit.
-    let out_bound = bound * n as f64;
-    if out_bound >= 2_147_483_648.0 {
-        return None;
+    let (buf, mut bound) = operand_buf(gpu, x, host.as_deref())?;
+    if bound * n as f64 >= EXACT_LIM {
+        bound = refine_bound(gpu, x).unwrap_or(bound);
+        if bound * n as f64 >= EXACT_LIM { return None; }
     }
-    let result_buf = {
+    let out_bound = bound * n as f64;
+    let is_i32 = buf.element_type() == ElementKind::I32;
+    let (result_buf, kind) = if is_i32 && out_bound < I32_LIM {
         let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
-        rbqn_gpu::kernels::scan::inclusive_scan(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &buf)
+        (rbqn_gpu::kernels::scan::inclusive_scan(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &buf), "i32")
+    } else {
+        if !gpu.ctx.shader_int64 { return None; }
+        let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if is_i32 {
+            (rbqn_gpu::kernels::scan_i64::scan_i32_to_i64(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, "add", &buf), "i32→i64")
+        } else {
+            (rbqn_gpu::kernels::scan_i64::scan_i64(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, "add", &buf), "i64")
+        }
     };
     if result_buf.len() != n {
         return None;
     }
-    log_dispatch("scan_add", n, "i32");
+    log_dispatch("scan_add", n, kind);
     let fill = fill_of(x, host.as_deref());
-    Some(tag_device(Arc::new(GpuArr { buf: Arc::new(result_buf), shape, fill, bound: out_bound })))
+    Some(tag_device(Arc::new(GpuArr::new(result_buf, shape, fill, out_bound))))
 }
 
 /// GPU-accelerated grade (⍋/⍒): returns permutation indices that sort the array.
