@@ -62,10 +62,10 @@ fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
 
 /// Recursively apply a scalar dyadic function element-wise through Boxed arrays.
 /// This handles depth>1 pervasion: e.g. `3 + ⟨1, 2, ⟨3, 4⟩⟩ → ⟨4, 5, ⟨6, 7⟩⟩`.
-fn pervasive_boxed_scalar_arr(
+fn pervasive_boxed_scalar_arr<F: Fn(f64, f64) -> f64 + Copy>(
     w: B,
     xa_arr: &BqnArr,
-    scalar_fn: fn(f64, f64) -> f64,
+    scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
     // NOTE: If w is a rank-0 box broadcasting over xa_arr, extract its content
@@ -94,10 +94,10 @@ fn pervasive_boxed_scalar_arr(
     Ok(PrimResult::Array(out))
 }
 
-fn pervasive_boxed_arr_scalar(
+fn pervasive_boxed_arr_scalar<F: Fn(f64, f64) -> f64 + Copy>(
     wa_arr: &BqnArr,
     x: B,
-    scalar_fn: fn(f64, f64) -> f64,
+    scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
     // NOTE: If x is a rank-0 box (BQN scalar broadcast), extract its content so the
@@ -132,10 +132,10 @@ fn pervasive_boxed_arr_scalar(
     Ok(PrimResult::Array(out))
 }
 
-fn pervasive_boxed_arr_arr(
+fn pervasive_boxed_arr_arr<F: Fn(f64, f64) -> f64 + Copy>(
     wa_arr: &BqnArr,
     xa_arr: &BqnArr,
-    scalar_fn: fn(f64, f64) -> f64,
+    scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
     if wa_arr.shape != xa_arr.shape {
@@ -178,12 +178,12 @@ fn pervasive_fill(results: &[B], fallback: Option<B>) -> Option<B> {
     }
 }
 
-fn pervasive_dyad(
+fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
     w: B,
     wa: Option<&BqnArr>,
     x: B,
     xa: Option<&BqnArr>,
-    scalar_fn: fn(f64, f64) -> f64,
+    scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
     match (wa, xa) {
@@ -205,7 +205,7 @@ fn pervasive_dyad(
         // scalar-array
         (None, Some(xa_arr)) => {
             if let Ok(wf) = w.to_f64()
-                && let Ok(xvals) = xa_arr.f64_iter() {
+                && let Ok(xvals) = num_view(xa_arr) {
                     let result: Vec<f64> = xvals.iter().map(|&xv| scalar_fn(wf, xv)).collect();
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = xa_arr.shape.clone();
@@ -217,7 +217,7 @@ fn pervasive_dyad(
         // array-scalar
         (Some(wa_arr), None) => {
             if let Ok(xf) = x.to_f64()
-                && let Ok(wvals) = wa_arr.f64_iter() {
+                && let Ok(wvals) = num_view(wa_arr) {
                     let result: Vec<f64> = wvals.iter().map(|&wv| scalar_fn(wv, xf)).collect();
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = wa_arr.shape.clone();
@@ -246,7 +246,7 @@ fn pervasive_dyad(
                             return Ok(PrimResult::Array(result));
                         }
             // Try fast numeric path first
-            if let (Ok(wvals), Ok(xvals)) = (wa_arr.f64_iter(), xa_arr.f64_iter()) {
+            if let (Ok(wvals), Ok(xvals)) = (num_view(wa_arr), num_view(xa_arr)) {
                 if wa_arr.shape == xa_arr.shape {
                     let result: Vec<f64> = wvals
                         .iter()
@@ -286,6 +286,14 @@ fn pervasive_dyad(
             // Boxed fallback: recurse element-wise
             pervasive_boxed_arr_arr(wa_arr, xa_arr, scalar_fn, name)
         }
+    }
+}
+
+/// Numeric contents as f64, borrowing when the array already stores f64.
+fn num_view(a: &BqnArr) -> Result<std::borrow::Cow<'_, [f64]>> {
+    match &a.data {
+        array::ArrData::F64(v) => Ok(std::borrow::Cow::Borrowed(v)),
+        _ => a.f64_iter().map(std::borrow::Cow::Owned),
     }
 }
 
@@ -549,7 +557,7 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
         }
         (None, Some(xa_arr)) => {
             let c = w.o2c()?;
-            let nums = xa_arr.f64_iter()?;
+            let nums = num_view(xa_arr)?;
             let result: std::result::Result<Vec<u32>, _> = nums.iter().map(|&n| {
                 let r = c as i64 - n as i64;
                 if r < 0 || r > value::CHR_MAX as i64 {
@@ -575,7 +583,7 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
         }
         (Some(wa_arr), Some(xa_arr)) => {
             let chars = wa_arr.c32_iter()?;
-            let nums = xa_arr.f64_iter()?;
+            let nums = num_view(xa_arr)?;
             if wa_arr.shape == xa_arr.shape {
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
                     let r = c as i64 - n as i64;
@@ -815,7 +823,7 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
         }
         (None, Some(xa_arr)) => {
             let c = w.o2c()? as i64;
-            let nums = xa_arr.f64_iter()?;
+            let nums = num_view(xa_arr)?;
             let result: std::result::Result<Vec<u32>, _> = nums.iter().map(|&n| {
                 let r = c + 1 - n as i64;
                 if r < 0 || r > value::CHR_MAX as i64 {
@@ -841,7 +849,7 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
         }
         (Some(wa_arr), Some(xa_arr)) => {
             let chars = wa_arr.c32_iter()?;
-            let nums = xa_arr.f64_iter()?;
+            let nums = num_view(xa_arr)?;
             if wa_arr.shape == xa_arr.shape {
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
                     let r = c as i64 + 1 - n as i64;
