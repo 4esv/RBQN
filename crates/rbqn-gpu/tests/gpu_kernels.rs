@@ -701,6 +701,44 @@ mod int64_tests {
         check_arith(&ctx, &mut cache, 20_000_000);
     }
 
+    // ---- scalar operand (i64 out; i32 out via arith::arith_scalar_i32) ----
+
+    #[test]
+    fn test_arith_scalar_lengths() {
+        use rbqn_gpu::kernels::arith;
+        let Some((ctx, mut cache)) = setup() else { return };
+        let (d, q) = (&ctx.device, &ctx.queue);
+        let scalars: [i32; 5] = [0, 7, -3, i32::MAX, i32::MIN];
+        for n in [1usize, 257, 1_000_003] {
+            let a64 = gen_i64(n, "mixed", 5);
+            let a32 = gen_i32(n, "mixed", 6);
+            let b64 = upload_i64(d, q, &a64);
+            let b32 = upload_i32(d, q, &a32);
+            for s in scalars {
+                for op in ["add", "sub", "mul", "min", "max"] {
+                    for left in [false, true] {
+                        let f = |x: i64| if left { cpu_op(op, s as i64, x) } else { cpu_op(op, x, s as i64) };
+                        let out = GpuBuffer::storage(d, ElementKind::I64, n);
+                        arith_i64::arith_scalar_i64(d, q, &mut cache, op, &b64, s, left, &out);
+                        let want: Vec<i64> = a64.iter().map(|&x| f(x)).collect();
+                        first_diff(&format!("scalar_i64 {op} s={s} left={left} n={n}"), &dl64(&ctx, &out), &want);
+                        let out = GpuBuffer::storage(d, ElementKind::I64, n);
+                        arith_i64::arith_scalar_i64(d, q, &mut cache, op, &b32, s, left, &out);
+                        let want: Vec<i64> = a32.iter().map(|&x| f(x as i64)).collect();
+                        first_diff(&format!("scalar_i32_to_i64 {op} s={s} left={left} n={n}"), &dl64(&ctx, &out), &want);
+                        // i32 out (wrapping), rsub for scalar-left sub
+                        let kop = if op == "sub" && left { "rsub" } else { op };
+                        let out = GpuBuffer::storage(d, ElementKind::I32, n);
+                        arith::arith_scalar_i32(d, q, &mut cache, kop, &b32, s, &out);
+                        let got = pollster::block_on(download_i32(d, q, &out));
+                        let want: Vec<i32> = a32.iter().map(|&x| f(x as i64) as i32).collect();
+                        first_diff(&format!("scalar_i32 {kop} s={s} left={left} n={n}"), &got, &want);
+                    }
+                }
+            }
+        }
+    }
+
     // ---- reduce ----
 
     fn cpu_reduce(op: &str, v: impl Iterator<Item = i64>) -> i64 {

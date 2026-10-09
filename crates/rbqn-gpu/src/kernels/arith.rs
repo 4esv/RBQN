@@ -116,3 +116,46 @@ pub fn arith_scalar(
     }
     queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 }
+
+/// `a op s` on I32 data with an exact i32 scalar. Ops: add sub mul min max,
+/// and rsub (`s - a`). Wraps on overflow; callers bound-check first.
+pub fn arith_scalar_i32(
+    device: &Arc<wgpu::Device>,
+    queue: &wgpu::Queue,
+    cache: &mut PipelineCache,
+    op: &str,
+    a: &GpuBuffer,
+    scalar: i32,
+    out: &GpuBuffer,
+) {
+    assert_eq!(a.element_type(), ElementKind::I32, "arith_scalar_i32: input must be I32");
+    let entry = format!("scalar_{op}_i32");
+    let key = PipelineKey::raw("arith_scalar_i32", &entry);
+    let pipeline = cache.get_or_create(&key, SHADER_SCALAR_I32);
+    let scalar_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 4,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&scalar_buf, 0, &scalar.to_ne_bytes());
+    let layout = pipeline.get_bind_group_layout(0);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: a.inner().as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: scalar_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: out.inner().as_entire_binding() },
+        ],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        let (gx, gy) = grid_for(out.len(), WORKGROUP_SIZE);
+        pass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
+    }
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
+}

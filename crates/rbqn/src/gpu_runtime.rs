@@ -451,7 +451,9 @@ fn arith_bound(op: &str, wb: f64, xb: f64) -> f64 {
 /// None (CPU). `÷` is never taken (non-integer results).
 /// Registered as GPU_ARITH_HOOK in rbqn-prim at startup.
 pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
-    if gpu_mode() == GpuMode::Off { return None; }
+    if gpu_mode() == GpuMode::Off || GPU_DISABLED.load(Ordering::Relaxed) { return None; }
+    if !w.is_arr() { return gpu_arith_scalar(op, w.o2f(), true, x); }
+    if !x.is_arr() { return gpu_arith_scalar(op, x.o2f(), false, w); }
     if !matches!(op, "add" | "sub" | "mul") { return None; }
     guarded("arith", || {
         let (wshape, wh) = operand_shape(w)?;
@@ -500,6 +502,61 @@ pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
         log_dispatch(&format!("arith_{op}"), n, kind);
         let fill = fill_of(w, wh.as_deref());
         Some(tag_device(Arc::new(GpuArr::new(out_buf, wshape, fill, bound))))
+    })
+}
+
+fn scalar_bound(op: &str, b: f64, s: f64) -> f64 {
+    match op {
+        "add" | "sub" => b + s.abs(),
+        "mul" => b * s.abs(),
+        _ => b.max(s.abs()),
+    }
+}
+
+/// GPU `s op a` (`scalar_left`) or `a op s` for an integer scalar within i32 and
+/// an integer array that is pending on the device, or a host array over the
+/// arith threshold. Same i32 / i64 / CPU selection as the array-array path.
+/// Non-integer scalars, `÷` and non-integer-safe host data return None (CPU).
+fn gpu_arith_scalar(op: &str, s: f64, scalar_left: bool, a: B) -> Option<B> {
+    if !matches!(op, "add" | "sub" | "mul" | "min" | "max") { return None; }
+    if !(s.fract() == 0.0 && s.abs() < I32_LIM) { return None; }
+    let si = s as i32;
+    guarded("arith_scalar", || {
+        let (shape, host) = operand_shape(a)?;
+        let n: usize = shape.iter().product();
+        if shape.is_empty() || n == 0 { return None; }
+        // Pending values dispatch at any size; host arrays honour the threshold.
+        if host.is_some() && !should_dispatch("arith", n) { return None; }
+        if let Some(h) = &host && !gpu_safe_arr(h) { return None; }
+        let gpu = get()?;
+        let (buf, mut b) = operand_buf(gpu, a, host.as_deref())?;
+        let mut bound = scalar_bound(op, b, s);
+        if bound >= EXACT_LIM {
+            if let Some(r) = refine_bound(gpu, a) { b = r; }
+            bound = scalar_bound(op, b, s);
+            if bound >= EXACT_LIM { return None; }
+        }
+        let (out_buf, kind) = if buf.element_type() == ElementKind::I32 && bound < I32_LIM {
+            let kop = if op == "sub" && scalar_left { "rsub" } else { op };
+            let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I32, n);
+            let mut cache = gpu.cache.lock().ok()?;
+            rbqn_gpu::kernels::arith::arith_scalar_i32(
+                &gpu.ctx.device, &gpu.ctx.queue, &mut cache, kop, &buf, si, &out,
+            );
+            (out, "i32 scalar")
+        } else {
+            if !gpu.ctx.shader_int64 { return None; }
+            let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I64, n);
+            let kind = if buf.element_type() == ElementKind::I32 { "i32→i64 scalar" } else { "i64 scalar" };
+            let mut cache = gpu.cache.lock().ok()?;
+            rbqn_gpu::kernels::arith_i64::arith_scalar_i64(
+                &gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &buf, si, scalar_left, &out,
+            );
+            (out, kind)
+        };
+        log_dispatch(&format!("arith_{op}"), n, kind);
+        let fill = fill_of(a, host.as_deref());
+        Some(tag_device(Arc::new(GpuArr::new(out_buf, shape, fill, bound))))
     })
 }
 
