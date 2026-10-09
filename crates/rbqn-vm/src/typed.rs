@@ -78,3 +78,41 @@ pub fn fold(f: B, arr: &BqnArr, init: Option<f64>) -> Option<B> {
     }?;
     Some(B::m_f64(r))
 }
+
+/// Left-to-right scan `r0 = x0, ri = r(i-1) op xi` over a numeric list.
+fn scan_with<F: Fn(f64, f64) -> f64>(arr: &BqnArr, op: F) -> Option<Vec<f64>> {
+    let n = arr.ia();
+    let mut out = Vec::with_capacity(n);
+    let mut acc = get_num(arr, 0)?;
+    out.push(acc);
+    macro_rules! run {
+        ($it:expr) => { for a in $it { acc = op(acc, a); out.push(acc); } };
+    }
+    match &arr.data {
+        ArrData::F64(v) => run!(v[1..].iter().copied()),
+        ArrData::I32(v) => run!(v[1..].iter().map(|&a| a as f64)),
+        ArrData::I16(v) => run!(v[1..].iter().map(|&a| a as f64)),
+        ArrData::I8(v) => run!(v[1..].iter().map(|&a| a as f64)),
+        ArrData::Bit(v) => run!((1..n).map(|i| bit_at(v, i))),
+        _ => return None,
+    }
+    Some(out)
+}
+
+/// F` on a non-empty numeric list with F one of + × ⌊ ⌈ ∧ ∨. Result is squeezed.
+pub fn scan(f: B, arr: &BqnArr) -> Option<BqnArr> {
+    if arr.rank() != 1 || arr.ia() == 0 {
+        return None;
+    }
+    let r = match native_fn_idx(f)? {
+        ADD => scan_with(arr, |a, b| a + b),
+        MUL | AND => scan_with(arr, |a, b| a * b),
+        MIN => scan_with(arr, f64::min),
+        MAX => scan_with(arr, f64::max),
+        OR => scan_with(arr, |a, b| a + b - a * b),
+        _ => None,
+    }?;
+    let mut out = rbqn_core::array::squeeze_num(BqnArr::new_vec_f64(r));
+    out.fill = arr.fill;
+    Some(out)
+}

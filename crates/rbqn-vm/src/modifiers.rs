@@ -756,6 +756,9 @@ fn scan_c1(f: B, x: B) -> B {
             && let Some(result) = hook(f, &arr) {
                 return result;
             }
+        if let Some(r) = crate::typed::scan(f, &arr) {
+            return crate::vm::tag_arr(r);
+        }
         // Rank-1: scan over individual elements
         let n = arr.ia();
         let mut results = Vec::with_capacity(n);
