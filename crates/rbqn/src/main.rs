@@ -401,6 +401,9 @@ fn output_raw(val: &B) -> rbqn_core::Result<()> {
 }
 
 fn format_result(rt: &bootstrap::Runtime, val: &B) -> String {
+    if let Some(s) = rbqn_vm::derive::fast_fmt_ints(*val, false) {
+        return s;
+    }
     // Try using the formatter if available
     if let Some((ref fmt_fn, _)) = rt.formatter
         && let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

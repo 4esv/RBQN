@@ -2677,9 +2677,95 @@ fn b_to_string(x: B) -> String {
     String::new()
 }
 
+/// Native fast path for •Fmt / •Repr / implicit print on numeric scalars and
+/// rank-1 numeric vectors whose values are all integers with |v| < 1e15.
+/// Returns None (caller falls through to the BQN formatter) for anything else.
+/// Output matches the self-hosted formatter: Fmt `⟨ 1 2 3 ⟩`, Repr `1‿2‿3`
+/// (`⟨x⟩` for length 1, `⟨⟩` for empty), `¯` for the minus sign.
+pub fn fast_fmt_ints(x: B, repr: bool) -> Option<String> {
+    use rbqn_core::array::ArrData;
+    use std::fmt::Write;
+    const LIM: f64 = 1e15;
+    #[inline]
+    fn push(s: &mut String, v: i64) {
+        if v < 0 {
+            s.push('¯');
+        }
+        let _ = write!(s, "{}", v.unsigned_abs());
+    }
+    if x.is_num() {
+        let v = x.o2f();
+        if !(v.abs() < LIM) || v.fract() != 0.0 {
+            return None;
+        }
+        let mut s = String::new();
+        push(&mut s, v as i64);
+        return Some(s);
+    }
+    if !x.is_arr() {
+        return None;
+    }
+    let arr = crate::vm::get_arr(x)?;
+    if arr.shape.len() != 1 {
+        return None;
+    }
+    let n = arr.shape[0];
+    if n == 0 {
+        return match arr.data {
+            ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) | ArrData::F64(_) => {
+                Some("⟨⟩".to_string())
+            }
+            _ => None,
+        };
+    }
+    let mut s = String::with_capacity(n * 8 + 8);
+    let one = n == 1;
+    let (open, sep, close) = if repr {
+        (if one { "⟨" } else { "" }, "‿", if one { "⟩" } else { "" })
+    } else {
+        ("⟨ ", " ", " ⟩")
+    };
+    s.push_str(open);
+    macro_rules! each {
+        ($v:expr, $conv:expr) => {{
+            for (i, &e) in $v.iter().take(n).enumerate() {
+                if i > 0 {
+                    s.push_str(sep);
+                }
+                push(&mut s, $conv(e));
+            }
+        }};
+    }
+    match &arr.data {
+        ArrData::Bit(v) => {
+            for i in 0..n {
+                if i > 0 {
+                    s.push_str(sep);
+                }
+                s.push(if (v[i / 64] >> (i % 64)) & 1 == 1 { '1' } else { '0' });
+            }
+        }
+        ArrData::I8(v) => each!(v, |e: i8| e as i64),
+        ArrData::I16(v) => each!(v, |e: i16| e as i64),
+        ArrData::I32(v) => each!(v, |e: i32| e as i64),
+        ArrData::F64(v) => {
+            if !v.iter().take(n).all(|e| e.abs() < LIM && e.fract() == 0.0) {
+                return None;
+            }
+            each!(v, |e: f64| e as i64)
+        }
+        _ => return None,
+    }
+    s.push_str(close);
+    Some(s)
+}
+
 /// Format a B value for •Show/•Fmt — tries the bootstrap formatter first,
 /// falls back to the basic debug format.
 fn format_b_for_show(x: B) -> String {
+    if let Some(s) = fast_fmt_ints(x, false) {
+        return s;
+    }
     // Try to use the bootstrap formatter (rt.formatter.0) if available
     let fmt_fn = {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -2700,6 +2786,9 @@ fn format_b_for_show(x: B) -> String {
 
 /// Format a B value for •Repr — quoted strings for strings, numbers as-is, etc.
 fn format_b_repr(x: B) -> String {
+    if let Some(s) = fast_fmt_ints(x, true) {
+        return s;
+    }
     // Try to use the bootstrap repr function (rt.formatter.1) if available
     let repr_fn = {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
