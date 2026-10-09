@@ -67,12 +67,14 @@ pub enum ElementKind {
     I32,
     F32,
     U32,
+    I64,
 }
 
 impl ElementKind {
     pub fn byte_size(self) -> u64 {
         match self {
             Self::I32 | Self::F32 | Self::U32 => 4,
+            Self::I64 => 8,
         }
     }
 }
@@ -190,6 +192,14 @@ pub fn upload_i32(
     upload_raw(device, queue, ElementKind::I32, data)
 }
 
+pub fn upload_i64(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    data: &[i64],
+) -> GpuBuffer {
+    upload_raw(device, queue, ElementKind::I64, data)
+}
+
 pub fn upload_f32(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -211,6 +221,14 @@ pub async fn download_f32(
     queue: &wgpu::Queue,
     buf: &GpuBuffer,
 ) -> Vec<f32> {
+    download_raw(device, queue, buf).await
+}
+
+pub async fn download_i64(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buf: &GpuBuffer,
+) -> Vec<i64> {
     download_raw(device, queue, buf).await
 }
 

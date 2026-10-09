@@ -14,6 +14,7 @@ fn shader_for(elem: ElementKind) -> (&'static str, &'static str) {
     match elem {
         ElementKind::F32 => ("scan_f32", SHADER_F32),
         ElementKind::I32 | ElementKind::U32 => ("scan_i32", SHADER_I32),
+        ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
     }
 }
 

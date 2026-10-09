@@ -14,6 +14,7 @@ fn shader_for(elem: ElementKind) -> (&'static str, &'static str) {
     match elem {
         ElementKind::F32 => ("arith_f32", SHADER_F32),
         ElementKind::I32 | ElementKind::U32 => ("arith_i32", SHADER_I32),
+        ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
     }
 }
 
@@ -21,6 +22,7 @@ fn scalar_shader_for(elem: ElementKind) -> (&'static str, &'static str) {
     match elem {
         ElementKind::F32 => ("arith_scalar_f32", SHADER_SCALAR_F32),
         ElementKind::I32 | ElementKind::U32 => ("arith_scalar_i32", SHADER_SCALAR_I32),
+        ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
     }
 }
 
@@ -74,6 +76,7 @@ pub fn arith_scalar(
     let entry = match elem {
         ElementKind::F32 => format!("scalar_{op}_f32"),
         ElementKind::I32 | ElementKind::U32 => format!("scalar_{op}_i32"),
+        ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
     };
     let key = PipelineKey::raw(shader_id, &entry);
     let pipeline = cache.get_or_create(&key, source);

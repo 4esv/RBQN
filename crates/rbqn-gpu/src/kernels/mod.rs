@@ -6,3 +6,8 @@ pub mod select;
 pub mod unary;
 pub mod matmul;
 pub mod softmax;
+pub mod int64;
+pub mod arith_i64;
+pub mod reduce_i64;
+pub mod scan_i64;
+pub mod minmax;

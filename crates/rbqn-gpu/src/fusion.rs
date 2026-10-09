@@ -51,6 +51,7 @@ impl FusionBuilder {
             ElementKind::F32 => "f32",
             ElementKind::I32 => "i32",
             ElementKind::U32 => "u32",
+            ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
         };
 
         let entry = format!("fused_{}", self.ops.len());

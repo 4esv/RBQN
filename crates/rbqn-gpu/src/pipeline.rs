@@ -16,6 +16,7 @@ impl PipelineKey {
             ElementKind::I32 => "i32",
             ElementKind::F32 => "f32",
             ElementKind::U32 => "u32",
+            ElementKind::I64 => "i64",
         };
         Self {
             shader_id,
