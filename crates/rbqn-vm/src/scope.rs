@@ -45,9 +45,10 @@ impl Vars {
         let init = &init[..init.len().min(var_am)];
         match self {
             Vars::Inline(a, n) if var_am <= INLINE_VARS => {
-                a[..init.len()].copy_from_slice(init);
-                for v in &mut a[init.len()..var_am] {
-                    *v = B::NO_VAR;
+                // Fixed-size fill instead of a variable-length memcpy call;
+                // slots past var_am are invisible through Deref.
+                for (i, v) in a.iter_mut().enumerate() {
+                    *v = if i < init.len() { init[i] } else { B::NO_VAR };
                 }
                 *n = var_am as u8;
             }
@@ -111,7 +112,7 @@ pub struct Tls {
     /// Current block-evaluation nesting depth.
     pub depth: std::cell::Cell<u32>,
     /// Recycled uniquely-owned scopes.
-    /// Only touched inside `new_rc`/`recycle`, which never re-enter while holding it.
+    /// Only touched inside `new_rc_in`/`recycle_in`, which never re-enter while holding it.
     pub scopes: std::cell::UnsafeCell<Vec<std::rc::Rc<Scope>>>,
     /// Recycled (operand stack, scope-chain) vector pairs. Only touched by
     /// `Frame::enter`/`Frame::drop`, which never re-enter while holding it.
@@ -151,11 +152,9 @@ impl Scope {
 
     /// Build an `Rc<Scope>`, reusing a recycled allocation when one is available.
     #[inline]
-    pub fn new_rc(body: &Arc<Body>, psc: std::rc::Rc<Scope>, var_am: u16, init_vars: &[B]) -> std::rc::Rc<Scope> {
-        let recycled = TLS
-            .try_with(|t| unsafe { (*t.scopes.get()).pop() })
-            .ok()
-            .flatten();
+    pub fn new_rc_in(t: &Tls, body: &Arc<Body>, psc: std::rc::Rc<Scope>, var_am: u16, init_vars: &[B]) -> std::rc::Rc<Scope> {
+        // SAFETY: single-threaded; nothing re-enters while the pool is borrowed.
+        let recycled = unsafe { (*t.scopes.get()).pop() };
         if let Some(mut rc) = recycled
             && let Some(s) = std::rc::Rc::get_mut(&mut rc)
         {
@@ -173,17 +172,15 @@ impl Scope {
     /// Return a scope to the free list if nothing else holds it (no closure,
     /// namespace or pscs entry captured it).
     #[inline]
-    pub fn recycle(mut rc: std::rc::Rc<Scope>) {
+    pub fn recycle_in(t: &Tls, mut rc: std::rc::Rc<Scope>) {
         if let Some(s) = std::rc::Rc::get_mut(&mut rc) {
             let parent = s.psc.take();
             s.ext = None;
-            let _ = TLS.try_with(|t| {
-                // SAFETY: single-threaded; nothing re-enters while borrowed.
-                let f = unsafe { &mut *t.scopes.get() };
-                if f.len() < 64 {
-                    f.push(rc);
-                }
-            });
+            // SAFETY: single-threaded; nothing re-enters while borrowed.
+            let f = unsafe { &mut *t.scopes.get() };
+            if f.len() < 64 {
+                f.push(rc);
+            }
             drop(parent);
         }
     }

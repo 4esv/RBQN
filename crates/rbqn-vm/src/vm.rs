@@ -7,7 +7,7 @@ use crate::block::{Block, Body, eval_fun_block, m_md1_block, m_md2_block};
 use crate::bytecode::Op;
 use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_partial_r};
 use crate::namespace::{self, NS, get_ns, store_ns};
-use crate::scope::{ScRef, Scope, TLS, v_get, v_set, v_seth, v_check_bad_read};
+use crate::scope::{ScRef, Scope, TLS, Tls, v_get, v_set, v_seth, v_check_bad_read};
 
 pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
     let var_am = body.var_am;
@@ -17,8 +17,10 @@ pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
 
 pub fn exec_block_with_args(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
     let var_am = body.var_am.max(args.len() as u16);
-    let sc = Scope::new_rc(body, psc, var_am, args);
-    eval_bc(body, sc, bl)
+    TLS.with(|t| {
+        let sc = Scope::new_rc_in(t, body, psc, var_am, args);
+        eval_bc_in(t, body, sc, bl)
+    })
 }
 
 /// Fill `pscs` with the scope chain starting at `sc`, up to `max_psc` entries.
@@ -265,22 +267,21 @@ pub const MAX_EVAL_DEPTH: u32 = 20_000;
 struct Frame {
     stack: Vec<B>,
     pscs: Vec<ScRef>,
+    /// The thread's TLS block, looked up once by the caller of `eval_bc_in`.
+    t: *const Tls,
 }
 
 impl Frame {
     #[inline]
-    fn enter(max_stack: usize, max_psc: usize) -> Frame {
-        let (depth, (mut stack, mut pscs)) = TLS.with(|t| {
-            let n = t.depth.get() + 1;
-            t.depth.set(n);
-            // SAFETY: single-threaded, and no other code runs while the pool is borrowed.
-            let fr = unsafe { (*t.frames.get()).pop() }.unwrap_or_default();
-            (n, fr)
-        });
+    fn enter(t: &Tls, max_stack: usize, max_psc: usize) -> Frame {
+        let n = t.depth.get() + 1;
+        t.depth.set(n);
+        // SAFETY: single-threaded, and no other code runs while the pool is borrowed.
+        let (mut stack, mut pscs) = unsafe { (*t.frames.get()).pop() }.unwrap_or_default();
         stack.reserve(max_stack);
         pscs.reserve(max_psc);
-        let fr = Frame { stack, pscs };
-        if depth > MAX_EVAL_DEPTH {
+        let fr = Frame { stack, pscs, t };
+        if n > MAX_EVAL_DEPTH {
             rbqn_core::error::throw("Stack overflow");
         }
         fr
@@ -297,14 +298,14 @@ impl Drop for Frame {
             stack.set_len(0);
             pscs.set_len(0);
         }
-        TLS.with(|t| {
-            t.depth.set(t.depth.get() - 1);
-            // SAFETY: see Frame::enter.
-            let p = unsafe { &mut *t.frames.get() };
-            if p.len() < 1024 && stack.capacity() <= 4096 {
-                p.push((stack, pscs));
-            }
-        });
+        // SAFETY: the TLS block outlives every frame on its thread (ManuallyDrop, never torn down).
+        let t = unsafe { &*self.t };
+        t.depth.set(t.depth.get() - 1);
+        // SAFETY: see Frame::enter.
+        let p = unsafe { &mut *t.frames.get() };
+        if p.len() < 1024 && stack.capacity() <= 4096 {
+            p.push((stack, pscs));
+        }
     }
 }
 
@@ -537,7 +538,12 @@ fn ret_d(body: &Body, stack: &mut Vec<B>, pscs: &[ScRef], current_sc: &std::rc::
 }
 
 pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
-    let mut frame = Frame::enter(body.max_stack as usize, body.max_psc as usize);
+    TLS.with(|t| eval_bc_in(t, body, sc, bl))
+}
+
+#[inline]
+fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
+    let mut frame = Frame::enter(t, body.max_stack as usize, body.max_psc as usize);
     let mut stack = &mut frame.stack;
     let mut pscs = &mut frame.pscs;
     let bc: &[i32] = &bl.bc;
@@ -1027,7 +1033,7 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
             }
             Some(Op::RETN) => {
                 let r = pop!();
-                Scope::recycle(current_sc);
+                Scope::recycle_in(t, current_sc);
                 return r;
             }
 
