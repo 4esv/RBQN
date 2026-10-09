@@ -3,3 +3,4 @@
 pub mod bootstrap;
 pub mod embedded;
 pub mod exec;
+pub mod timing;

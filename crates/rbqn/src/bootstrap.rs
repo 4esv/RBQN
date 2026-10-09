@@ -322,6 +322,7 @@ fn exec_stage(
 }
 
 pub fn bootstrap() -> Result<Runtime, BqnError> {
+    let mut t = std::time::Instant::now();
     let prims = rbqn_prim::get_runtime().to_vec();
     assert_eq!(prims.len(), RT_LEN, "primitive registry must have exactly {RT_LEN} entries");
 
@@ -336,12 +337,14 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
 
     // Build provide array (40 entries) mapping names to callable B values.
     let provide = build_provide(&fruntime);
+    crate::timing::lap(&mut t, "prims+build_provide");
 
     // Decode embedded bytecode from .bin files (committed to repo)
     let rt0_bin = embedded::decode_bytecode(embedded::RUNTIME0_BIN);
     let rt1_bin = embedded::decode_bytecode(embedded::RUNTIME1_BIN);
     let cc_bin = embedded::decode_bytecode(embedded::COMPILER_BIN);
     let fmt_bin = embedded::decode_bytecode(embedded::FORMATTER_BIN);
+    crate::timing::lap(&mut t, "decode bins");
 
     if rt0_bin.is_empty() {
         return Ok(Runtime {
@@ -414,6 +417,7 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     let r1_objs = build_objs(&rt1_bin, &provide, Some(&runtime_0), None);
     let r1_blocks = build_blocks(&rt1_bin);
     let r1_bodies = build_bodies(&rt1_bin);
+    crate::timing::lap(&mut t, "runtime1 objs/blocks");
 
     let r1_stage_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         exec_stage(&rt1_bin, r1_objs, r1_blocks, r1_bodies, "runtime1")
@@ -486,6 +490,7 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
             });
         }
     };
+    crate::timing::lap(&mut t, "runtime1 exec");
     let set_prims = r1_arr.get(1).ok();
     let set_inv = r1_arr.get(2).ok();
 
@@ -538,6 +543,7 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
 
     // --- Stage 3: Execute compiler (graceful fallback if it panics) ---
     // Swap in bi_casrt for assert during compilation (CBQN does this)
+    crate::timing::lap(&mut t, "setPrims+setInv");
     let c_objs = build_objs(&cc_bin, &provide, Some(&runtime_0), Some(&runtime));
     let c_blocks = build_blocks(&cc_bin);
     let c_bodies = build_bodies(&cc_bin);
@@ -581,6 +587,7 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     };
 
     // --- Stage 4: Execute formatter (optional) ---
+    crate::timing::lap(&mut t, "compiler setup");
     let formatter = if !fmt_bin.is_empty() {
         let f_objs = build_objs(&fmt_bin, &provide, Some(&runtime_0), Some(&runtime));
         let f_blocks = build_blocks(&fmt_bin);
@@ -620,6 +627,7 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
         None
     };
 
+    crate::timing::lap(&mut t, "formatter setup");
     Ok(Runtime {
         prims,
         fruntime,

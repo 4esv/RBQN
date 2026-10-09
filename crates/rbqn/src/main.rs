@@ -18,6 +18,7 @@ use rbqn_vm::vm::{get_arr, tag_arr};
 const INTERP_STACK_BYTES: usize = 512 << 20;
 
 fn main() {
+    let t0 = std::time::Instant::now();
     // NOTE: All interpreter work (bootstrap, evaluation, REPL, •Exit) runs on this
     // one thread: the value stores are thread-local, and the default 8 MB main
     // stack overflowed at a few thousand BQN calls. std::process::exit from the
@@ -25,7 +26,7 @@ fn main() {
     let handle = std::thread::Builder::new()
         .name("rbqn".into())
         .stack_size(INTERP_STACK_BYTES)
-        .spawn(interp_main)
+        .spawn(move || interp_main(t0))
         .unwrap_or_else(|e| {
             eprintln!("rbqn: could not start interpreter thread: {e}");
             std::process::exit(1);
@@ -35,7 +36,8 @@ fn main() {
     }
 }
 
-fn interp_main() {
+fn interp_main(mut t: std::time::Instant) {
+    rbqn::timing::lap(&mut t, "thread spawn");
     // Suppress default panic output — BQN errors use panic-based throw()
     // and we catch them with catch_unwind for clean error messages.
     std::panic::set_hook(Box::new(|_| {}));
@@ -68,6 +70,7 @@ fn interp_main() {
     rbqn_prim::sort::register_gpu_grade(gpu_runtime::gpu_grade);
     rbqn_prim::sort::register_gpu_sort(gpu_runtime::gpu_sort);
 
+    rbqn::timing::lap(&mut t, "cli+gpu hooks");
     let rt = match bootstrap::bootstrap() {
         Ok(rt) => rt,
         Err(e) => {
@@ -76,18 +79,22 @@ fn interp_main() {
         }
     };
 
+    rbqn::timing::lap(&mut t, "bootstrap (total)");
     // NOTE: Register the global runtime state for •BQN re-evaluation after bootstrap.
     rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
 
     // NOTE: Register derived function structural equality with rbqn-core (for ≡ and = on functions).
     rbqn_vm::derive::register_derived_equality();
+    rbqn::timing::lap(&mut t, "set_sys_runtime+eq");
 
     // Set •args to empty for -e/-p mode (file args will override when executing a file)
     rbqn_vm::derive::set_sys_args(&[]);
+    rbqn::timing::lap(&mut t, "set_sys_args");
     // Set •path and •name to empty for -e/-p mode
     rbqn_vm::derive::set_sys_path("");
 
     let _ = args.heap_max; // TODO: enforce heap limit
+    rbqn::timing::lap(&mut t, "post-bootstrap setup");
 
     // Execute pre-REPL arguments
     for action in &args.actions {
@@ -124,6 +131,7 @@ fn interp_main() {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }
+        rbqn::timing::lap(&mut t, "action eval");
     }
 
     // REPL if requested or no actions given
