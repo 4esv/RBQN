@@ -69,7 +69,12 @@ impl PipelineCache {
                 layout: None,
                 module,
                 entry_point: Some(&key.entry_point),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    // NOTE: the sort kernels write all workgroup memory before reading it; the
+                    // driver-inserted zeroing of ~25 KB per workgroup cost ~9 us per tile.
+                    zero_initialize_workgroup_memory: key.shader_id != "sort",
+                    ..Default::default()
+                },
                 cache: None,
             });
             self.pipelines.insert(key.clone(), pipeline); crate::stats::PIPELINE_COMPILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

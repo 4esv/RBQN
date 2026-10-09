@@ -303,8 +303,126 @@ fn test_scan_add_over_workgroup_limit() {
     });
 }
 
+// ---- sort / grade -----------------------------------------------------------
+
+fn lcg(seed: &mut u64) -> u32 {
+    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    (*seed >> 33) as u32
+}
+
+/// Random i32 with negatives, duplicates and the extremes.
+fn rand_i32(n: usize, range: u32, seed: u64) -> Vec<i32> {
+    let mut s = seed;
+    (0..n)
+        .map(|i| match i % 97 {
+            5 => i32::MIN,
+            6 => i32::MAX,
+            _ => (lcg(&mut s) % range) as i32 - (range / 2) as i32,
+        })
+        .collect()
+}
+
+const SORT_LENS: [usize; 11] = [0, 1, 2, 3, 8, 255, 256, 257, 1000, 65537, 1_000_003];
+
 #[test]
-#[ignore = "GPU radix sort scatter is unstable across passes, issue #26"]
+fn test_sort_i32_matches_cpu() {
+    use rbqn_gpu::buffer::{download_i32, upload_i32};
+    use rbqn_gpu::kernels::sort;
+    pollster::block_on(async {
+        let Some((ctx, mut cache)) = setup().await else {
+            println!("No GPU available — skipping");
+            return;
+        };
+        for &n in &SORT_LENS {
+            for (range, seed) in [(u32::MAX, 1u64), (7, 2), (1000, 3)] {
+                let data = rand_i32(n, range, seed);
+                let buf = upload_i32(&ctx.device, &ctx.queue, &data);
+                let mut asc = data.clone();
+                asc.sort();
+                let out = sort::sort_i32(&ctx.device, &ctx.queue, &mut cache, &buf);
+                assert_eq!(out.len(), n);
+                let got = download_i32(&ctx.device, &ctx.queue, &out).await;
+                assert!(got == asc, "asc n={n} range={range}");
+                let mut desc = data.clone();
+                desc.sort_by(|a, b| b.cmp(a));
+                let out = sort::sort_i32_dir(&ctx.device, &ctx.queue, &mut cache, &buf, true);
+                let got = download_i32(&ctx.device, &ctx.queue, &out).await;
+                assert!(got == desc, "desc n={n} range={range}");
+            }
+        }
+    });
+}
+
+#[test]
+fn test_sort_u32_matches_cpu() {
+    use rbqn_gpu::buffer::{download_u32, upload_u32};
+    use rbqn_gpu::kernels::sort;
+    pollster::block_on(async {
+        let Some((ctx, mut cache)) = setup().await else {
+            println!("No GPU available — skipping");
+            return;
+        };
+        for &n in &SORT_LENS {
+            let mut s = 9u64;
+            let data: Vec<u32> = (0..n).map(|_| lcg(&mut s).wrapping_mul(3)).collect();
+            let buf = upload_u32(&ctx.device, &ctx.queue, &data);
+            let out = sort::radix_sort_u32(&ctx.device, &ctx.queue, &mut cache, &buf);
+            let got = download_u32(&ctx.device, &ctx.queue, &out).await;
+            let mut e = data;
+            e.sort();
+            assert!(got == e, "u32 n={n}");
+        }
+    });
+}
+
+#[test]
+fn test_grade_i32_stable_permutation() {
+    use rbqn_gpu::buffer::{download_i32, upload_i32};
+    use rbqn_gpu::kernels::sort;
+    pollster::block_on(async {
+        let Some((ctx, mut cache)) = setup().await else {
+            println!("No GPU available — skipping");
+            return;
+        };
+        // BQN spot checks from the known-broken list.
+        for (data, asc, desc) in [
+            (vec![3, 1, 1], vec![1, 2, 0], vec![0, 1, 2]),
+            (vec![3, 1, 2, 1], vec![1, 3, 2, 0], vec![0, 2, 1, 3]),
+        ] {
+            let buf = upload_i32(&ctx.device, &ctx.queue, &data);
+            let g = sort::grade_i32(&ctx.device, &ctx.queue, &mut cache, &buf, false);
+            assert_eq!(download_i32(&ctx.device, &ctx.queue, &g).await, asc);
+            let g = sort::grade_i32(&ctx.device, &ctx.queue, &mut cache, &buf, true);
+            assert_eq!(download_i32(&ctx.device, &ctx.queue, &g).await, desc);
+        }
+        for &n in &SORT_LENS {
+            for (range, seed) in [(u32::MAX, 11u64), (5, 12), (1000, 13)] {
+                let data = rand_i32(n, range, seed);
+                let buf = upload_i32(&ctx.device, &ctx.queue, &data);
+                for desc in [false, true] {
+                    let g = sort::grade_i32(&ctx.device, &ctx.queue, &mut cache, &buf, desc);
+                    let got = download_i32(&ctx.device, &ctx.queue, &g).await;
+                    // Valid permutation.
+                    let mut seen = vec![false; n];
+                    for &i in &got {
+                        assert!(i >= 0 && (i as usize) < n && !seen[i as usize], "not a permutation n={n}");
+                        seen[i as usize] = true;
+                    }
+                    // CPU stable argsort (descending keeps earlier index first on ties).
+                    let mut e: Vec<i32> = (0..n as i32).collect();
+                    if desc {
+                        e.sort_by(|&a, &b| data[b as usize].cmp(&data[a as usize]));
+                    } else {
+                        e.sort_by_key(|&a| data[a as usize]);
+                    }
+                    assert!(got == e, "grade n={n} range={range} desc={desc}");
+                }
+            }
+        }
+    });
+}
+
+#[test]
 fn test_sort_over_workgroup_limit() {
     use rbqn_gpu::buffer::{download_i32, upload_i32};
     use rbqn_gpu::kernels::sort;
@@ -314,41 +432,55 @@ fn test_sort_over_workgroup_limit() {
             return;
         };
         let n = OVER_1D_LIMIT;
-        // Deterministic pseudo-random keys, negatives included.
-        let data: Vec<i32> = (0..n as u32)
-            .map(|i| (i.wrapping_mul(2654435761) >> 8) as i32 - 5_000_000)
-            .collect();
+        let data = rand_i32(n, u32::MAX, 21);
         let buf = upload_i32(&ctx.device, &ctx.queue, &data);
         let out = sort::sort_i32(&ctx.device, &ctx.queue, &mut cache, &buf);
         let got = download_i32(&ctx.device, &ctx.queue, &out).await;
         let mut expected = data;
-        expected.sort_unstable();
+        expected.sort();
         assert_eq!(got.len(), n);
         assert!(got == expected, "sorted output differs from CPU sort");
     });
 }
 
+/// cargo test -p rbqn-gpu --release --test gpu_kernels bench_sort -- --ignored --nocapture
 #[test]
-#[ignore = "GPU radix sort scatter is unstable across passes, issue #26"]
-fn test_sort_100k() {
-    use rbqn_gpu::buffer::{download_i32, upload_i32};
+#[ignore = "microbench"]
+fn bench_sort() {
+    use rbqn_gpu::buffer::upload_i32;
     use rbqn_gpu::kernels::sort;
+    use std::time::Instant;
     pollster::block_on(async {
         let Some((ctx, mut cache)) = setup().await else {
             println!("No GPU available — skipping");
             return;
         };
-        let n = 100_000;
-        let data: Vec<i32> = (0..n as u32)
-            .map(|i| (i.wrapping_mul(2654435761) >> 8) as i32 - 5_000_000)
-            .collect();
-        let buf = upload_i32(&ctx.device, &ctx.queue, &data);
-        let out = sort::sort_i32(&ctx.device, &ctx.queue, &mut cache, &buf);
-        let got = download_i32(&ctx.device, &ctx.queue, &out).await;
-        let mut expected = data;
-        expected.sort_unstable();
-        let first_bad = got.iter().zip(&expected).position(|(g, e)| g != e);
-        assert!(first_bad.is_none(), "first mismatch at {first_bad:?}");
+        for n in [1_000_000usize, 10_000_000] {
+            let data = rand_i32(n, u32::MAX, 5);
+            let buf = upload_i32(&ctx.device, &ctx.queue, &data);
+            let mut cpu = data.clone();
+            let t = Instant::now();
+            cpu.sort();
+            let cpu_ms = t.elapsed().as_secs_f64() * 1e3;
+            for (name, grade) in [("sort", false), ("grade", true)] {
+                let mut times = vec![];
+                for _ in 0..7 {
+                    let t = Instant::now();
+                    let _keep = if grade {
+                        sort::grade_i32(&ctx.device, &ctx.queue, &mut cache, &buf, false)
+                    } else {
+                        sort::sort_i32(&ctx.device, &ctx.queue, &mut cache, &buf)
+                    };
+                    ctx.device.poll(wgpu::Maintain::Wait);
+                    times.push(t.elapsed().as_secs_f64() * 1e3);
+                }
+                times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                println!(
+                    "BENCH {name}_i32 n={n}: gpu min {:.2} ms median {:.2} ms (rust std sort {:.1} ms)",
+                    times[0], times[3], cpu_ms
+                );
+            }
+        }
     });
 }
 
