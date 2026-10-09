@@ -94,10 +94,9 @@ pub struct Tls {
     pub depth: std::cell::Cell<u32>,
     /// Recycled uniquely-owned scopes.
     pub scopes: std::cell::RefCell<Vec<std::rc::Rc<Scope>>>,
-    /// Recycled operand stacks.
-    pub stacks: std::cell::RefCell<Vec<Vec<B>>>,
-    /// Recycled scope-chain vectors.
-    pub pscs: std::cell::RefCell<Vec<Vec<ScRef>>>,
+    /// Recycled (operand stack, scope-chain) vector pairs. Only touched by
+    /// `Frame::enter`/`Frame::drop`, which never re-enter while holding it.
+    pub frames: std::cell::UnsafeCell<Vec<(Vec<B>, Vec<ScRef>)>>,
 }
 
 std::thread_local! {
@@ -105,8 +104,7 @@ std::thread_local! {
         std::mem::ManuallyDrop::new(Tls {
             depth: std::cell::Cell::new(0),
             scopes: std::cell::RefCell::new(Vec::new()),
-            stacks: std::cell::RefCell::new(Vec::new()),
-            pscs: std::cell::RefCell::new(Vec::new()),
+            frames: std::cell::UnsafeCell::new(Vec::new()),
         })
     };
 }

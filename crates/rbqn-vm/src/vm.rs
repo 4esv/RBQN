@@ -270,12 +270,12 @@ struct Frame {
 impl Frame {
     #[inline]
     fn enter(max_stack: usize, max_psc: usize) -> Frame {
-        let (depth, mut stack, mut pscs) = TLS.with(|t| {
+        let (depth, (mut stack, mut pscs)) = TLS.with(|t| {
             let n = t.depth.get() + 1;
             t.depth.set(n);
-            let st = t.stacks.try_borrow_mut().ok().and_then(|mut p| p.pop()).unwrap_or_default();
-            let ps = t.pscs.try_borrow_mut().ok().and_then(|mut p| p.pop()).unwrap_or_default();
-            (n, st, ps)
+            // SAFETY: single-threaded, and no other code runs while the pool is borrowed.
+            let fr = unsafe { (*t.frames.get()).pop() }.unwrap_or_default();
+            (n, fr)
         });
         stack.reserve(max_stack);
         pscs.reserve(max_psc);
@@ -292,21 +292,17 @@ impl Drop for Frame {
     fn drop(&mut self) {
         let mut stack = std::mem::take(&mut self.stack);
         let mut pscs = std::mem::take(&mut self.pscs);
-        stack.clear();
-        pscs.clear();
+        // B and ScRef have no destructors: clearing is just a length reset.
+        unsafe {
+            stack.set_len(0);
+            pscs.set_len(0);
+        }
         TLS.with(|t| {
             t.depth.set(t.depth.get() - 1);
-            if stack.capacity() <= 4096
-                && let Ok(mut p) = t.stacks.try_borrow_mut()
-                && p.len() < 1024
-            {
-                p.push(stack);
-            }
-            if pscs.capacity() <= 4096
-                && let Ok(mut p) = t.pscs.try_borrow_mut()
-                && p.len() < 1024
-            {
-                p.push(pscs);
+            // SAFETY: see Frame::enter.
+            let p = unsafe { &mut *t.frames.get() };
+            if p.len() < 1024 && stack.capacity() <= 4096 {
+                p.push((stack, pscs));
             }
         });
     }
