@@ -303,6 +303,73 @@ fn test_scan_add_over_workgroup_limit() {
     });
 }
 
+// ---- i32 scan / reduce at tile-boundary lengths ---------------------------------
+
+const TILE_LENGTHS: [usize; 8] = [1, 255, 1023, 1025, 4097, 1_000_003, 10_000_000, 70_000_000];
+
+#[test]
+fn test_scan_reduce_i32_tile_lengths() {
+    use rbqn_gpu::buffer::{download_i32, upload_i32};
+    use rbqn_gpu::kernels::{reduce, scan};
+    pollster::block_on(async {
+        let Some((ctx, mut cache)) = setup().await else {
+            println!("No GPU available, skipping");
+            return;
+        };
+        for n in TILE_LENGTHS {
+            let data = rand_i32(n, 1 << 20, n as u64);
+            let buf = upload_i32(&ctx.device, &ctx.queue, &data);
+
+            // scans wrap on overflow, like the CPU wrapping_add
+            let mut acc = 0i32;
+            let incl: Vec<i32> = data.iter().map(|&x| { acc = acc.wrapping_add(x); acc }).collect();
+            let out = scan::inclusive_scan(&ctx.device, &ctx.queue, &mut cache, &buf);
+            let got = download_i32(&ctx.device, &ctx.queue, &out).await;
+            assert_eq!(got.len(), n);
+            if let Some(i) = (0..n).find(|&i| got[i] != incl[i]) {
+                panic!("inclusive scan n={n}: first mismatch at {i}: got {} want {}", got[i], incl[i]);
+            }
+            let out = scan::exclusive_scan(&ctx.device, &ctx.queue, &mut cache, &buf);
+            let got = download_i32(&ctx.device, &ctx.queue, &out).await;
+            for i in 0..n {
+                let want = if i == 0 { 0 } else { incl[i - 1] };
+                assert_eq!(got[i], want, "exclusive scan n={n} at {i}");
+            }
+
+            for op in ["add", "mul", "min", "max"] {
+                let want = match op {
+                    "add" => data.iter().fold(0i32, |a, &b| a.wrapping_add(b)),
+                    "mul" => data.iter().fold(1i32, |a, &b| a.wrapping_mul(b)),
+                    "min" => *data.iter().min().unwrap(),
+                    _ => *data.iter().max().unwrap(),
+                };
+                let out = reduce::reduce(&ctx.device, &ctx.queue, &mut cache, op, &buf);
+                let got = download_i32(&ctx.device, &ctx.queue, &out).await;
+                assert_eq!(got, vec![want], "reduce {op} n={n}");
+            }
+        }
+    });
+}
+
+/// scan_i32 tiles hold 2048 elements, so its grid turns 2D above 65535 * 2048.
+#[test]
+fn test_scan_i32_2d_grid() {
+    use rbqn_gpu::buffer::{download_i32, upload_i32};
+    use rbqn_gpu::kernels::scan;
+    pollster::block_on(async {
+        let Some((ctx, mut cache)) = setup().await else {
+            println!("No GPU available, skipping");
+            return;
+        };
+        let n = 65535 * 2048 + 1000;
+        let buf = upload_i32(&ctx.device, &ctx.queue, &vec![1i32; n]);
+        let out = scan::inclusive_scan(&ctx.device, &ctx.queue, &mut cache, &buf);
+        let got = download_i32(&ctx.device, &ctx.queue, &out).await;
+        assert_eq!(got.len(), n);
+        assert!(got.iter().enumerate().all(|(i, &g)| g == i as i32 + 1), "scan 2D grid");
+    });
+}
+
 // ---- sort / grade -----------------------------------------------------------
 
 fn lcg(seed: &mut u64) -> u32 {
@@ -494,7 +561,8 @@ mod int64_tests {
         pipeline::PipelineCache,
     };
 
-    const LENGTHS: [usize; 7] = [1, 7, 256, 257, 65536, 1_000_003, 10_000_000];
+    const LENGTHS: [usize; 11] =
+        [1, 7, 255, 256, 257, 1023, 1025, 4097, 65536, 1_000_003, 10_000_000];
     const OPS: [&str; 3] = ["add", "min", "max"];
 
     fn setup() -> Option<(GpuContext, PipelineCache)> {
@@ -830,5 +898,75 @@ mod int64_tests {
             add64 / add32, mul64 / add32, mul32w / add32
         );
         println!("ratio reduce i64/i32 = {:.2}, widening/i32 = {:.2}", r64 / r32, r32w / r32);
+    }
+    /// `cargo test -p rbqn-gpu --release --test gpu_kernels bench_kernels -- --ignored --nocapture`
+    #[test]
+    #[ignore = "microbench, prints a table"]
+    fn bench_kernels() {
+        use rbqn_gpu::kernels::{arith, reduce, scan};
+        use std::time::Instant;
+        let Some((ctx, mut cache)) = setup() else { return };
+        let n = 10_000_000;
+        let a32 = gen_i32(n, "mixed", 1);
+        let b32 = gen_i32(n, "mixed", 2);
+        let a64: Vec<i64> = a32.iter().map(|&x| x as i64).collect();
+        let x32 = upload_i32(&ctx.device, &ctx.queue, &a32);
+        let y32 = upload_i32(&ctx.device, &ctx.queue, &b32);
+        let x64 = upload_i64(&ctx.device, &ctx.queue, &a64);
+        let o32 = GpuBuffer::storage(&ctx.device, ElementKind::I32, n);
+        let dev = ctx.device.clone();
+        let q = ctx.queue.clone();
+        let wait = |dev: &wgpu::Device, q: &wgpu::Queue| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            q.on_submitted_work_done(move || {
+                let _ = tx.send(());
+            });
+            rbqn_gpu::buffer::sync(dev, || rx.try_recv().ok());
+        };
+        let mut bench = |label: &str, f: &mut dyn FnMut()| {
+            for _ in 0..5 {
+                f();
+                wait(&dev, &q);
+            }
+            let reps = 20;
+            let mut times: Vec<f64> = (0..reps)
+                .map(|_| {
+                    let t = Instant::now();
+                    f();
+                    wait(&dev, &q);
+                    t.elapsed().as_secs_f64() * 1e3
+                })
+                .collect();
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            println!("BENCHK {label:<24} median {:7.3} ms  min {:7.3} ms", times[reps / 2], times[0]);
+        };
+        bench("arith add i32", &mut || arith::arith_binary(&dev, &q, &mut cache, "add", &x32, &y32, &o32));
+        bench("scan i32 (inclusive)", &mut || {
+            let _ = scan::inclusive_scan(&dev, &q, &mut cache, &x32);
+        });
+        let s32 = GpuBuffer::storage(&ctx.device, ElementKind::I32, n);
+        bench("scan i32 prealloc out", &mut || {
+            scan::inclusive_scan_into(&dev, &q, &mut cache, &x32, &s32)
+        });
+        let s64 = GpuBuffer::storage(&ctx.device, ElementKind::I64, n);
+        bench("scan i64 prealloc out", &mut || {
+            scan_i64::scan_i64_into(&dev, &q, &mut cache, "add", &x64, &s64)
+        });
+        bench("arith add i32 fresh out", &mut || { let o = GpuBuffer::storage(&dev, ElementKind::I32, n); arith::arith_binary(&dev, &q, &mut cache, "add", &x32, &y32, &o) });
+        bench("scan i32 (exclusive)", &mut || {
+            let _ = scan::exclusive_scan(&dev, &q, &mut cache, &x32);
+        });
+        bench("scan i64 add", &mut || {
+            let _ = scan_i64::scan_i64(&dev, &q, &mut cache, "add", &x64);
+        });
+        bench("reduce i32 add", &mut || {
+            let _ = reduce::reduce(&dev, &q, &mut cache, "add", &x32);
+        });
+        bench("reduce i64 add", &mut || {
+            let _ = reduce_i64::reduce_i64(&dev, &q, &mut cache, "add", &x64);
+        });
+        bench("minmax i32", &mut || {
+            let _ = minmax::minmax_i32(&dev, &q, &mut cache, &x32);
+        });
     }
 }

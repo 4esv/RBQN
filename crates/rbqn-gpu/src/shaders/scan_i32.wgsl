@@ -1,77 +1,109 @@
+// i32/u32 scan, reduce-then-scan, barriers only (no inter-workgroup waits).
+// A tile is 256 threads x 8 elements = 2048. Loads and stores are coalesced
+// (thread t touches base + t + k*256) and staged through workgroup memory so
+// each thread can scan its 8 contiguous elements serially.
+//   block_sum: sums[wg] = sum of the tile.
+//   scan_incl / scan_excl: output = carry + local scan, where
+//   carry = sums[wg-1] and sums is the inclusive scan of the block sums.
+// Every var<workgroup> slot is written by all threads before it is read, so
+// zero-initialization is disabled for this module (pipeline.rs).
 @group(0) @binding(0) var<storage, read> input: array<i32>;
 @group(0) @binding(1) var<storage, read_write> output: array<i32>;
-@group(0) @binding(2) var<storage, read_write> block_sums: array<i32>;
+@group(0) @binding(2) var<storage, read_write> sums: array<i32>;
 
-var<workgroup> temp: array<i32, 512>;
+const EPT: u32 = 8u;
+const TILE: u32 = 2048u;
+
+var<workgroup> tile: array<i32, 2048>;
+var<workgroup> hs: array<i32, 512>;
 
 @compute @workgroup_size(256)
-fn scan_add_i32(
-    @builtin(global_invocation_id) gid: vec3<u32>,
+fn block_sum(
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
     @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
+    let wg = wid.y * nwg.x + wid.x;
+    let t = lid.x;
     let n = arrayLength(&input);
-    let wg = wid.y * nwg.x + wid.x; // linear workgroup index on the 2D grid
-    let local_idx = lid.x;
-
-    let ai = local_idx;
-    let bi = local_idx + 256u;
-
-    let a_idx = wg * 512u + ai;
-    let b_idx = wg * 512u + bi;
-
-    if (a_idx < n) { temp[ai] = input[a_idx]; } else { temp[ai] = 0; }
-    if (b_idx < n) { temp[bi] = input[b_idx]; } else { temp[bi] = 0; }
-
-    var offset = 1u;
-    for (var d = 256u; d > 0u; d = d >> 1u) {
-        workgroupBarrier();
-        if (local_idx < d) {
-            let ai2 = offset * (2u * local_idx + 1u) - 1u;
-            let bi2 = offset * (2u * local_idx + 2u) - 1u;
-            temp[bi2] = temp[bi2] + temp[ai2];
-        }
-        offset = offset << 1u;
+    let base = wg * TILE + t;
+    var acc: i32 = 0;
+    for (var k = 0u; k < EPT; k = k + 1u) {
+        let i = base + k * 256u;
+        if (i < n) { acc = acc + input[i]; }
     }
-
-    if (local_idx == 0u) {
-        // Spare workgroups on the last grid row must not write block_sums.
-        if (wg < arrayLength(&block_sums)) { block_sums[wg] = temp[511]; }
-        temp[511] = 0;
-    }
-
-    for (var d = 1u; d <= 256u; d = d << 1u) {
-        offset = offset >> 1u;
+    hs[t] = acc;
+    workgroupBarrier();
+    for (var s = 128u; s > 0u; s = s >> 1u) {
+        if (t < s) { hs[t] = hs[t] + hs[t + s]; }
         workgroupBarrier();
-        if (local_idx < d) {
-            let ai2 = offset * (2u * local_idx + 1u) - 1u;
-            let bi2 = offset * (2u * local_idx + 2u) - 1u;
-            let t = temp[ai2];
-            temp[ai2] = temp[bi2];
-            temp[bi2] = temp[bi2] + t;
-        }
+    }
+    // Spare workgroups on the last grid row must not write.
+    if (t == 0u && wg < arrayLength(&sums)) { sums[wg] = hs[0]; }
+}
+
+fn scan_tile(t: u32, wg: u32, exclusive: bool) {
+    let n = arrayLength(&input);
+    let base = wg * TILE;
+    // coalesced load
+    for (var k = 0u; k < EPT; k = k + 1u) {
+        let i = base + k * 256u + t;
+        var x: i32 = 0;
+        if (i < n) { x = input[i]; }
+        tile[k * 256u + t] = x;
     }
     workgroupBarrier();
 
-    if (a_idx < n) { output[a_idx] = temp[ai]; }
-    if (b_idx < n) { output[b_idx] = temp[bi]; }
+    // serial inclusive scan of this thread's 8 elements
+    var v: array<i32, 8>;
+    var run: i32 = 0;
+    for (var k = 0u; k < EPT; k = k + 1u) {
+        run = run + tile[t * EPT + k];
+        v[k] = run;
+    }
+
+    // Hillis-Steele over the 256 thread totals, ping-pong, one barrier per step
+    hs[t] = run;
+    workgroupBarrier();
+    var src = 0u;
+    for (var off = 1u; off < 256u; off = off << 1u) {
+        var x = hs[src + t];
+        if (t >= off) { x = x + hs[src + t - off]; }
+        let dst = 256u - src;
+        hs[dst + t] = x;
+        workgroupBarrier();
+        src = dst;
+    }
+    var pre: i32 = 0;
+    if (t > 0u) { pre = hs[src + t - 1u]; }
+    if (wg > 0u) { pre = pre + sums[wg - 1u]; }
+
+    var prev: i32 = 0;
+    for (var k = 0u; k < EPT; k = k + 1u) {
+        tile[t * EPT + k] = pre + select(v[k], prev, exclusive);
+        prev = v[k];
+    }
+    workgroupBarrier();
+    for (var k = 0u; k < EPT; k = k + 1u) {
+        let i = base + k * 256u + t;
+        if (i < n) { output[i] = tile[k * 256u + t]; }
+    }
 }
 
-@group(0) @binding(0) var<storage, read> scan_data: array<i32>;
-@group(0) @binding(1) var<storage, read_write> scan_output: array<i32>;
-@group(0) @binding(2) var<storage, read> prefix_sums: array<i32>;
-
 @compute @workgroup_size(256)
-fn propagate_i32(
-    @builtin(global_invocation_id) gid: vec3<u32>,
+fn scan_incl(
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
     @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let idx = gid.x + gid.y * nwg.x * 256u; // 2D grid, see dispatch::workgroup_grid
-    if (idx < arrayLength(&scan_output)) {
-        // NOTE: Each scan block covers 512 elements (ELEMENTS_PER_WORKGROUP).
-        // Map the global element index to the correct block_sums entry.
-        let block_idx = idx / 512u;
-        scan_output[idx] = scan_data[idx] + prefix_sums[block_idx];
-    }
+    scan_tile(lid.x, wid.y * nwg.x + wid.x, false);
+}
+
+@compute @workgroup_size(256)
+fn scan_excl(
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
+) {
+    scan_tile(lid.x, wid.y * nwg.x + wid.x, true);
 }

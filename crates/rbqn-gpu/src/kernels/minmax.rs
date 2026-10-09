@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::buffer::{ElementKind, GpuBuffer};
 use crate::dispatch::workgroup_grid;
 use crate::kernels::int64::{self, BLOCK};
-use crate::pipeline::{PipelineCache, PipelineKey};
+use crate::pipeline::{PassBatch, PipelineCache, PipelineKey};
 
 const SOURCE: &str = include_str!("../shaders/minmax_i32.wgsl");
 
@@ -19,6 +19,7 @@ pub fn minmax_i32(
     assert_eq!(input.element_type(), ElementKind::I32);
     assert!(!input.is_empty(), "minmax_i32: empty input");
     let mut cur: Option<GpuBuffer> = None;
+    let mut batch = PassBatch::new(device);
     loop {
         let (src, count) = match &cur {
             Some(b) => (b, b.len() / 2),
@@ -30,8 +31,9 @@ pub fn minmax_i32(
         let key = PipelineKey::raw("minmax_i32", entry);
         let pipeline = cache.get_or_create(&key, SOURCE);
         let bg = int64::bind(device, pipeline, &[(0, src), (1, &out)]);
-        int64::run(device, queue, pipeline, &bg, workgroup_grid(groups as u32));
+        batch.push(pipeline, &bg, workgroup_grid(groups as u32));
         if groups == 1 {
+            batch.submit(queue);
             return out;
         }
         cur = Some(out);
