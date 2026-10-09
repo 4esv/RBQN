@@ -306,7 +306,40 @@ pub fn fmt_b_detail(b: B) -> String {
 }
 
 
+/// Maximum nesting of block evaluations before raising "Stack overflow".
+/// Measured on an 8 MB stack: one level costs 1.6-2.5 KB of native stack across
+/// eight recursion shapes (direct 𝕊, ⍟, ¨, ˘, ∘, ⟜, ⌜, ⎊). 20000 levels is at
+/// most ~50 MB, a 10x margin under the 512 MB interpreter thread stack.
+pub const MAX_EVAL_DEPTH: u32 = 20_000;
+
+std::thread_local! {
+    static EVAL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Decrements the depth on scope exit, including unwinding from a BQN error.
+struct DepthGuard;
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        EVAL_DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
+fn enter_eval() -> DepthGuard {
+    let depth = EVAL_DEPTH.with(|d| {
+        let n = d.get() + 1;
+        d.set(n);
+        n
+    });
+    let guard = DepthGuard;
+    if depth > MAX_EVAL_DEPTH {
+        rbqn_core::error::throw("Stack overflow");
+    }
+    guard
+}
+
 pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
+    let _depth = enter_eval();
     let bc = &bl.bc;
     let mut pc = body.bc_offset;
     let mut stack = PoolVec::take(&STACK_POOL, body.max_stack as usize);

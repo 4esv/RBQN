@@ -13,7 +13,29 @@ use rbqn_vm::scope::Scope;
 use rbqn_vm::vm::{get_arr, tag_arr};
 
 
+/// Stack for the interpreter thread. Reserved virtual memory: pages are only
+/// committed when touched, so a deep recursion costs memory, a shallow one not.
+const INTERP_STACK_BYTES: usize = 512 << 20;
+
 fn main() {
+    // NOTE: All interpreter work (bootstrap, evaluation, REPL, •Exit) runs on this
+    // one thread: the value stores are thread-local, and the default 8 MB main
+    // stack overflowed at a few thousand BQN calls. std::process::exit from the
+    // interpreter thread ends the whole process as before.
+    let handle = std::thread::Builder::new()
+        .name("rbqn".into())
+        .stack_size(INTERP_STACK_BYTES)
+        .spawn(interp_main)
+        .unwrap_or_else(|e| {
+            eprintln!("rbqn: could not start interpreter thread: {e}");
+            std::process::exit(1);
+        });
+    if handle.join().is_err() {
+        std::process::exit(1);
+    }
+}
+
+fn interp_main() {
     // Suppress default panic output — BQN errors use panic-based throw()
     // and we catch them with catch_unwind for clean error messages.
     std::panic::set_hook(Box::new(|_| {}));
