@@ -373,9 +373,58 @@ fn retry_scope(
     *current_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, args));
 }
 
+#[cold]
+#[inline(never)]
+fn vm_trace_op(stack: &[B], pc: usize, op: Option<Op>, op_val: u32) {
+    let op_name = op.map(|o| format!("{:?}", o)).unwrap_or_else(|| format!("0x{:02x}", op_val));
+    let stack_info: String = stack.iter().rev().take(4).enumerate().map(|(i, b)| {
+        if b.is_arr() {
+            let ia = get_arr(*b).map_or(-1i64, |a| a.ia() as i64);
+            format!("s[{}]=arr(ia={})", i, ia)
+        } else if b.is_f64() {
+            format!("s[{}]={}", i, b.o2f())
+        } else if b.is_fun() {
+            format!("s[{}]=fun", i)
+        } else {
+            format!("s[{}]={:#x}", i, b.0)
+        }
+    }).collect::<Vec<_>>().join(" ");
+    vm_trace_push(format!("OP pc={} {} stk=[{}]", pc, op_name, stack_info));
+}
+
+// NOTE: Debug trace for FN2C with empty array arguments
+#[cold]
+#[inline(never)]
+fn vm_trace_fn2c(w: B, f: B, x: B, pc: usize) {
+    if x.is_arr()
+        && let Some(xa) = get_arr(x)
+            && xa.ia() == 0 && w.is_f64() {
+                let f_tag = (f.0 >> 48) as u16;
+                vm_trace_push(format!(
+                    "FN2C w={} f_tag={:#06x} x=EMPTY_ARR shape={:?} bc_pc={}",
+                    w.o2f(), f_tag, xa.shape, pc
+                ));
+                if f.is_fun() {
+                    let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
+                    let d = crate::derive::get_derived(id);
+                    vm_trace_push(format!("  f_kind={:?}", d.kind));
+                }
+            }
+}
+
+#[cold]
+#[inline(never)]
+fn vm_trace_varo(val: B, d: u32, p: u32) {
+    if val.is_arr()
+        && let Some(a) = get_arr(val)
+            && a.ia() == 0 {
+                vm_trace_push(format!("  VARO d={} p={} → EMPTY_ARR shape={:?}", d, p, a.shape));
+            }
+}
+
 pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     let _depth = enter_eval();
-    let bc = &bl.bc;
+    let bc: &[i32] = &bl.bc;
     let mut pc = body.bc_offset;
     let mut stack = PoolVec::take(&STACK_POOL, body.max_stack as usize);
     let mut current_sc = sc;
@@ -417,29 +466,16 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     let vm_debug = *VM_DEBUG_ENABLED;
 
     loop {
-        if pc >= bc.len() {
+        let Some(&op_raw) = bc.get(pc) else {
             rbqn_core::error::throw("VM: bytecode overrun");
-        }
-        let op_val = bc[pc] as u32;
+        };
         pc += 1;
+        let op_val = op_raw as u32;
 
         let op = Op::from_u32(op_val);
 
         if vm_debug {
-            let op_name = op.map(|o| format!("{:?}", o)).unwrap_or_else(|| format!("0x{:02x}", op_val));
-            let stack_info: String = stack.iter().rev().take(4).enumerate().map(|(i, b)| {
-                if b.is_arr() {
-                    let ia = get_arr(*b).map_or(-1i64, |a| a.ia() as i64);
-                    format!("s[{}]=arr(ia={})", i, ia)
-                } else if b.is_f64() {
-                    format!("s[{}]={}", i, b.o2f())
-                } else if b.is_fun() {
-                    format!("s[{}]=fun", i)
-                } else {
-                    format!("s[{}]={:#x}", i, b.0)
-                }
-            }).collect::<Vec<_>>().join(" ");
-            vm_trace_push(format!("OP pc={} {} stk=[{}]", pc-1, op_name, stack_info));
+            vm_trace_op(&stack, pc - 1, op, op_val);
         }
 
         match op {
@@ -478,21 +514,9 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                 let w = pop!();
                 let f = pop!();
                 let x = pop!();
-                // NOTE: Debug trace for FN2C with empty array arguments
-                if vm_debug && x.is_arr()
-                    && let Some(xa) = get_arr(x)
-                        && xa.ia() == 0 && w.is_f64() {
-                            let f_tag = (f.0 >> 48) as u16;
-                            vm_trace_push(format!(
-                                "FN2C w={} f_tag={:#06x} x=EMPTY_ARR shape={:?} bc_pc={}",
-                                w.o2f(), f_tag, xa.shape, pc
-                            ));
-                            if f.is_fun() {
-                                let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
-                                let d = crate::derive::get_derived(id);
-                                vm_trace_push(format!("  f_kind={:?}", d.kind));
-                            }
-                        }
+                if vm_debug {
+                    vm_trace_fn2c(w, f, x, pc);
+                }
                 push!(c2(f, w, x));
             }
             Some(Op::FN2O) => {
@@ -669,11 +693,9 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                 let d = read_u32!();
                 let p = read_u32!();
                 let val = pscs[d as usize].var_get(p as usize);
-                if vm_debug && val.is_arr()
-                    && let Some(a) = get_arr(val)
-                        && a.ia() == 0 {
-                            vm_trace_push(format!("  VARO d={} p={} → EMPTY_ARR shape={:?}", d, p, a.shape));
-                        }
+                if vm_debug {
+                    vm_trace_varo(val, d, p);
+                }
                 if v_check_bad_read(val) {
                     rbqn_core::error::throw("Attempting to read variable which is not yet defined");
                 }
