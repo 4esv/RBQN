@@ -21,8 +21,9 @@ pub fn exec_block_with_args(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>
     eval_bc(&body, sc, bl)
 }
 
-fn build_pscs(sc: &std::rc::Rc<Scope>, max_psc: u16) -> Vec<std::rc::Rc<Scope>> {
-    let mut pscs = Vec::with_capacity(max_psc as usize);
+/// Fill `pscs` with the scope chain starting at `sc`, up to `max_psc` entries.
+fn build_pscs(pscs: &mut Vec<std::rc::Rc<Scope>>, sc: &std::rc::Rc<Scope>, max_psc: u16) {
+    pscs.clear();
     if max_psc > 0 {
         pscs.push(sc.clone());
         let mut current = sc.clone();
@@ -36,7 +37,59 @@ fn build_pscs(sc: &std::rc::Rc<Scope>, max_psc: u16) -> Vec<std::rc::Rc<Scope>> 
             }
         }
     }
-    pscs
+}
+
+type Pool<T> = std::cell::RefCell<Vec<Vec<T>>>;
+
+std::thread_local! {
+    static STACK_POOL: Pool<B> = const { std::cell::RefCell::new(Vec::new()) };
+    static PSCS_POOL: Pool<std::rc::Rc<Scope>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A Vec borrowed from a thread-local free list and returned (cleared) on drop,
+/// so each block call reuses buffers instead of allocating a stack and a scope
+/// chain. Pool access uses try_with/try_borrow_mut, so it never panics; on any
+/// failure it just allocates or frees normally.
+struct PoolVec<T: 'static> {
+    v: Vec<T>,
+    pool: &'static std::thread::LocalKey<Pool<T>>,
+}
+
+impl<T: 'static> PoolVec<T> {
+    fn take(pool: &'static std::thread::LocalKey<Pool<T>>, cap: usize) -> Self {
+        let mut v = pool
+            .try_with(|p| p.try_borrow_mut().ok().and_then(|mut p| p.pop()))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        v.reserve(cap);
+        PoolVec { v, pool }
+    }
+}
+
+impl<T: 'static> std::ops::Deref for PoolVec<T> {
+    type Target = Vec<T>;
+    fn deref(&self) -> &Vec<T> { &self.v }
+}
+
+impl<T: 'static> std::ops::DerefMut for PoolVec<T> {
+    fn deref_mut(&mut self) -> &mut Vec<T> { &mut self.v }
+}
+
+impl<T: 'static> Drop for PoolVec<T> {
+    fn drop(&mut self) {
+        let mut v = std::mem::take(&mut self.v);
+        // Drop elements before touching the pool (dropping a scope may run other drops).
+        v.clear();
+        if v.capacity() <= 4096 {
+            let _ = self.pool.try_with(|p| {
+                if let Ok(mut p) = p.try_borrow_mut()
+                    && p.len() < 1024 {
+                        p.push(v);
+                    }
+            });
+        }
+    }
 }
 
 /// Helper: unpack an immediate variable reference from a u64.
@@ -256,9 +309,10 @@ pub fn fmt_b_detail(b: B) -> String {
 pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     let bc = &bl.bc;
     let mut pc = body.bc_offset;
-    let mut stack: Vec<B> = Vec::with_capacity(body.max_stack as usize);
+    let mut stack = PoolVec::take(&STACK_POOL, body.max_stack as usize);
     let mut current_sc = sc.clone();
-    let mut pscs = build_pscs(&current_sc, body.max_psc);
+    let mut pscs = PoolVec::take(&PSCS_POOL, body.max_psc as usize);
+    build_pscs(&mut pscs, &current_sc, body.max_psc);
 
     macro_rules! pop {
         () => {
@@ -740,7 +794,7 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                     let var_am = next_body.var_am.max(args.len() as u16);
                     let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
                     current_sc = new_sc;
-                    pscs = build_pscs(&current_sc, next_body.max_psc);
+                    build_pscs(&mut pscs, &current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
                     stack.clear();
                     continue;
@@ -769,7 +823,7 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                     let var_am = next_body.var_am.max(args.len() as u16);
                     let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
                     current_sc = new_sc;
-                    pscs = build_pscs(&current_sc, next_body.max_psc);
+                    build_pscs(&mut pscs, &current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
                     stack.clear();
                     continue;
@@ -804,7 +858,7 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                     let var_am = next_body.var_am.max(args.len() as u16);
                     let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
                     current_sc = new_sc;
-                    pscs = build_pscs(&current_sc, next_body.max_psc);
+                    build_pscs(&mut pscs, &current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
                     stack.clear();
                     continue;
@@ -839,7 +893,7 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                     let var_am = next_body.var_am.max(args.len() as u16);
                     let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
                     current_sc = new_sc;
-                    pscs = build_pscs(&current_sc, next_body.max_psc);
+                    build_pscs(&mut pscs, &current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
                     stack.clear();
                     continue;
