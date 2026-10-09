@@ -338,12 +338,47 @@ fn enter_eval() -> DepthGuard {
     guard
 }
 
+/// Switch `current_sc` to `next_body` for a header/predicate retry, carrying the
+/// first `arg_count` vars over. When the scope is not shared (no closure,
+/// namespace or pscs entry holds it) it is reset in place; otherwise a fresh
+/// Scope is built so captured scopes keep the failed body's variables.
+fn retry_scope(
+    current_sc: &mut std::rc::Rc<Scope>,
+    pscs: &mut Vec<std::rc::Rc<Scope>>,
+    next_body: &Arc<Body>,
+    arg_count: usize,
+) {
+    let mut args = [B::SENTINEL; 8];
+    {
+        let vars = current_sc.vars.borrow();
+        for i in 0..arg_count.min(8) {
+            args[i] = vars.get(i).copied().unwrap_or(B::SENTINEL);
+        }
+    }
+    let args = &args[..arg_count.min(8)];
+    let var_am = next_body.var_am.max(args.len() as u16);
+    // pscs holds clones of current_sc; drop them so the uniqueness check is meaningful
+    pscs.clear();
+    if current_sc.psc.is_some() {
+        if let Some(s) = std::rc::Rc::get_mut(current_sc) {
+            if s.ext.is_none() {
+                s.body = next_body.clone();
+                s.var_am = var_am;
+                *s.vars.get_mut() = crate::scope::Vars::new(var_am as usize, args);
+                return;
+            }
+        }
+    }
+    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
+    *current_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, args));
+}
+
 pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     let _depth = enter_eval();
     let bc = &bl.bc;
     let mut pc = body.bc_offset;
     let mut stack = PoolVec::take(&STACK_POOL, body.max_stack as usize);
-    let mut current_sc = sc.clone();
+    let mut current_sc = sc;
     let mut pscs = PoolVec::take(&PSCS_POOL, body.max_psc as usize);
     build_pscs(&mut pscs, &current_sc, body.max_psc);
 
@@ -817,16 +852,7 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                     // NOTE: Preserve original args when retrying — needed for modifier blocks
                     // where 𝕣 (var[0]) and 𝔽 (operand) must be available in the next body.
                     let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
-                    let args: Vec<B> = if arg_count > 0 {
-                        let vars = current_sc.vars.borrow_mut();
-                        (0..arg_count).map(|i| vars.get(i).copied().unwrap_or(B::SENTINEL)).collect()
-                    } else {
-                        vec![]
-                    };
-                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
-                    let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
-                    current_sc = new_sc;
+                    retry_scope(&mut current_sc, &mut pscs, &next_body, arg_count);
                     build_pscs(&mut pscs, &current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
                     stack.clear();
@@ -847,15 +873,9 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                         rbqn_core::error::throw("No matching header");
                     }
                     let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
-                    let args: Vec<B> = (0..arg_count).map(|i| {
-                        vars.get(i).copied().unwrap_or(B::SENTINEL)
-                    }).collect();
                     drop(vars);
                     // Iterative retry: reset VM state for the new body
-                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
-                    let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
-                    current_sc = new_sc;
+                    retry_scope(&mut current_sc, &mut pscs, &next_body, arg_count);
                     build_pscs(&mut pscs, &current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
                     stack.clear();
@@ -881,16 +901,7 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                     }
                     // Iterative retry: preserve original args for modifier blocks
                     let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
-                    let args: Vec<B> = if arg_count > 0 {
-                        let vars = current_sc.vars.borrow_mut();
-                        (0..arg_count).map(|i| vars.get(i).copied().unwrap_or(B::SENTINEL)).collect()
-                    } else {
-                        vec![]
-                    };
-                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
-                    let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
-                    current_sc = new_sc;
+                    retry_scope(&mut current_sc, &mut pscs, &next_body, arg_count);
                     build_pscs(&mut pscs, &current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
                     stack.clear();
@@ -917,15 +928,9 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                         rbqn_core::error::throw("No matching predicate");
                     }
                     let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
-                    let args: Vec<B> = (0..arg_count).map(|i| {
-                        vars.get(i).copied().unwrap_or(B::SENTINEL)
-                    }).collect();
                     drop(vars);
                     // Iterative retry
-                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
-                    let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
-                    current_sc = new_sc;
+                    retry_scope(&mut current_sc, &mut pscs, &next_body, arg_count);
                     build_pscs(&mut pscs, &current_sc, next_body.max_psc);
                     pc = next_body.bc_offset;
                     stack.clear();
