@@ -958,6 +958,10 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Err(BqnError::Type("∾𝕩: elements of 𝕩 must be arrays".into()));
     }
 
+    if let Some(r) = join_typed_vectors(arr) {
+        return Ok(PrimResult::Array(r));
+    }
+
     // NOTE: BQN ∾ monad on a rank-1 list of arrays: elements may differ by at most 1 in rank.
     // Find the maximum element rank to determine the common trailing shape.
     // Lower-rank elements (rank = max_rank - 1) are treated as having first dim 1.
@@ -1053,6 +1057,150 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         arr.fill
     };
     Ok(PrimResult::Array(typed_arr(result, new_shape, result_fill)))
+}
+
+/// Fast path for ∾ on a rank-1 boxed list whose elements are all rank-1 typed
+/// arrays of one kind (all numeric or all character). Widens to the widest
+/// element type, allocates once and copies slices. Returns None to fall back.
+fn join_typed_vectors(arr: &BqnArr) -> Option<BqnArr> {
+    let ArrData::Boxed(elems) = &arr.data else { return None };
+    let mut uniq: Vec<std::sync::Arc<BqnArr>> = Vec::new();
+    let mut seen: IdMap<u32> = IdMap::default();
+    let mut order: Vec<u32> = Vec::with_capacity(elems.len());
+    let mut ukeys: Vec<u64> = Vec::new();
+    let mut ulen: Vec<usize> = Vec::new();
+    // width code: numeric 0=Bit 1=I8 2=I16 3=I32 4=F64; char 1=C8 2=C16 3=C32
+    let mut is_char: Option<bool> = None;
+    let mut width = 0u8;
+    let mut total = 0usize;
+    for &e in elems {
+        // Few distinct elements (typical for ⥊-built lists): linear scan beats hashing.
+        let hit = if ukeys.len() <= 8 {
+            ukeys.iter().position(|&b| b == e.0).map(|p| p as u32)
+        } else {
+            seen.get(&e.0).copied()
+        };
+        if let Some(k) = hit {
+            order.push(k);
+            total += ulen[k as usize];
+            continue;
+        }
+        let a = get_arr(e)?;
+        if a.rank() != 1 {
+            return None;
+        }
+        let (c, w) = match &a.data {
+            ArrData::Bit(_) => (false, 0),
+            ArrData::I8(_) => (false, 1),
+            ArrData::I16(_) => (false, 2),
+            ArrData::I32(_) => (false, 3),
+            ArrData::F64(_) => (false, 4),
+            ArrData::C8(_) => (true, 1),
+            ArrData::C16(_) => (true, 2),
+            ArrData::C32(_) => (true, 3),
+            ArrData::Boxed(_) => return None,
+        };
+        match is_char {
+            None => is_char = Some(c),
+            Some(k) if k != c => return None,
+            _ => {}
+        }
+        width = width.max(w);
+        total += a.ia();
+        let k = uniq.len() as u32;
+        seen.insert(e.0, k);
+        ukeys.push(e.0);
+        ulen.push(a.ia());
+        uniq.push(a);
+        order.push(k);
+    }
+    if total == 0 {
+        return None;
+    }
+    let is_char = is_char?;
+    fn cat<T: Copy>(
+        uniq: &[std::sync::Arc<BqnArr>],
+        order: &[u32],
+        total: usize,
+        f: impl Fn(&BqnArr, &mut Vec<T>),
+    ) -> Vec<T> {
+        // Widen each distinct element once, then copy slices in order.
+        let wide: Vec<Vec<T>> = uniq
+            .iter()
+            .map(|a| {
+                let mut w = Vec::with_capacity(a.ia());
+                f(a, &mut w);
+                w
+            })
+            .collect();
+        let mut out: Vec<T> = Vec::with_capacity(total);
+        let dst = out.as_mut_ptr();
+        let mut pos = 0usize;
+        for &k in order {
+            let w = &wide[k as usize];
+            assert!(pos + w.len() <= total);
+            // PERF: elements are often 2-3 items; a plain loop beats memcpy calls.
+            for (j, &x) in w.iter().enumerate() {
+                // SAFETY: pos + j < total (asserted above) and out has capacity total.
+                unsafe { dst.add(pos + j).write(x) };
+            }
+            pos += w.len();
+        }
+        assert_eq!(pos, total);
+        // SAFETY: exactly `total` elements were written above.
+        unsafe { out.set_len(total) };
+        out
+    }
+    fn bits(a: &BqnArr) -> impl Iterator<Item = u8> + '_ {
+        let v: &[u64] = match &a.data {
+            ArrData::Bit(v) => v,
+            _ => &[],
+        };
+        (0..a.ia()).map(move |i| ((v[i / 64] >> (i % 64)) & 1) as u8)
+    }
+    macro_rules! widen {
+        ($t:ty, $a:expr, $o:expr) => {
+            match &$a.data {
+                ArrData::Bit(_) => $o.extend(bits($a).map(|x| x as $t)),
+                ArrData::I8(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::I16(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::I32(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::F64(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::C8(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::C16(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::C32(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::Boxed(_) => {}
+            }
+        };
+    }
+    let data = if is_char {
+        match width {
+            1 => ArrData::C8(cat(&uniq, &order, total, |a, o: &mut Vec<u8>| widen!(u8, a, o))),
+            2 => ArrData::C16(cat(&uniq, &order, total, |a, o: &mut Vec<u16>| widen!(u16, a, o))),
+            _ => ArrData::C32(cat(&uniq, &order, total, |a, o: &mut Vec<u32>| widen!(u32, a, o))),
+        }
+    } else {
+        match width {
+            0 => {
+                let mut out = vec![0u64; total.div_ceil(64)];
+                let mut k = 0;
+                for &u in &order {
+                    let a = &*uniq[u as usize];
+                    for b in bits(a) {
+                        out[k / 64] |= (b as u64) << (k % 64);
+                        k += 1;
+                    }
+                }
+                ArrData::Bit(out)
+            }
+            1 => ArrData::I8(cat(&uniq, &order, total, |a, o: &mut Vec<i8>| widen!(i8, a, o))),
+            2 => ArrData::I16(cat(&uniq, &order, total, |a, o: &mut Vec<i16>| widen!(i16, a, o))),
+            3 => ArrData::I32(cat(&uniq, &order, total, |a, o: &mut Vec<i32>| widen!(i32, a, o))),
+            _ => ArrData::F64(cat(&uniq, &order, total, |a, o: &mut Vec<f64>| widen!(f64, a, o))),
+        }
+    };
+    let fill = if is_char { B::m_c32(b' ' as u32) } else { B::m_f64(0.0) };
+    Some(BqnArr { shape: vec![total], data, fill: Some(fill) })
 }
 
 // ∾ dyad: join to
