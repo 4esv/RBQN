@@ -86,10 +86,7 @@ fn softmax_multi_pass(
         queue.submit(std::iter::once(encoder.finish()));
 
         let slice = staging.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { tx.send(r).unwrap(); });
-        device.poll(wgpu::Maintain::Wait);
-        rx.recv().unwrap().unwrap();
+        crate::buffer::map_sync(device, slice, wgpu::MapMode::Read);
         let view = slice.get_mapped_range();
         let v: f32 = bytemuck::cast_slice::<u8, f32>(&view)[0];
         drop(view);
@@ -121,10 +118,7 @@ fn softmax_multi_pass(
         queue.submit(std::iter::once(encoder.finish()));
 
         let slice = staging.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| { tx.send(r).unwrap(); });
-        device.poll(wgpu::Maintain::Wait);
-        rx.recv().unwrap().unwrap();
+        crate::buffer::map_sync(device, slice, wgpu::MapMode::Read);
         let view = slice.get_mapped_range();
         let v: f32 = bytemuck::cast_slice::<u8, f32>(&view)[0];
         drop(view);

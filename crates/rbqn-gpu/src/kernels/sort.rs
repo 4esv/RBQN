@@ -37,7 +37,7 @@ pub fn radix_sort_u32(
         let histogram_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: (NUM_BUCKETS * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: crate::buffer::storage_usage(),
             mapped_at_creation: false,
         });
         // Zero the histogram

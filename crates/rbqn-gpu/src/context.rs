@@ -5,6 +5,9 @@ pub struct GpuContext {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     pub adapter_info: wgpu::AdapterInfo,
+    pub mappable_primary_buffers: bool,
+    pub shader_int64: bool,
+    pub subgroup: bool,
 }
 
 impl GpuContext {
@@ -39,20 +42,31 @@ impl GpuContext {
             ..Default::default()
         };
 
+        let wanted = wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+            | wgpu::Features::SHADER_INT64
+            | wgpu::Features::SUBGROUP;
+        let required_features = wanted & adapter.features();
+
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("rbqn-gpu"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits,
                 ..Default::default()
             }, None)
             .await
             .ok()?;
 
+        let feats = device.features();
+        let mappable_primary_buffers = feats.contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
+        crate::buffer::set_mappable(mappable_primary_buffers);
         Some(Self {
             device: Arc::new(device),
             queue: Arc::new(queue),
             adapter_info,
+            mappable_primary_buffers,
+            shader_int64: feats.contains(wgpu::Features::SHADER_INT64),
+            subgroup: feats.contains(wgpu::Features::SUBGROUP),
         })
     }
 
