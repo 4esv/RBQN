@@ -270,6 +270,8 @@ async fn download_raw<T: bytemuck::Pod>(
     if buf.size == 0 {
         return Vec::new();
     }
+    crate::stats::READBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::stats::BYTES_DOWN.fetch_add(buf.size, std::sync::atomic::Ordering::Relaxed);
     if buf.buffer.usage().contains(wgpu::BufferUsages::MAP_READ) {
         let slice = buf.buffer.slice(..buf.size);
         map_sync(device, slice, wgpu::MapMode::Read);
@@ -293,7 +295,7 @@ async fn download_raw<T: bytemuck::Pod>(
     let slice = staging.slice(..);
     map_sync(device, slice, wgpu::MapMode::Read);
 
-    let view = slice.get_mapped_range(); crate::stats::READBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); crate::stats::BYTES_DOWN.fetch_add(buf.size, std::sync::atomic::Ordering::Relaxed);
+    let view = slice.get_mapped_range();
     let result: Vec<T> = bytemuck::cast_slice(&view).to_vec();
     drop(view);
     staging.unmap();
