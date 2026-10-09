@@ -116,3 +116,91 @@ pub fn scan(f: B, arr: &BqnArr) -> Option<BqnArr> {
     out.fill = arr.fill;
     Some(out)
 }
+
+/// Numeric contents as f64 (borrowed when already F64), or None for chars/boxed.
+fn f64_view(arr: &BqnArr) -> Option<std::borrow::Cow<'_, [f64]>> {
+    use std::borrow::Cow;
+    Some(match &arr.data {
+        ArrData::F64(v) => Cow::Borrowed(v.as_slice()),
+        ArrData::I32(v) => Cow::Owned(v.iter().map(|&a| a as f64).collect()),
+        ArrData::I16(v) => Cow::Owned(v.iter().map(|&a| a as f64).collect()),
+        ArrData::I8(v) => Cow::Owned(v.iter().map(|&a| a as f64).collect()),
+        ArrData::Bit(v) => Cow::Owned((0..arr.ia()).map(|i| bit_at(v, i)).collect()),
+        _ => return None,
+    })
+}
+
+/// Same as rbqn_prim's ⊣|⊢ helper: floored modulus with the sign of b.
+fn pfmod(a: f64, b: f64) -> f64 {
+    let r = a % b;
+    if (a < 0.0) != (b < 0.0) && r != 0.0 { r + b } else { r }
+}
+
+fn table_with<F: Fn(f64, f64) -> f64>(w: &[f64], x: &[f64], op: F) -> Vec<f64> {
+    let mut out = Vec::with_capacity(w.len() * x.len());
+    for &a in w {
+        out.extend(x.iter().map(|&b| op(a, b)));
+    }
+    out
+}
+
+/// 𝕨 F⌜ 𝕩 on numeric arrays with F one of + - × ÷ ⌊ ⌈ |, using the same scalar
+/// ops as the primitives. Result shape is 𝕨's shape then 𝕩's, squeezed.
+pub fn table(f: B, warr: &BqnArr, xarr: &BqnArr) -> Option<BqnArr> {
+    let idx = native_fn_idx(f)?;
+    if !matches!(idx, 0 | 1 | 2 | 3 | 6 | 7 | 8) {
+        return None;
+    }
+    let mut shape = warr.shape.clone();
+    shape.extend_from_slice(&xarr.shape);
+    if let Some(r) = int_table(idx, warr, xarr) {
+        return Some(BqnArr { shape, data: ArrData::I32(r), fill: Some(B::m_i32(0)) });
+    }
+    let w = f64_view(warr)?;
+    let x = f64_view(xarr)?;
+    let r = match idx {
+        0 => table_with(&w, &x, |a, b| a + b),
+        1 => table_with(&w, &x, |a, b| a - b),
+        2 => table_with(&w, &x, |a, b| a * b),
+        3 => table_with(&w, &x, |a, b| a / (b + 0.0)),
+        6 => table_with(&w, &x, f64::min),
+        7 => table_with(&w, &x, f64::max),
+        _ => table_with(&w, &x, |a, b| pfmod(b, a)),
+    };
+    let mut out = rbqn_core::array::squeeze_num(BqnArr::new_vec_f64(r));
+    out.shape = shape;
+    out.fill = Some(B::m_i32(0));
+    Some(out)
+}
+
+/// Integer-only table for + - × ⌊ ⌈ when every result fits in i32 (exact, so it
+/// equals the f64 result). None on non-integer input, other ops, or overflow.
+fn int_table(idx: usize, warr: &BqnArr, xarr: &BqnArr) -> Option<Vec<i32>> {
+    let is_int = |a: &BqnArr| matches!(a.data, ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) | ArrData::Bit(_));
+    if !is_int(warr) || !is_int(xarr) {
+        return None;
+    }
+    let w = warr.i32_iter().ok()?;
+    let x = xarr.i32_iter().ok()?;
+    let mut out: Vec<i32> = Vec::with_capacity(w.len() * x.len());
+    macro_rules! run {
+        ($op:expr) => {{
+            let op = $op;
+            for &a in &w {
+                let a = a as i64;
+                for &b in &x {
+                    out.push(i32::try_from(op(a, b as i64)).ok()?);
+                }
+            }
+        }};
+    }
+    match idx {
+        0 => run!(|a: i64, b: i64| a + b),
+        1 => run!(|a: i64, b: i64| a - b),
+        2 => run!(|a: i64, b: i64| a * b),
+        6 => run!(|a: i64, b: i64| a.min(b)),
+        7 => run!(|a: i64, b: i64| a.max(b)),
+        _ => return None,
+    }
+    Some(out)
+}

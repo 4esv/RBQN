@@ -535,6 +535,9 @@ fn table_c2(f: B, w: B, x: B) -> B {
             // array ⌜ array → original behavior
             let warr = arr_of(w);
             let xarr = arr_of(x);
+            if let Some(r) = crate::typed::table(f, &warr, &xarr) {
+                return crate::vm::tag_arr(r);
+            }
             let wn = warr.ia();
             let xn = xarr.ia();
             let mut results = Vec::with_capacity(wn * xn);
