@@ -4,11 +4,23 @@ use crate::dispatch::PrimResult;
 
 // NOTE: GPU dispatch hook — set by rbqn crate at startup via register_gpu_arith.
 // Using a function pointer in a OnceLock avoids a direct dependency on rbqn (which depends on rbqn-prim).
-type GpuArithFn = fn(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnArr>;
+// Takes `B` (not `&BqnArr`) so pending device values are consumed without a readback.
+type GpuArithFn = fn(op: &str, w: B, x: B) -> Option<B>;
 static GPU_ARITH_HOOK: OnceLock<GpuArithFn> = OnceLock::new();
 
 pub fn register_gpu_arith(f: GpuArithFn) {
     let _ = GPU_ARITH_HOOK.set(f);
+}
+
+/// GPU array-array arithmetic for `+ - × ÷`, called by the VM before it forces
+/// the operands with `get_arr`. None means take the CPU path.
+#[inline]
+pub fn try_gpu_arith(glyph: &str, w: B, x: B) -> Option<B> {
+    if !w.is_arr() || !x.is_arr() {
+        return None;
+    }
+    let op = gpu_op_name(glyph)?;
+    GPU_ARITH_HOOK.get().and_then(|h| h(op, w, x))
 }
 
 // NOTE: GPU fused dispatch hook — set by rbqn crate at startup via register_gpu_fused.
@@ -246,13 +258,7 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
             if xa_arr.rank() == 0 {
                 return pervasive_dyad(w, Some(wa_arr), x, None, scalar_fn, name);
             }
-            // GPU dispatch for large matching-shape numeric arrays
-            if wa_arr.shape == xa_arr.shape
-                && let Some(gpu_op) = gpu_op_name(name)
-                    && let Some(hook) = GPU_ARITH_HOOK.get()
-                        && let Some(result) = hook(gpu_op, wa_arr, xa_arr) {
-                            return Ok(PrimResult::Array(result));
-                        }
+            // NOTE: GPU dispatch happens earlier, in try_gpu_arith (called from derive::c2).
             // Try fast numeric path first
             if let (Ok(wvals), Ok(xvals)) = (num_view(wa_arr), num_view(xa_arr)) {
                 if wa_arr.shape == xa_arr.shape {

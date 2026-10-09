@@ -1,8 +1,9 @@
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rbqn_core::array::{ArrData, BqnArr, squeeze_num};
-use rbqn_core::B;
+use rbqn_core::array::{ArrData, BqnArr, squeeze_num, squeeze_i32};
+use rbqn_core::{B, DeviceValue, peek_device, tag_device};
 use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32, upload_f32, download_i32, download_f32};
 use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
@@ -174,21 +175,6 @@ fn max_abs_int(arr: &BqnArr) -> Option<f64> {
     })
 }
 
-/// True when every partial sum over `arr` fits in i32, so a GPU add-scan or
-/// add-reduce accumulating in i32 cannot overflow. BUG(fixed): the GPU scan
-/// returned 24290808380480 for `+´+`↕10000000` because only the inputs were bounded.
-fn gpu_sum_fits_i32(arr: &BqnArr) -> bool {
-    match max_abs_int(arr) {
-        Some(m) => m * (arr.ia() as f64) < 2_147_483_648.0,
-        None => false,
-    }
-}
-
-/// True when an i32 product-reduce over `arr` cannot overflow: every |x| ≤ 1.
-fn gpu_product_fits_i32(arr: &BqnArr) -> bool {
-    matches!(max_abs_int(arr), Some(m) if m <= 1.0)
-}
-
 /// Returns true if the array can be safely dispatched to GPU as i32 data.
 /// Integer-typed arrays (I8/I16/I32/Bit) are always safe.
 /// F64 arrays are safe only when all values pass `gpu_safe_integer`.
@@ -260,41 +246,120 @@ pub fn should_dispatch(op: &str, len: usize) -> bool {
     }
 }
 
-/// GPU-accelerated binary arithmetic: w_arr op x_arr → result.
+/// A pending i32 result living on the GPU (Step 2, lazy device values).
+/// `bound` is a conservative bound on |element|, so fold/scan can check i32
+/// overflow without reading the data back.
+pub struct GpuArr {
+    buf: Arc<GpuBuffer>,
+    shape: Vec<usize>,
+    fill: Option<B>,
+    bound: f64,
+}
+
+impl DeviceValue for GpuArr {
+    fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+    fn fill(&self) -> Option<B> {
+        self.fill
+    }
+    fn materialize(&self) -> BqnArr {
+        let gpu = get().expect("pending GPU value without a GPU runtime");
+        let data = pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &self.buf));
+        BqnArr { shape: self.shape.clone(), data: squeeze_i32(data), fill: self.fill }
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+// Recent host->device uploads keyed by the array's B bits (ids are never reused,
+// since ARR_STORE never frees), so `a+a` and repeated uses of `a` upload once.
+const UPLOAD_CACHE_LEN: usize = 4;
+std::thread_local! {
+    static UPLOAD_CACHE: RefCell<Vec<(u64, Arc<GpuBuffer>, f64)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Shape of an array operand without forcing a pending device value.
+/// Returns the host array too when the operand is not pending.
+fn operand_shape(b: B) -> Option<(Vec<usize>, Option<Arc<BqnArr>>)> {
+    if !b.is_arr() {
+        return None;
+    }
+    if let Some(d) = peek_device(b) {
+        return Some((d.shape().to_vec(), None));
+    }
+    let a = rbqn_core::get_arr(b)?;
+    Some((a.shape.clone(), Some(a)))
+}
+
+/// Device buffer and |element| bound for an operand: the pending buffer itself,
+/// a cached upload, or a fresh upload. None for non-integer-safe host data.
+fn operand_buf(gpu: &GpuRuntime, b: B, host: Option<&BqnArr>) -> Option<(Arc<GpuBuffer>, f64)> {
+    if let Some(d) = peek_device(b) {
+        let g = d.as_any().downcast_ref::<GpuArr>()?;
+        return Some((g.buf.clone(), g.bound));
+    }
+    if let Some(hit) = UPLOAD_CACHE.with(|c| {
+        c.borrow().iter().find(|(k, _, _)| *k == b.0).map(|(_, buf, m)| (buf.clone(), *m))
+    }) {
+        return Some(hit);
+    }
+    let arr = host?;
+    if !gpu_safe_arr(arr) {
+        return None;
+    }
+    let bound = max_abs_int(arr)?;
+    let buf = Arc::new(arr_to_gpu_i32(gpu, arr)?);
+    UPLOAD_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= UPLOAD_CACHE_LEN {
+            c.remove(0);
+        }
+        c.push((b.0, buf.clone(), bound));
+    });
+    Some((buf, bound))
+}
+
+fn fill_of(b: B, host: Option<&BqnArr>) -> Option<B> {
+    match host {
+        Some(a) => a.fill,
+        None => peek_device(b).and_then(|d| d.fill()),
+    }
+}
+
+/// GPU-accelerated binary arithmetic on two same-shape arrays, given as raw `B`
+/// so pending device operands are used in place. Returns a pending device value.
 /// Returns None on any error (CPU fallback).
 /// Registered as GPU_ARITH_HOOK in rbqn-prim at startup.
-pub fn gpu_arith_binary(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnArr> {
+pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
+    if gpu_mode() == GpuMode::Off { return None; }
     guarded("arith", || {
-        // Threshold and safety checks (before get(): it initializes the device)
-        if !should_dispatch("arith", w_arr.ia()) { return None; }
-        if !gpu_safe_arr(w_arr) || !gpu_safe_arr(x_arr) { return None; }
-        if w_arr.shape != x_arr.shape { return None; }
+        let (wshape, wh) = operand_shape(w)?;
+        let (xshape, xh) = operand_shape(x)?;
+        if wshape.is_empty() || wshape != xshape { return None; }
+        let n: usize = wshape.iter().product();
+        if !should_dispatch("arith", n) { return None; }
+        if let Some(a) = &wh && !gpu_safe_arr(a) { return None; }
+        if let Some(a) = &xh && !gpu_safe_arr(a) { return None; }
         let gpu = get()?;
-
-        let device = &gpu.ctx.device;
-        let queue = &gpu.ctx.queue;
-
-        // Upload both arrays as i32
-        let w_buf = arr_to_gpu_i32(gpu, w_arr)?;
-        let x_buf = arr_to_gpu_i32(gpu, x_arr)?;
-        let out_buf = GpuBuffer::storage(device, rbqn_gpu::buffer::ElementKind::I32, w_arr.ia());
-
+        let (w_buf, wb) = operand_buf(gpu, w, wh.as_deref())?;
+        let (x_buf, xb) = operand_buf(gpu, x, xh.as_deref())?;
+        let out_buf = GpuBuffer::storage(&gpu.ctx.device, ElementKind::I32, n);
         {
             let mut cache = gpu.cache.lock().ok()?;
             rbqn_gpu::kernels::arith::arith_binary(
-                device,
-                queue,
-                &mut cache,
-                op,
-                &w_buf,
-                &x_buf,
-                &out_buf,
+                &gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &w_buf, &x_buf, &out_buf,
             );
         }
-
-        let result = gpu_i32_to_arr(gpu, &out_buf, w_arr.shape.clone(), w_arr.fill);
-        log_dispatch("arith", w_arr.ia(), "i32");
-        Some(result)
+        let bound = match op {
+            "add" | "sub" => wb + xb,
+            "mul" => wb * xb,
+            _ => wb,
+        };
+        log_dispatch("arith", n, "i32");
+        let fill = fill_of(w, wh.as_deref());
+        Some(tag_device(Arc::new(GpuArr { buf: Arc::new(out_buf), shape: wshape, fill, bound })))
     })
 }
 
@@ -421,21 +486,22 @@ fn prim_idx_of(f: B) -> Option<usize> {
     }
 }
 
-/// GPU fold (reduce) for large rank-1 numeric arrays.
-/// Supports +, x, floor, ceil (prim_idx 0, 2, 6, 7).
+/// GPU fold (reduce) for large rank-1 numeric arrays, given as raw `x`.
+/// Supports +, x, floor, ceil (prim_idx 0, 2, 6, 7). Returns a number (the
+/// result is read back immediately), never a pending value.
 /// Returns None for unsupported ops or if GPU dispatch is unavailable.
-pub fn gpu_fold(f: B, arr: &BqnArr) -> Option<B> {
-    guarded("fold", || gpu_fold_inner(f, arr))
+pub fn gpu_fold(f: B, x: B) -> Option<B> {
+    if gpu_mode() == GpuMode::Off { return None; }
+    guarded("fold", || gpu_fold_inner(f, x))
 }
 
-fn gpu_fold_inner(f: B, arr: &BqnArr) -> Option<B> {
-    if !should_dispatch("reduce", arr.ia()) {
+fn gpu_fold_inner(f: B, x: B) -> Option<B> {
+    let (shape, host) = operand_shape(x)?;
+    if shape.len() != 1 || shape[0] == 0 { return None; }
+    let n = shape[0];
+    if !should_dispatch("reduce", n) {
         return None;
     }
-    if !gpu_safe_arr(arr) {
-        return None;
-    }
-    let gpu = get()?;
     // NOTE: Map prim_idx to GPU reduce op; only supported primitives dispatch
     let op = match prim_idx_of(f)? {
         0 => "add", // +
@@ -444,11 +510,13 @@ fn gpu_fold_inner(f: B, arr: &BqnArr) -> Option<B> {
         7 => "max", // ceil
         _ => return None,
     };
+    if let Some(a) = &host && !gpu_safe_arr(a) { return None; }
+    let gpu = get()?;
+    let (buf, bound) = operand_buf(gpu, x, host.as_deref())?;
     // The kernels accumulate in i32; bound the result, not just the inputs.
-    if (op == "add" && !gpu_sum_fits_i32(arr)) || (op == "mul" && !gpu_product_fits_i32(arr)) {
+    if (op == "add" && bound * n as f64 >= 2_147_483_648.0) || (op == "mul" && bound > 1.0) {
         return None;
     }
-    let buf = arr_to_gpu_i32(gpu, arr)?;
     let result_buf = {
         let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
         rbqn_gpu::kernels::reduce::reduce(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, op, &buf)
@@ -458,56 +526,47 @@ fn gpu_fold_inner(f: B, arr: &BqnArr) -> Option<B> {
     if result_data.is_empty() {
         return None;
     }
-    log_dispatch(&format!("reduce_{op}"), arr.ia(), "i32");
+    log_dispatch(&format!("reduce_{op}"), n, "i32");
     Some(B::m_f64(result_data[0] as f64))
 }
 
-/// GPU scan (inclusive prefix sum) for large rank-1 numeric arrays.
-/// Only supports + (prim_idx 0) — the scan kernel implements prefix add.
+/// GPU scan (inclusive prefix sum) for large rank-1 numeric arrays, given as raw `x`.
+/// Only supports + (prim_idx 0). Returns a pending device value.
 /// Returns None for unsupported ops or if GPU dispatch is unavailable.
-pub fn gpu_scan(f: B, arr: &BqnArr) -> Option<B> {
-    guarded("scan", || gpu_scan_inner(f, arr))
+pub fn gpu_scan(f: B, x: B) -> Option<B> {
+    if gpu_mode() == GpuMode::Off || !x.is_arr() { return None; }
+    guarded("scan", || gpu_scan_inner(f, x))
 }
 
-fn gpu_scan_inner(f: B, arr: &BqnArr) -> Option<B> {
-    if !should_dispatch("scan", arr.ia()) {
-        return None;
-    }
-    if !gpu_safe_arr(arr) {
-        return None;
-    }
-    let gpu = get()?;
-    if arr.rank() != 1 {
+fn gpu_scan_inner(f: B, x: B) -> Option<B> {
+    let (shape, host) = operand_shape(x)?;
+    if shape.len() != 1 || shape[0] == 0 { return None; }
+    let n = shape[0];
+    if !should_dispatch("scan", n) {
         return None;
     }
     // NOTE: Only + (prim_idx 0) supported for scan (GPU kernel implements prefix add)
-    match prim_idx_of(f)? {
-        0 => {}
-        _ => return None,
-    }
-    // Prefix sums accumulate in i32; every partial sum must fit.
-    if !gpu_sum_fits_i32(arr) {
+    if prim_idx_of(f)? != 0 {
         return None;
     }
-    let buf = arr_to_gpu_i32(gpu, arr)?;
+    if let Some(a) = &host && !gpu_safe_arr(a) { return None; }
+    let gpu = get()?;
+    let (buf, bound) = operand_buf(gpu, x, host.as_deref())?;
+    // Prefix sums accumulate in i32; every partial sum must fit.
+    let out_bound = bound * n as f64;
+    if out_bound >= 2_147_483_648.0 {
+        return None;
+    }
     let result_buf = {
         let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
         rbqn_gpu::kernels::scan::inclusive_scan(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &buf)
     };
-    let result_data =
-        pollster::block_on(download_i32(&gpu.ctx.device, &gpu.ctx.queue, &result_buf));
-    if result_data.len() != arr.ia() {
+    if result_buf.len() != n {
         return None;
     }
-    log_dispatch("scan_add", arr.ia(), "i32");
-    // Build result array and squeeze to smallest integer type
-    let f64_data: Vec<f64> = result_data.iter().map(|&x| x as f64).collect();
-    let f64_arr = BqnArr {
-        shape: arr.shape.clone(),
-        data: ArrData::F64(f64_data),
-        fill: arr.fill,
-    };
-    Some(rbqn_vm::vm::tag_arr(squeeze_num(f64_arr)))
+    log_dispatch("scan_add", n, "i32");
+    let fill = fill_of(x, host.as_deref());
+    Some(tag_device(Arc::new(GpuArr { buf: Arc::new(result_buf), shape, fill, bound: out_bound })))
 }
 
 /// GPU-accelerated grade (⍋/⍒): returns permutation indices that sort the array.

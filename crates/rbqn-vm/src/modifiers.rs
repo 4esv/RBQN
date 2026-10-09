@@ -10,7 +10,8 @@ use crate::derive::{c1, c2};
 
 // NOTE: GPU fold hook — reduces large numeric arrays on GPU
 // Returns Some(B) if GPU handled the fold, None for CPU fallback
-type GpuFoldFn = fn(f: B, arr: &BqnArr) -> Option<B>;
+// Takes the raw `x` so a pending device value is reduced without a readback.
+type GpuFoldFn = fn(f: B, x: B) -> Option<B>;
 static GPU_FOLD_HOOK: OnceLock<GpuFoldFn> = OnceLock::new();
 
 pub fn register_gpu_fold(f: GpuFoldFn) {
@@ -19,7 +20,7 @@ pub fn register_gpu_fold(f: GpuFoldFn) {
 
 // NOTE: GPU scan hook — prefix-sums large numeric arrays on GPU
 // Returns Some(B) if GPU handled the scan, None for CPU fallback
-type GpuScanFn = fn(f: B, arr: &BqnArr) -> Option<B>;
+type GpuScanFn = fn(f: B, x: B) -> Option<B>;
 static GPU_SCAN_HOOK: OnceLock<GpuScanFn> = OnceLock::new();
 
 pub fn register_gpu_scan(f: GpuScanFn) {
@@ -591,6 +592,12 @@ fn fold_identity(f: B) -> Option<B> {
 }
 
 fn fold_c1(f: B, x: B) -> B {
+    // GPU dispatch for large rank-1 numeric arrays with supported ops (before forcing x)
+    if x.is_arr()
+        && let Some(hook) = GPU_FOLD_HOOK.get()
+            && let Some(result) = hook(f, x) {
+                return result;
+            }
     let arr = arr_of(x);
     if arr.rank() == 0 {
         rbqn_core::error::throw("´: 𝕩 must have rank ≥ 1");
@@ -601,12 +608,6 @@ fn fold_c1(f: B, x: B) -> B {
             rbqn_core::error::throw("´: empty array with no identity")
         );
     }
-    // GPU dispatch for large rank-1 numeric arrays with supported ops
-    if arr.rank() == 1
-        && let Some(hook) = GPU_FOLD_HOOK.get()
-            && let Some(result) = hook(f, &arr) {
-                return result;
-            }
     if let Some(r) = crate::typed::fold(f, &arr, None) {
         return r;
     }
@@ -740,6 +741,11 @@ fn scan_c1(f: B, x: B) -> B {
     if x.is_atom() {
         rbqn_core::error::throw("`: 𝕩 must be an array");
     }
+    // GPU dispatch for large rank-1 numeric arrays (before forcing x)
+    if let Some(hook) = GPU_SCAN_HOOK.get()
+        && let Some(result) = hook(f, x) {
+            return result;
+        }
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
@@ -754,11 +760,6 @@ fn scan_c1(f: B, x: B) -> B {
         });
     }
     if rank == 1 {
-        // GPU dispatch for large rank-1 numeric arrays with supported ops
-        if let Some(hook) = GPU_SCAN_HOOK.get()
-            && let Some(result) = hook(f, &arr) {
-                return result;
-            }
         if let Some(r) = crate::typed::scan(f, &arr) {
             return crate::vm::tag_arr(r);
         }

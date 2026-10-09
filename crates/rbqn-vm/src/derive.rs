@@ -713,6 +713,17 @@ pub fn c1(f: B, x: B) -> B {
                 let c1_fn = prim.c1.unwrap_or_else(|| {
                     rbqn_core::error::throw(format!("primitive '{}' has no monadic form", prim.glyph))
                 });
+                // Shape-only monads on a pending device value: answer from the
+                // host-side shape with a data-less stand-in, no readback.
+                if matches!(prim.glyph, "≠" | "≢" | "=")
+                    && let Some(d) = rbqn_core::peek_device(x)
+                {
+                    let stand_in = rbqn_core::BqnArr { shape: d.shape().to_vec(), data: rbqn_core::ArrData::Boxed(vec![]), fill: d.fill() };
+                    return match c1_fn(x, Some(&stand_in)) {
+                        Ok(r) => prim_result_to_b(r),
+                        Err(e) => rbqn_core::error::throw_bqn(e),
+                    };
+                }
                 let x_arr = crate::vm::get_arr(x);
                 crate::vm_trace!(
                     "c1 prim={} x_tag={:#06x} x_ia={}",
@@ -911,6 +922,10 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 let c2_fn = prim.c2.unwrap_or_else(|| {
                     rbqn_core::error::throw(format!("primitive '{}' has no dyadic form", prim.glyph))
                 });
+                // GPU arithmetic sees the raw B so pending device values stay on device.
+                if let Some(r) = rbqn_prim::arith_dyad::try_gpu_arith(prim.glyph, w, x) {
+                    return r;
+                }
                 let w_arr = crate::vm::get_arr(w);
                 let x_arr = crate::vm::get_arr(x);
                 crate::vm_trace!(
