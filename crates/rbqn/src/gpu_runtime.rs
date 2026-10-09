@@ -49,6 +49,59 @@ pub fn get() -> Option<&'static GpuRuntime> {
         .as_ref()
 }
 
+// Set while a GPU dispatch runs so the interpreter's panic hook (which is
+// silent for BQN's panic-based errors) can report GPU panics under
+// RBQN_GPU_DEBUG=1. The VM is single-threaded, so a plain flag suffices.
+static GPU_IN_DISPATCH: AtomicBool = AtomicBool::new(false);
+
+struct DispatchGuard;
+impl DispatchGuard {
+    fn enter() -> Self {
+        GPU_IN_DISPATCH.store(true, Ordering::Relaxed);
+        Self
+    }
+}
+impl Drop for DispatchGuard {
+    fn drop(&mut self) {
+        GPU_IN_DISPATCH.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Run a GPU dispatch, turning any panic into a CPU fallback (`None`).
+/// The panic itself is reported by `report_panic` from the panic hook.
+fn guarded<T>(what: &str, f: impl FnOnce() -> Option<T>) -> Option<T> {
+    let _guard = DispatchGuard::enter();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        if debug_enabled() {
+            eprintln!("[gpu] {what} dispatch panicked, CPU fallback");
+        }
+        None
+    })
+}
+
+/// Called from the interpreter's panic hook. Prints the payload and location
+/// of a panic raised inside a GPU dispatch when RBQN_GPU_DEBUG=1, and a
+/// backtrace when RUST_BACKTRACE is also set. Silent otherwise, since BQN
+/// errors are panic-based and must not print. (Issue #11.)
+pub fn report_panic(info: &std::panic::PanicHookInfo<'_>) {
+    if !GPU_IN_DISPATCH.load(Ordering::Relaxed) || !debug_enabled() {
+        return;
+    }
+    let payload = info.payload();
+    let msg = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("<non-string panic payload>");
+    match info.location() {
+        Some(l) => eprintln!("[gpu] panic at {}:{}:{}: {msg}", l.file(), l.line(), l.column()),
+        None => eprintln!("[gpu] panic: {msg}"),
+    }
+    if std::env::var_os("RUST_BACKTRACE").is_some_and(|v| v != "0") {
+        eprintln!("{}", std::backtrace::Backtrace::force_capture());
+    }
+}
+
 pub fn debug_enabled() -> bool {
     GPU_DEBUG.load(Ordering::Relaxed)
 }
@@ -164,7 +217,7 @@ pub fn should_dispatch(op: &str, len: usize) -> bool {
 /// Returns None on any error (CPU fallback).
 /// Registered as GPU_ARITH_HOOK in rbqn-prim at startup.
 pub fn gpu_arith_binary(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnArr> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    guarded("arith", || {
         // Threshold and safety checks (before get(): it initializes the device)
         if !should_dispatch("arith", w_arr.ia()) { return None; }
         if !gpu_safe_arr(w_arr) || !gpu_safe_arr(x_arr) { return None; }
@@ -195,11 +248,6 @@ pub fn gpu_arith_binary(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnA
         let result = gpu_i32_to_arr(gpu, &out_buf, w_arr.shape.clone(), w_arr.fill);
         log_dispatch("arith", w_arr.ia(), "i32");
         Some(result)
-    })).unwrap_or_else(|_| {
-        if debug_enabled() {
-            eprintln!("[gpu] arith GPU error — falling back to CPU");
-        }
-        None
     })
 }
 
@@ -245,13 +293,8 @@ pub fn gpu_fused_arith(
     a: &BqnArr,
     b: Option<&BqnArr>,
 ) -> Option<BqnArr> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    guarded("fused_arith", || {
         gpu_fused_arith_inner(ops, a, b)
-    })).unwrap_or_else(|_| {
-        if debug_enabled() {
-            eprintln!("[gpu] fused_arith GPU error — falling back to CPU");
-        }
-        None
     })
 }
 
@@ -335,13 +378,7 @@ fn prim_idx_of(f: B) -> Option<usize> {
 /// Supports +, x, floor, ceil (prim_idx 0, 2, 6, 7).
 /// Returns None for unsupported ops or if GPU dispatch is unavailable.
 pub fn gpu_fold(f: B, arr: &BqnArr) -> Option<B> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu_fold_inner(f, arr)))
-        .unwrap_or_else(|_| {
-            if debug_enabled() {
-                eprintln!("[gpu] fold dispatch panicked — CPU fallback");
-            }
-            None
-        })
+    guarded("fold", || gpu_fold_inner(f, arr))
 }
 
 fn gpu_fold_inner(f: B, arr: &BqnArr) -> Option<B> {
@@ -382,13 +419,7 @@ fn gpu_fold_inner(f: B, arr: &BqnArr) -> Option<B> {
 /// Only supports + (prim_idx 0) — the scan kernel implements prefix add.
 /// Returns None for unsupported ops or if GPU dispatch is unavailable.
 pub fn gpu_scan(f: B, arr: &BqnArr) -> Option<B> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu_scan_inner(f, arr)))
-        .unwrap_or_else(|_| {
-            if debug_enabled() {
-                eprintln!("[gpu] scan dispatch panicked — CPU fallback");
-            }
-            None
-        })
+    guarded("scan", || gpu_scan_inner(f, arr))
 }
 
 fn gpu_scan_inner(f: B, arr: &BqnArr) -> Option<B> {
@@ -436,7 +467,7 @@ fn gpu_scan_inner(f: B, arr: &BqnArr) -> Option<B> {
 /// Returns None on any error (CPU fallback).
 /// Registered as GPU_GRADE_HOOK in rbqn-prim at startup.
 pub fn gpu_grade(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    guarded("grade", || {
         // Only dispatch rank-1 numeric arrays above threshold
         if arr.rank() != 1 { return None; }
         if !should_dispatch("sort", arr.ia()) { return None; }
@@ -463,11 +494,6 @@ pub fn gpu_grade(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
         out.fill = Some(B::m_i32(0));
         log_dispatch("grade", n, "i32");
         Some(out)
-    })).unwrap_or_else(|_| {
-        if debug_enabled() {
-            eprintln!("[gpu] grade GPU error — falling back to CPU");
-        }
-        None
     })
 }
 
@@ -475,7 +501,7 @@ pub fn gpu_grade(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
 /// Returns None when GPU unavailable or data is invalid (CPU fallback).
 /// Registered as GPU_MATMUL_HOOK in rbqn-vm::derive at startup.
 pub fn gpu_matmul(w: B, x: B) -> Option<B> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    guarded("matmul", || {
         let wa = rbqn_vm::vm::get_arr(w)?;
         let xa = rbqn_vm::vm::get_arr(x)?;
 
@@ -535,11 +561,6 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
         }
 
         Some(rbqn_vm::vm::tag_arr(out))
-    })).unwrap_or_else(|_| {
-        if debug_enabled() {
-            eprintln!("[gpu] matmul GPU error — falling back to CPU");
-        }
-        None
     })
 }
 
@@ -547,7 +568,7 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
 /// Returns None when GPU unavailable or data is invalid (CPU fallback).
 /// Registered as GPU_SOFTMAX_HOOK in rbqn-vm::derive at startup.
 pub fn gpu_softmax(x: B) -> Option<B> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    guarded("softmax", || {
         let xa = rbqn_vm::vm::get_arr(x)?;
         if xa.rank() != 1 { return None; }
         let n = xa.ia();
@@ -584,11 +605,6 @@ pub fn gpu_softmax(x: B) -> Option<B> {
         }
 
         Some(rbqn_vm::vm::tag_arr(out))
-    })).unwrap_or_else(|_| {
-        if debug_enabled() {
-            eprintln!("[gpu] softmax GPU error — falling back to CPU");
-        }
-        None
     })
 }
 
@@ -609,7 +625,7 @@ fn arr_to_f64(arr: &BqnArr) -> Option<Vec<f64>> {
 /// Returns None on any error (CPU fallback).
 /// Registered as GPU_SORT_HOOK in rbqn-prim at startup.
 pub fn gpu_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    guarded("sort", || {
         // Only dispatch rank-1 numeric arrays above threshold
         if arr.rank() != 1 { return None; }
         if !should_dispatch("sort", arr.ia()) { return None; }
@@ -644,11 +660,6 @@ pub fn gpu_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
         }
         log_dispatch("sort", n, "i32");
         Some(result)
-    })).unwrap_or_else(|_| {
-        if debug_enabled() {
-            eprintln!("[gpu] sort GPU error — falling back to CPU");
-        }
-        None
     })
 }
 
