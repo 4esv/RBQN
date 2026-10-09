@@ -253,7 +253,27 @@ impl BqnArr {
 /// the elements were produced by arr.get(i) (which promotes stored types to B).
 pub fn typed_arr_from_b_vec(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
     if !elems.is_empty() {
-        if elems.iter().all(|b| b.is_f64()) {
+        // One pass decides "all numbers" and "all i32-exact" (squeeze_num's test);
+        // integer results go straight to i32 and skip the F64 round trip.
+        let mut all_f64 = true;
+        let mut all_int = true;
+        for b in &elems {
+            if !b.is_f64() {
+                all_f64 = false;
+                break;
+            }
+            let v = b.o2f();
+            all_int &= v == (v as i32) as f64;
+        }
+        if all_f64 && all_int {
+            let vals: Vec<i32> = elems.iter().map(|b| b.o2f() as i32).collect();
+            return BqnArr {
+                shape,
+                data: squeeze_i32(vals),
+                fill: fill.or(Some(B::m_f64(0.0))),
+            };
+        }
+        if all_f64 {
             let vals: Vec<f64> = elems.iter().map(|b| b.o2f()).collect();
             let arr = BqnArr {
                 shape,
