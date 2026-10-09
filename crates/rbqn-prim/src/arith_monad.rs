@@ -62,6 +62,24 @@ fn pervasive_monad(
     Err(BqnError::Type(format!("{name}𝕩: 𝕩 contained non-number")))
 }
 
+/// Scalar number fast path for monadic primitive index `op` (0..=9: `+-×÷⋆√⌊⌈|¬`).
+/// Mirrors the scalar closures of the `*_c1` functions below.
+#[inline(always)]
+pub fn scalar_monad(op: u8, x: f64) -> f64 {
+    match op {
+        0 => x,
+        1 => -x,
+        2 => if x > 0.0 { 1.0 } else if x == 0.0 { 0.0 } else { -1.0 },
+        3 => 1.0 / (x + 0.0),
+        4 => x.exp(),
+        5 => x.sqrt(),
+        6 => x.floor(),
+        7 => x.ceil(),
+        8 => x.abs(),
+        _ => 1.0 - x,
+    }
+}
+
 // + monad: identity (assert numeric)
 pub fn add_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_f64() {

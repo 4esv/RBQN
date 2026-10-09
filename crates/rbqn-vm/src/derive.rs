@@ -514,12 +514,55 @@ pub fn m_md2_block_val(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     tagu64(id << 3, MD2_TAG)
 }
 
+std::thread_local! {
+    // PERF: derived id -> scalar-arithmetic primitive index (0..=17), 0xFF otherwise.
+    // Lets c1/c2 skip the derived-store lookup for number-number primitive calls.
+    static SCALAR_OP: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[inline(always)]
+fn scalar_op_of(f: B) -> u8 {
+    if !f.is_fun() { return 0xFF; }
+    let id = ((f.0 & 0xFFFFFFFFFFFF) >> 3) as usize;
+    SCALAR_OP.with(|t| t.borrow().get(id).copied().unwrap_or(0xFF))
+}
+
+/// Number-number primitive call without the derived store or pervasion machinery.
+#[inline(always)]
+pub fn try_scalar_c2(f: B, w: B, x: B) -> Option<B> {
+    if !(w.is_num() && x.is_num()) { return None; }
+    let op = scalar_op_of(f);
+    if op < 18 {
+        Some(B::m_f64(rbqn_prim::arith_dyad::scalar_dyad(op, w.o2f(), x.o2f())))
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
+pub fn try_scalar_c1(f: B, x: B) -> Option<B> {
+    if !x.is_num() { return None; }
+    let op = scalar_op_of(f);
+    if op < 10 {
+        Some(B::m_f64(rbqn_prim::arith_monad::scalar_monad(op, x.o2f())))
+    } else {
+        None
+    }
+}
+
 pub fn m_native_fn(idx: usize) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::NativeFn { prim_idx: idx },
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
         bl: None, sc: None,
     });
+    if idx < 18 {
+        SCALAR_OP.with(|t| {
+            let mut v = t.borrow_mut();
+            if v.len() <= id as usize { v.resize(id as usize + 1, 0xFF); }
+            v[id as usize] = idx as u8;
+        });
+    }
     tagu64(id << 3, FUN_TAG)
 }
 
@@ -635,6 +678,7 @@ pub fn m2_d(m: B, f: B, g: B) -> B {
 }
 
 pub fn c1(f: B, x: B) -> B {
+    if let Some(r) = try_scalar_c1(f, x) { return r; }
     if f.is_fun() {
         let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
@@ -842,6 +886,7 @@ pub fn c1(f: B, x: B) -> B {
 }
 
 pub fn c2(f: B, w: B, x: B) -> B {
+    if let Some(r) = try_scalar_c2(f, w, x) { return r; }
     if f.is_fun() {
         let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);

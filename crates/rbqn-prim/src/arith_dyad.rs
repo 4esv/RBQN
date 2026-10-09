@@ -346,6 +346,33 @@ fn char_num_class(v: B, va: Option<&BqnArr>) -> char {
     'o'
 }
 
+/// Scalar number-number fast path for primitive index `op` (0..=17: `+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥`).
+/// Mirrors the `w.is_f64() && x.is_f64()` branch of each `*_c2` below and the scalar
+/// comparison functions in compare.rs; comparisons return 0.0/1.0.
+#[inline(always)]
+pub fn scalar_dyad(op: u8, w: f64, x: f64) -> f64 {
+    match op {
+        0 => w + x,
+        1 => w - x,
+        2 => w * x,
+        3 => w / (x + 0.0),
+        4 => (w + 0.0).powf(x),
+        5 => (x + 0.0).powf(1.0 / (0.0 + w)),
+        6 => w.min(x),
+        7 => w.max(x),
+        8 => pfmod(x, w),
+        9 => 1.0 + w - x,
+        10 => w * x,
+        11 => w + x - w * x,
+        12 => (w < x) as i32 as f64,
+        13 => (w > x) as i32 as f64,
+        14 => (w != x) as i32 as f64,
+        15 => (w == x) as i32 as f64,
+        16 => (w <= x) as i32 as f64,
+        _ => (w >= x) as i32 as f64,
+    }
+}
+
 // + dyad: add
 pub fn add_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let wk = char_num_class(w, wa);
