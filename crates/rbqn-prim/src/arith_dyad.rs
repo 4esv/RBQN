@@ -205,6 +205,10 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
         // scalar-array
         (None, Some(xa_arr)) => {
             if let Ok(wf) = w.to_f64()
+                && let Some(out) = typed_scalar_arr(name, wf, xa_arr, true) {
+                    return Ok(PrimResult::Array(out));
+                }
+            if let Ok(wf) = w.to_f64()
                 && let Ok(xvals) = num_view(xa_arr) {
                     let result: Vec<f64> = xvals.iter().map(|&xv| scalar_fn(wf, xv)).collect();
                     let mut out = BqnArr::new_vec_f64(result);
@@ -216,6 +220,10 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
         }
         // array-scalar
         (Some(wa_arr), None) => {
+            if let Ok(xf) = x.to_f64()
+                && let Some(out) = typed_scalar_arr(name, xf, wa_arr, false) {
+                    return Ok(PrimResult::Array(out));
+                }
             if let Ok(xf) = x.to_f64()
                 && let Ok(wvals) = num_view(wa_arr) {
                     let result: Vec<f64> = wvals.iter().map(|&wv| scalar_fn(wv, xf)).collect();
@@ -896,4 +904,144 @@ pub fn log_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
         return Ok(PrimResult::Scalar(B::m_f64(x.o2f().ln() / w.o2f().ln())));
     }
     pervasive_dyad(w, wa, x, xa, |a, b| b.ln() / a.ln(), "⋆⁼")
+}
+
+// ---------------------------------------------------------------------------
+// Typed scalar-array fast path
+// ---------------------------------------------------------------------------
+
+/// Integer-typed array contents (Bit/I8/I16/I32) as i32, borrowing for I32.
+fn int_view(a: &BqnArr) -> Option<std::borrow::Cow<'_, [i32]>> {
+    use std::borrow::Cow;
+    Some(match &a.data {
+        array::ArrData::I32(v) => Cow::Borrowed(&v[..]),
+        array::ArrData::I16(v) => Cow::Owned(v.iter().map(|&x| x as i32).collect()),
+        array::ArrData::I8(v) => Cow::Owned(v.iter().map(|&x| x as i32).collect()),
+        array::ArrData::Bit(w) => {
+            let n = a.ia();
+            Cow::Owned((0..n).map(|i| ((w[i / 64] >> (i % 64)) & 1) as i32).collect())
+        }
+        _ => return None,
+    })
+}
+
+/// Pack a predicate over a slice into a Bit array's words.
+fn pack_bits<F: Fn(i32) -> bool>(v: &[i32], f: F) -> Vec<u64> {
+    let mut words = vec![0u64; v.len().div_ceil(64)];
+    for (w, chunk) in words.iter_mut().zip(v.chunks(64)) {
+        let mut acc = 0u64;
+        for (j, &x) in chunk.iter().enumerate() {
+            acc |= (f(x) as u64) << j;
+        }
+        *w = acc;
+    }
+    words
+}
+
+/// Build the narrowest integer array for `vals`, matching `squeeze_num`.
+fn narrow_i32(vals: Vec<i32>, shape: Vec<usize>) -> BqnArr {
+    let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+    for &v in &vals {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    let data = if lo >= 0 && hi <= 1 {
+        array::ArrData::Bit(pack_bits(&vals, |x| x == 1))
+    } else if lo >= i8::MIN as i32 && hi <= i8::MAX as i32 {
+        array::ArrData::I8(vals.iter().map(|&v| v as i8).collect())
+    } else if lo >= i16::MIN as i32 && hi <= i16::MAX as i32 {
+        array::ArrData::I16(vals.iter().map(|&v| v as i16).collect())
+    } else {
+        array::ArrData::I32(vals)
+    };
+    BqnArr { shape, data, fill: Some(B::m_f64(0.0)) }
+}
+
+/// Map with an i64 kernel; None if any result leaves the i32 range.
+#[inline]
+fn map_int<F: Fn(i32) -> i64>(v: &[i32], f: F) -> Option<Vec<i32>> {
+    let mut bad = false;
+    let out: Vec<i32> = v
+        .iter()
+        .map(|&x| {
+            let r = f(x);
+            bad |= r != r as i32 as i64;
+            r as i32
+        })
+        .collect();
+    if bad { None } else { Some(out) }
+}
+
+#[inline(always)]
+fn floored_mod(x: i32, m: i32) -> i32 {
+    // m == 0 is excluded by the caller (CBQN gives NaN); result takes the sign of m.
+    let r = x.wrapping_rem(m);
+    if r != 0 && ((r < 0) != (m < 0)) { r + m } else { r }
+}
+
+/// Typed scalar-vs-array pervasive op for integer arrays. `scalar_left` says
+/// whether the scalar is the left argument. Returns None when the case is not
+/// covered (non-integer array, non-integer scalar for arithmetic, ÷, overflow),
+/// in which case the caller uses the generic f64 path.
+pub(crate) fn typed_scalar_arr(name: &str, s: f64, arr: &BqnArr, scalar_left: bool) -> Option<BqnArr> {
+    if arr.ia() == 0 || !s.is_finite() {
+        return None;
+    }
+    let v = int_view(arr)?;
+    let shape = arr.shape.clone();
+    // Comparisons: any numeric scalar, result is a Bit array.
+    macro_rules! cmp {
+        ($op:tt) => {{
+            let words = if scalar_left {
+                pack_bits(&v, |x| s $op (x as f64))
+            } else {
+                pack_bits(&v, |x| (x as f64) $op s)
+            };
+            return Some(BqnArr { shape, data: array::ArrData::Bit(words), fill: Some(B::m_f64(0.0)) });
+        }};
+    }
+    match name {
+        "=" => cmp!(==),
+        "≠" => cmp!(!=),
+        "<" => cmp!(<),
+        ">" => cmp!(>),
+        "≤" => cmp!(<=),
+        "≥" => cmp!(>=),
+        _ => {}
+    }
+    if s.fract() != 0.0 || s.abs() > i32::MAX as f64 {
+        return None;
+    }
+    let si = s as i32;
+    let sl = si as i64;
+    let out = match (name, scalar_left) {
+        ("+", _) => map_int(&v, |x| x as i64 + sl)?,
+        ("-", true) => map_int(&v, |x| sl - x as i64)?,
+        ("-", false) => map_int(&v, |x| x as i64 - sl)?,
+        ("×", _) | ("∧", _) => map_int(&v, |x| x as i64 * sl)?,
+        ("∨", _) => map_int(&v, |x| x as i64 + sl - x as i64 * sl)?,
+        ("⌊", _) => v.iter().map(|&x| x.min(si)).collect(),
+        ("⌈", _) => v.iter().map(|&x| x.max(si)).collect(),
+        // s|x
+        ("|", true) => {
+            if si == 0 {
+                return None;
+            }
+            if si > 0 && (si & (si - 1)) == 0 {
+                let mask = si - 1;
+                v.iter().map(|&x| x & mask).collect()
+            } else {
+                v.iter().map(|&x| floored_mod(x, si)).collect()
+            }
+        }
+        // x|s
+        ("|", false) => {
+            if v.contains(&0) {
+                return None;
+            }
+            v.iter().map(|&m| floored_mod(si, m)).collect()
+        }
+        _ => return None,
+    };
+    Some(narrow_i32(out, shape))
 }
