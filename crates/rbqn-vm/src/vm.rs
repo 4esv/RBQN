@@ -17,7 +17,7 @@ pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
 
 pub fn exec_block_with_args(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
     let var_am = body.var_am.max(args.len() as u16);
-    let sc = std::rc::Rc::new(Scope::new(body.clone(), Some(psc), var_am, args));
+    let sc = Scope::new_rc(&body, psc, var_am, args);
     eval_bc(&body, sc, bl)
 }
 
@@ -1056,7 +1056,10 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                 return ret_d(body, &mut stack, &pscs, &current_sc);
             }
             Some(Op::RETN) => {
-                return pop!();
+                let r = pop!();
+                pscs.clear();
+                Scope::recycle(current_sc);
+                return r;
             }
 
             _ => {

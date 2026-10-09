@@ -59,6 +59,10 @@ impl std::ops::DerefMut for Vars {
     }
 }
 
+std::thread_local! {
+    static SCOPE_FREE: std::cell::RefCell<Vec<std::rc::Rc<Scope>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 #[derive(Debug)]
 pub struct Scope {
     pub psc: Option<std::rc::Rc<Scope>>,
@@ -77,6 +81,45 @@ impl Scope {
             var_am,
             ext: None,
             vars: std::cell::RefCell::new(vars),
+        }
+    }
+
+    /// Build an `Rc<Scope>`, reusing a recycled allocation when one is available.
+    #[inline]
+    pub fn new_rc(body: &Arc<Body>, psc: std::rc::Rc<Scope>, var_am: u16, init_vars: &[B]) -> std::rc::Rc<Scope> {
+        let recycled = SCOPE_FREE
+            .try_with(|f| f.try_borrow_mut().ok().and_then(|mut f| f.pop()))
+            .ok()
+            .flatten();
+        if let Some(mut rc) = recycled
+            && let Some(s) = std::rc::Rc::get_mut(&mut rc)
+        {
+            s.psc = Some(psc);
+            if !Arc::ptr_eq(&s.body, body) {
+                s.body = body.clone();
+            }
+            s.var_am = var_am;
+            *s.vars.get_mut() = Vars::new(var_am as usize, init_vars);
+            return rc;
+        }
+        std::rc::Rc::new(Scope::new(body.clone(), Some(psc), var_am, init_vars))
+    }
+
+    /// Return a scope to the free list if nothing else holds it (no closure,
+    /// namespace or pscs entry captured it).
+    #[inline]
+    pub fn recycle(mut rc: std::rc::Rc<Scope>) {
+        if let Some(s) = std::rc::Rc::get_mut(&mut rc) {
+            let parent = s.psc.take();
+            s.ext = None;
+            let _ = SCOPE_FREE.try_with(|f| {
+                if let Ok(mut f) = f.try_borrow_mut()
+                    && f.len() < 64
+                {
+                    f.push(rc);
+                }
+            });
+            drop(parent);
         }
     }
 
