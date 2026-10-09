@@ -604,6 +604,9 @@ fn fold_c1(f: B, x: B) -> B {
             && let Some(result) = hook(f, &arr) {
                 return result;
             }
+    if let Some(r) = crate::typed::fold(f, &arr, None) {
+        return r;
+    }
     let mut acc = get_elem(&arr, n - 1);
     for i in (0..n - 1).rev() {
         acc = c2(f, get_elem(&arr, i), acc);
@@ -613,6 +616,10 @@ fn fold_c1(f: B, x: B) -> B {
 
 fn fold_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
+    if w.is_f64()
+        && let Some(r) = crate::typed::fold(f, &arr, Some(w.o2f())) {
+            return r;
+        }
     let n = arr.ia();
     let mut acc = w;
     for i in (0..n).rev() {

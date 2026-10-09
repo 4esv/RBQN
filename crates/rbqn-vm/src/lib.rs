@@ -9,6 +9,7 @@ pub mod scope;
 pub mod env;
 pub mod derive;
 pub mod modifiers;
+pub mod typed;
 pub mod namespace;
 pub mod compiler;
 pub mod vm;
