@@ -323,7 +323,7 @@ fn exec_stage(
 }
 
 pub fn bootstrap() -> Result<Runtime, BqnError> {
-    let prims = rbqn_prim::get_runtime();
+    let prims = rbqn_prim::get_runtime().to_vec();
     assert_eq!(prims.len(), RT_LEN, "primitive registry must have exactly {RT_LEN} entries");
 
     // Build fruntime: 64 B values, one per primitive, as callable NaN-boxed Derived values.

@@ -29,6 +29,7 @@ impl PrimResult {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Primitive {
     pub name: &'static str,
     pub glyph: &'static str,
@@ -36,7 +37,14 @@ pub struct Primitive {
     pub c2: Option<DyadFn>,
 }
 
-pub fn get_runtime() -> Vec<Primitive> {
+static RUNTIME: std::sync::LazyLock<Vec<Primitive>> = std::sync::LazyLock::new(build_runtime);
+
+/// The 64 runtime primitives, built once.
+pub fn get_runtime() -> &'static [Primitive] {
+    &RUNTIME
+}
+
+fn build_runtime() -> Vec<Primitive> {
     use crate::arith_dyad;
     use crate::arith_monad;
     use crate::compare;
