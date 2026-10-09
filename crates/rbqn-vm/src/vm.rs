@@ -15,6 +15,7 @@ pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
     eval_bc(&body, sc, bl)
 }
 
+#[inline(never)]
 pub fn exec_block_with_args(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
     let var_am = body.var_am.max(args.len() as u16);
     TLS.with(|t| {
@@ -537,6 +538,7 @@ fn ret_d(body: &Body, stack: &mut Vec<B>, pscs: &[ScRef], current_sc: &std::rc::
     stack.pop().unwrap_or(B::SENTINEL)
 }
 
+#[inline(never)]
 pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     TLS.with(|t| eval_bc_in(t, body, sc, bl))
 }
