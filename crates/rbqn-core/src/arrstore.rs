@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::array::BqnArr;
 use crate::value::{B, ARR_TAG, tagu64};
@@ -39,12 +39,19 @@ pub type IdMap<V> = HashMap<u64, V, std::hash::BuildHasherDefault<IdHasher>>;
 
 static ARR_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-static ARR_STORE: std::sync::LazyLock<Mutex<IdMap<Arc<BqnArr>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(IdMap::default()));
+// NOTE: Stores are thread-local: the interpreter runs on one thread (no spawn, no
+// rayon, GPU and FFI calls are synchronous on the caller's thread). Every borrow
+// below is a single insert or get+Arc clone that runs no user code and cannot
+// panic, so catch_unwind (⎊) can never observe a live borrow.
+// ManuallyDrop: values are never freed today, so skip a teardown walk at exit.
+std::thread_local! {
+    static ARR_STORE: std::mem::ManuallyDrop<std::cell::RefCell<IdMap<Arc<BqnArr>>>> = std::mem::ManuallyDrop::new(std::cell::RefCell::new(IdMap::default()));
+}
 
 pub fn tag_arr(arr: BqnArr) -> B {
     let id = ARR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    ARR_STORE.lock().unwrap().insert(id, Arc::new(arr));
+    let arr = Arc::new(arr);
+    ARR_STORE.with(|s| s.borrow_mut().insert(id, arr));
     tagu64(id << 3, ARR_TAG)
 }
 
@@ -53,7 +60,8 @@ pub fn tag_arr(arr: BqnArr) -> B {
 /// v_set checks this bit to destructure along the first axis (major cells).
 pub fn tag_arr_merge(arr: BqnArr) -> B {
     let id = ARR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    ARR_STORE.lock().unwrap().insert(id, Arc::new(arr));
+    let arr = Arc::new(arr);
+    ARR_STORE.with(|s| s.borrow_mut().insert(id, arr));
     tagu64((id << 3) | 1, ARR_TAG)
 }
 
@@ -68,5 +76,5 @@ pub fn get_arr(b: B) -> Option<Arc<BqnArr>> {
         return None;
     }
     let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
-    ARR_STORE.lock().unwrap().get(&id).cloned()
+    ARR_STORE.with(|s| s.borrow().get(&id).cloned())
 }

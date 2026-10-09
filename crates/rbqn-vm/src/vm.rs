@@ -154,7 +154,7 @@ pub fn fmt_b_short(b: B) -> String {
     }
     if b.is_fun() {
         let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
-        if let Some(d) = DERIVED_STORE.lock().ok().and_then(|m| m.get(&id).cloned()) {
+        if let Some(d) = crate::derive::try_get_derived(id) {
             return match &d.kind {
                 crate::derive::DerivedKind::NativeFn { prim_idx } => format!("fun(prim={})", prim_idx),
                 crate::derive::DerivedKind::FunBlock => "fun(block)".to_string(),
@@ -170,7 +170,7 @@ pub fn fmt_b_short(b: B) -> String {
     }
     if b.is_md() {
         let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
-        if let Some(d) = DERIVED_STORE.lock().ok().and_then(|m| m.get(&id).cloned()) {
+        if let Some(d) = crate::derive::try_get_derived(id) {
             return match &d.kind {
                 crate::derive::DerivedKind::NativeMd1 { prim_idx } => format!("md1(prim={})", prim_idx),
                 crate::derive::DerivedKind::NativeMd2 { prim_idx } => format!("md2(prim={})", prim_idx),
@@ -252,8 +252,6 @@ pub fn fmt_b_detail(b: B) -> String {
     fmt_b_short(b)
 }
 
-// NOTE: re-export the DERIVED_STORE accessor for fmt_b_short
-use crate::derive::DERIVED_STORE;
 
 pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     let bc = &bl.bc;

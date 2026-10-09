@@ -126,21 +126,33 @@ fn next_derived_id() -> u64 {
 
 pub fn store_derived(d: Derived) -> u64 {
     let id = next_derived_id();
-    // NOTE: Use unwrap_or_else to recover from poisoned mutex (caused by catch_unwind)
-    DERIVED_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(id, Arc::new(d));
+    let d = Arc::new(d);
+    DERIVED_STORE.with(|s| s.borrow_mut().insert(id, d));
     id
 }
 
+/// Derived object by id, or None for an unknown id.
+pub fn try_get_derived(id: u64) -> Option<Arc<Derived>> {
+    DERIVED_STORE.with(|s| s.borrow().get(&id).cloned())
+}
+
 pub fn get_derived(id: u64) -> Arc<Derived> {
-    DERIVED_STORE.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
+    try_get_derived(id)
         .unwrap_or_else(|| rbqn_core::error::throw("Invalid derived object reference"))
 }
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-pub static DERIVED_STORE: std::sync::LazyLock<Mutex<rbqn_core::IdMap<Arc<Derived>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(rbqn_core::IdMap::default()));
+// NOTE: Stores are thread-local: the interpreter runs on one thread (no spawn, no
+// rayon, GPU and FFI calls are synchronous on the caller's thread). Every borrow
+// below is a single insert or get+Arc clone that runs no user code and cannot
+// panic, so catch_unwind (⎊) can never observe a live borrow.
+// ManuallyDrop: values are never freed today, so skip a teardown walk at exit.
+std::thread_local! {
+    static DERIVED_STORE: std::mem::ManuallyDrop<std::cell::RefCell<rbqn_core::IdMap<Arc<Derived>>>> =
+        std::mem::ManuallyDrop::new(std::cell::RefCell::new(rbqn_core::IdMap::default()));
+}
 
 // Global inverse lookup functions, set by setInv callback during bootstrap.
 // INV_REG_FN: called as c1(inv_reg_fn, func) to get the regular inverse of func

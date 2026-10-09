@@ -27,18 +27,26 @@ static GID_NAMES: std::sync::LazyLock<Mutex<Vec<String>>> =
 
 static NS_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-static NS_STORE: std::sync::LazyLock<Mutex<HashMap<u64, Arc<NS>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+// NOTE: Stores are thread-local: the interpreter runs on one thread (no spawn, no
+// rayon, GPU and FFI calls are synchronous on the caller's thread). Every borrow
+// below is a single insert or get+Arc clone that runs no user code and cannot
+// panic, so catch_unwind (⎊) can never observe a live borrow.
+// ManuallyDrop: values are never freed today, so skip a teardown walk at exit.
+std::thread_local! {
+    static NS_STORE: std::mem::ManuallyDrop<std::cell::RefCell<rbqn_core::IdMap<Arc<NS>>>> =
+        std::mem::ManuallyDrop::new(std::cell::RefCell::new(rbqn_core::IdMap::default()));
+}
 
 pub fn store_ns(ns: NS) -> B {
     let id = NS_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    NS_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(id, Arc::new(ns));
+    let ns = Arc::new(ns);
+    NS_STORE.with(|s| s.borrow_mut().insert(id, ns));
     tagu64(id << 3, NSP_TAG)
 }
 
 pub fn get_ns(b: B) -> Arc<NS> {
     let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
-    NS_STORE.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
+    NS_STORE.with(|s| s.borrow().get(&id).cloned())
         .unwrap_or_else(|| rbqn_core::error::throw("Invalid namespace reference"))
 }
 
