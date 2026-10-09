@@ -442,13 +442,14 @@ fn repeat_to<T: Copy>(src: &[T], total: usize) -> Vec<T> {
     if total == 0 || n == 0 {
         return Vec::new();
     }
+    // Doubling: each step copies what is already there, so a short source
+    // (`1e7⥊3‿1‿2`) costs log2(total/n) memcpys instead of total/n slice pushes.
     let mut out = Vec::with_capacity(total);
-    let mut rem = total;
-    while rem >= n {
-        out.extend_from_slice(src);
-        rem -= n;
+    out.extend_from_slice(&src[..n.min(total)]);
+    while out.len() < total {
+        let take = out.len().min(total - out.len());
+        out.extend_from_within(..take);
     }
-    out.extend_from_slice(&src[..rem]);
     out
 }
 
