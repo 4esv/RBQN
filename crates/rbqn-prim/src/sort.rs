@@ -50,6 +50,75 @@ fn f64_key(x: f64) -> u64 {
     if b >> 63 == 1 { !b } else { b | (1 << 63) }
 }
 
+/// Stable counting-sort scatter: `cnt` holds exclusive prefix sums per bucket.
+#[inline(always)]
+fn scatter<T: Copy>(vals: &[T], bucket: impl Fn(T) -> usize, cnt: &mut [u32], out: &mut [i32]) {
+    debug_assert_eq!(vals.len(), out.len());
+    let o = out.as_mut_ptr();
+    for (i, &x) in vals.iter().enumerate() {
+        let b = bucket(x);
+        // SAFETY: b < cnt.len() (bucket is in range by construction of cnt), and
+        // the prefix sums of an exact histogram place every write in 0..n.
+        unsafe {
+            let c = cnt.get_unchecked_mut(b);
+            *o.add(*c as usize) = i as i32;
+            *c += 1;
+        }
+    }
+}
+
+/// Stable grade of small-width data (I8/C8/Bit as u8 index, I16/C16 as u16):
+/// fixed-size table, no min/max pass. `idx` must map order-preservingly into 0..K.
+/// PERF: the input is split into 4 contiguous chunks, each with its own histogram
+/// and cursor table, and the 4 chunks are processed interleaved. With few distinct
+/// keys a single table serialises on store-to-load forwarding of the same counter;
+/// 4 independent tables keep 4 chains in flight. Chunk c's cursors start after
+/// all earlier chunks' entries for the same bucket, so the result stays stable.
+fn grade_small<T: Copy, const K: usize>(vals: &[T], idx: impl Fn(T) -> usize, ascending: bool) -> Vec<i32> {
+    const C: usize = 4;
+    let n = vals.len();
+    if n == 0 { return Vec::new(); }
+    let ordered = if ascending { vals.windows(2).all(|w| idx(w[0]) <= idx(w[1])) }
+                  else { vals.windows(2).all(|w| idx(w[0]) >= idx(w[1])) };
+    if ordered { return (0..n as i32).collect(); }
+    let q = n / C;
+    let mut cnt = vec![[0u32; C]; K];
+    {
+        let ch: [&[T]; C] = std::array::from_fn(|c| &vals[c * q..(c + 1) * q]);
+        for j in 0..q {
+            for c in 0..C {
+                // SAFETY: j < q = ch[c].len(); idx & (K-1) < K = cnt.len().
+                unsafe { cnt.get_unchecked_mut(idx(*ch[c].get_unchecked(j)) & (K - 1))[c] += 1; }
+            }
+        }
+        for &x in &vals[C * q..] { cnt[idx(x) & (K - 1)][C - 1] += 1; }
+    }
+    let mut sum = 0u32;
+    let mut pre = |row: &mut [u32; C]| for c in row.iter_mut() { let t = *c; *c = sum; sum += t; };
+    if ascending { cnt.iter_mut().for_each(&mut pre); } else { cnt.iter_mut().rev().for_each(&mut pre); }
+    let mut out: Vec<i32> = Vec::with_capacity(n);
+    let o = out.as_mut_ptr();
+    // SAFETY: the histogram is exact, so the cursors place every index 0..n into
+    // a distinct slot 0..n; all n slots are written before set_len.
+    unsafe {
+        for j in 0..q {
+            for c in 0..C {
+                let i = c * q + j;
+                let k = cnt.get_unchecked_mut(idx(*vals.get_unchecked(i)) & (K - 1));
+                *o.add(k[c] as usize) = i as i32;
+                k[c] += 1;
+            }
+        }
+        for i in C * q..n {
+            let k = cnt.get_unchecked_mut(idx(*vals.get_unchecked(i)) & (K - 1));
+            *o.add(k[C - 1] as usize) = i as i32;
+            k[C - 1] += 1;
+        }
+        out.set_len(n);
+    }
+    out
+}
+
 /// Stable grade of values mapped to order-preserving u32 keys.
 /// Descending keeps equal keys in original order (BQN semantics).
 fn grade_keyed<T: Copy>(vals: &[T], key: impl Fn(T) -> u32, ascending: bool) -> Vec<i32> {
@@ -69,11 +138,7 @@ fn grade_keyed<T: Copy>(vals: &[T], key: impl Fn(T) -> u32, ascending: bool) -> 
         for &x in vals { cnt[bucket(key(x))] += 1; }
         let mut sum = 0u32;
         for c in cnt.iter_mut() { let t = *c; *c = sum; sum += t; }
-        for (i, &x) in vals.iter().enumerate() {
-            let b = bucket(key(x));
-            out[cnt[b] as usize] = i as i32;
-            cnt[b] += 1;
-        }
+        scatter(vals, |x| bucket(key(x)), &mut cnt, &mut out);
     } else {
         let mut pairs: Vec<u64> = vals.iter().enumerate()
             .map(|(i, &x)| {
@@ -102,12 +167,12 @@ fn fast_grade(arr: &BqnArr, ascending: bool) -> Option<Vec<i32>> {
     Some(match &arr.data {
         ArrData::Bit(v) => {
             let bits: Vec<u8> = (0..n).map(|i| bit_get(v, i) as u8).collect();
-            grade_keyed(&bits, |x| x as u32, ascending)
+            grade_small::<u8, 2>(&bits, |x| x as usize, ascending)
         }
-        ArrData::I8(v) => grade_keyed(v, |x| i32_key(x as i32), ascending),
-        ArrData::I16(v) => grade_keyed(v, |x| i32_key(x as i32), ascending),
+        ArrData::I8(v) => grade_small::<i8, 256>(v, |x| (x as u8 ^ 0x80) as usize, ascending),
+        ArrData::I16(v) => grade_small::<i16, 65536>(v, |x| (x as u16 ^ 0x8000) as usize, ascending),
+        ArrData::C8(v) => grade_small::<u8, 256>(v, |x| x as usize, ascending),
         ArrData::I32(v) => grade_keyed(v, i32_key, ascending),
-        ArrData::C8(v) => grade_keyed(v, |x| x as u32, ascending),
         ArrData::C16(v) => grade_keyed(v, |x| x as u32, ascending),
         ArrData::C32(v) => grade_keyed(v, |x| x, ascending),
         ArrData::F64(v) => {
@@ -148,6 +213,28 @@ fn sort_ints<T: Copy + Ord>(v: &mut [T], key: impl Fn(T) -> i64, from: impl Fn(i
     }
 }
 
+/// Sort small-width data via a fixed K-entry histogram (4 interleaved tables to
+/// avoid a serial counter chain), writing the output directly with no input copy.
+/// `idx` maps order-preservingly into 0..K and `val` inverts it.
+fn sort_small<T: Copy, const K: usize>(v: &[T], idx: impl Fn(T) -> usize, val: impl Fn(usize) -> T, ascending: bool) -> Vec<T> {
+    let mut cnt = vec![[0usize; 4]; K];
+    let mut ch = v.chunks_exact(4);
+    for w in &mut ch {
+        for c in 0..4 {
+            // SAFETY: idx & (K-1) < K = cnt.len().
+            unsafe { cnt.get_unchecked_mut(idx(w[c]) & (K - 1))[c] += 1; }
+        }
+    }
+    for &x in ch.remainder() { cnt[idx(x) & (K - 1)][0] += 1; }
+    let mut out = Vec::with_capacity(v.len());
+    let mut emit = |b: usize| {
+        let c: usize = cnt[b].iter().sum();
+        if c > 0 { out.extend(std::iter::repeat_n(val(b), c)); }
+    };
+    if ascending { (0..K).for_each(&mut emit); } else { (0..K).rev().for_each(&mut emit); }
+    out
+}
+
 fn fast_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
     if arr.rank() != 1 { return None; }
     let n = arr.ia();
@@ -159,10 +246,10 @@ fn fast_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
             for i in range { w[i / 64] |= 1 << (i % 64); }
             ArrData::Bit(w)
         }
-        ArrData::I8(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as i8, ascending); ArrData::I8(v) }
+        ArrData::I8(v) => ArrData::I8(sort_small::<i8, 256>(v, |x| (x as u8 ^ 0x80) as usize, |b| (b as u8 ^ 0x80) as i8, ascending)),
         ArrData::I16(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as i16, ascending); ArrData::I16(v) }
         ArrData::I32(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as i32, ascending); ArrData::I32(v) }
-        ArrData::C8(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as u8, ascending); ArrData::C8(v) }
+        ArrData::C8(v) => ArrData::C8(sort_small::<u8, 256>(v, |x| x as usize, |b| b as u8, ascending)),
         ArrData::C16(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as u16, ascending); ArrData::C16(v) }
         ArrData::C32(v) => { let mut v = v.clone(); sort_ints(&mut v, |x| x as i64, |k| k as u32, ascending); ArrData::C32(v) }
         ArrData::F64(v) => {
