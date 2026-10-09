@@ -300,6 +300,8 @@ const I32_LIM: f64 = 2_147_483_648.0;
 /// Results whose bound is below this run in i64 and convert to f64 exactly;
 /// anything larger goes to the CPU (f64 semantics, readback counted).
 const EXACT_LIM: f64 = 9_007_199_254_740_992.0;
+/// 2^63: an i64 reduce stays exact below this (fold only).
+const I64_LIM: f64 = 9_223_372_036_854_775_808.0;
 
 /// A pending integer result living on the GPU (Step 2/3, lazy device values).
 /// `kind` is I32 or I64. `bound` is a conservative bound on |element|, so
@@ -658,9 +660,13 @@ fn gpu_fold_inner(f: B, x: B) -> Option<B> {
         "mul" => if b > 1.0 { f64::INFINITY } else { b },
         _ => b,
     };
-    if out_bound(bound) >= EXACT_LIM {
+    // NOTE: a fold yields one number, so an exact i64 sum rounded once to f64
+    // is at least as accurate as the CPU's f64 chain: allow up to 2^63 here
+    // (elementwise and scan results stay under 2^53 so later ops see exact f64).
+    let fold_lim = if op == "add" { I64_LIM } else { EXACT_LIM };
+    if out_bound(bound) >= fold_lim {
         bound = refine_bound(gpu, x).unwrap_or(bound);
-        if out_bound(bound) >= EXACT_LIM { return None; }
+        if out_bound(bound) >= fold_lim { return None; }
     }
     let rb = out_bound(bound);
     let is_i32 = buf.element_type() == ElementKind::I32;
