@@ -8,7 +8,7 @@ use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
 use rbqn_gpu::pipeline::PipelineCache;
 
-// NOTE: Singleton GPU runtime — initialized once after CLI parse.
+// NOTE: Singleton GPU runtime — initialized lazily on first qualifying dispatch.
 pub struct GpuRuntime {
     pub ctx: GpuContext,
     pub cache: Mutex<PipelineCache>,
@@ -18,33 +18,35 @@ static GPU_RUNTIME: OnceLock<Option<GpuRuntime>> = OnceLock::new();
 static GPU_DISABLED: AtomicBool = AtomicBool::new(false);
 static GPU_DEBUG: AtomicBool = AtomicBool::new(false);
 
-/// Initialize GPU runtime. Called from main.rs after CLI parse.
-/// If `no_gpu` is true, stores None and disables GPU dispatch.
-/// If GPU adapter is unavailable, stores None silently.
+/// Record CLI GPU settings. Called from main.rs after CLI parse.
+/// The device itself is created lazily by `get()` on the first dispatch that
+/// passes its size threshold, so startup never pays for adapter/device setup.
 pub fn init(no_gpu: bool) {
-    let debug = std::env::var("RBQN_GPU_DEBUG").is_ok();
-    if debug {
+    if std::env::var("RBQN_GPU_DEBUG").is_ok() {
         GPU_DEBUG.store(true, Ordering::Relaxed);
     }
-
     if no_gpu {
         GPU_DISABLED.store(true, Ordering::Relaxed);
-        GPU_RUNTIME.get_or_init(|| None);
-        return;
     }
-
-    let ctx_opt = pollster::block_on(GpuContext::new());
-    let runtime_opt = ctx_opt.map(|ctx| {
-        let cache = Mutex::new(PipelineCache::new(ctx.device.clone()));
-        GpuRuntime { ctx, cache }
-    });
-
-    GPU_RUNTIME.get_or_init(|| runtime_opt);
 }
 
-/// Get the GPU runtime if available.
+/// Get the GPU runtime, creating it on first call. None when disabled
+/// (`--no-gpu`) or when no adapter is available.
+/// NOTE: Callers must apply their size threshold before calling this.
 pub fn get() -> Option<&'static GpuRuntime> {
-    GPU_RUNTIME.get()?.as_ref()
+    if GPU_DISABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+    GPU_RUNTIME
+        .get_or_init(|| {
+            if debug_enabled() {
+                eprintln!("[gpu] initializing device on thread {:?}", std::thread::current().name());
+            }
+            let ctx = pollster::block_on(GpuContext::new())?;
+            let cache = Mutex::new(PipelineCache::new(ctx.device.clone()));
+            Some(GpuRuntime { ctx, cache })
+        })
+        .as_ref()
 }
 
 pub fn debug_enabled() -> bool {
@@ -135,12 +137,11 @@ pub fn should_dispatch(op: &str, len: usize) -> bool {
 /// Registered as GPU_ARITH_HOOK in rbqn-prim at startup.
 pub fn gpu_arith_binary(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnArr> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let gpu = get()?;
-
-        // Threshold and safety checks
+        // Threshold and safety checks (before get(): it initializes the device)
         if !should_dispatch("arith", w_arr.ia()) { return None; }
         if !gpu_safe_arr(w_arr) || !gpu_safe_arr(x_arr) { return None; }
         if w_arr.shape != x_arr.shape { return None; }
+        let gpu = get()?;
 
         let device = &gpu.ctx.device;
         let queue = &gpu.ctx.queue;
@@ -233,13 +234,13 @@ fn gpu_fused_arith_inner(
 ) -> Option<BqnArr> {
     if ops.is_empty() { return None; }
 
-    let gpu = get()?;
     if !should_dispatch("arith", a.ia()) { return None; }
     if !gpu_safe_arr(a) { return None; }
     if let Some(b_arr) = b {
         if !gpu_safe_arr(b_arr) { return None; }
         if a.shape != b_arr.shape { return None; }
     }
+    let gpu = get()?;
 
     // Build FusionBuilder from ops list
     let mut builder = FusionBuilder::new();
@@ -316,13 +317,13 @@ pub fn gpu_fold(f: B, arr: &BqnArr) -> Option<B> {
 }
 
 fn gpu_fold_inner(f: B, arr: &BqnArr) -> Option<B> {
-    let gpu = get()?;
     if !should_dispatch("reduce", arr.ia()) {
         return None;
     }
     if !gpu_safe_arr(arr) {
         return None;
     }
+    let gpu = get()?;
     // NOTE: Map prim_idx to GPU reduce op; only supported primitives dispatch
     let op = match prim_idx_of(f)? {
         0 => "add", // +
@@ -359,13 +360,13 @@ pub fn gpu_scan(f: B, arr: &BqnArr) -> Option<B> {
 }
 
 fn gpu_scan_inner(f: B, arr: &BqnArr) -> Option<B> {
-    let gpu = get()?;
     if !should_dispatch("scan", arr.ia()) {
         return None;
     }
     if !gpu_safe_arr(arr) {
         return None;
     }
+    let gpu = get()?;
     if arr.rank() != 1 {
         return None;
     }
@@ -400,12 +401,11 @@ fn gpu_scan_inner(f: B, arr: &BqnArr) -> Option<B> {
 /// Registered as GPU_GRADE_HOOK in rbqn-prim at startup.
 pub fn gpu_grade(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let gpu = get()?;
-
         // Only dispatch rank-1 numeric arrays above threshold
         if arr.rank() != 1 { return None; }
         if !should_dispatch("sort", arr.ia()) { return None; }
         if !gpu_safe_arr(arr) { return None; }
+        let gpu = get()?;
 
         let device = &gpu.ctx.device;
         let queue = &gpu.ctx.queue;
@@ -440,8 +440,6 @@ pub fn gpu_grade(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
 /// Registered as GPU_MATMUL_HOOK in rbqn-vm::derive at startup.
 pub fn gpu_matmul(w: B, x: B) -> Option<B> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let gpu = get()?;
-
         let wa = rbqn_vm::vm::get_arr(w)?;
         let xa = rbqn_vm::vm::get_arr(x)?;
 
@@ -455,6 +453,7 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
         // NOTE: Threshold check — dispatch to GPU for larger matrices.
         // For small matrices, CPU is faster due to transfer overhead.
         if m * k + k * n < 50_000 { return None; }
+        let gpu = get()?;
 
         // Extract f64 data from arrays; skip if char/boxed
         let w_f64: Vec<f64> = arr_to_f64(&wa)?;
@@ -513,14 +512,13 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
 /// Registered as GPU_SOFTMAX_HOOK in rbqn-vm::derive at startup.
 pub fn gpu_softmax(x: B) -> Option<B> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let gpu = get()?;
-
         let xa = rbqn_vm::vm::get_arr(x)?;
         if xa.rank() != 1 { return None; }
         let n = xa.ia();
 
         // NOTE: Dispatch threshold — softmax GPU overhead only pays off for larger arrays.
         if n < 256 { return None; }
+        let gpu = get()?;
 
         let x_f64: Vec<f64> = arr_to_f64(&xa)?;
         let x_f32: Vec<f32> = x_f64.iter().map(|&v| v as f32).collect();
@@ -576,12 +574,11 @@ fn arr_to_f64(arr: &BqnArr) -> Option<Vec<f64>> {
 /// Registered as GPU_SORT_HOOK in rbqn-prim at startup.
 pub fn gpu_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let gpu = get()?;
-
         // Only dispatch rank-1 numeric arrays above threshold
         if arr.rank() != 1 { return None; }
         if !should_dispatch("sort", arr.ia()) { return None; }
         if !gpu_safe_arr(arr) { return None; }
+        let gpu = get()?;
 
         let device = &gpu.ctx.device;
         let queue = &gpu.ctx.queue;
