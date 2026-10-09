@@ -128,10 +128,11 @@ fn precompile(rt: &GpuRuntime) {
     }
 }
 
-/// Record CLI GPU settings and start device creation on a background thread so
-/// it overlaps the compile phase. Disabled (`--no-gpu`, RBQN_GPU=off): no thread.
-/// The thread initializes GPU_RUNTIME and then keeps precompiling; `get()`
-/// waits only for the device (OnceLock init), never for the precompile.
+/// Record CLI GPU settings. Disabled (`--no-gpu`, RBQN_GPU=off): nothing else.
+/// Force mode starts device creation now. Default mode starts it from the
+/// first array of `LARGE_ARR_HINT` elements the program creates: creating a
+/// Metal device costs ~1 ms of the main thread's time even when nothing is
+/// dispatched (driver load contention), which a program like `1` should not pay.
 pub fn init(no_gpu: bool) {
     if std::env::var("RBQN_GPU_DEBUG").is_ok() {
         GPU_DEBUG.store(true, Ordering::Relaxed);
@@ -140,7 +141,20 @@ pub fn init(no_gpu: bool) {
         GPU_DISABLED.store(true, Ordering::Relaxed);
         return;
     }
-    let _ = INIT_START.set(std::time::Instant::now());
+    if gpu_mode() == GpuMode::Force {
+        start_init_thread();
+    } else {
+        rbqn_core::arrstore::register_large_arr_hook(start_init_thread);
+    }
+}
+
+/// Start device creation on a background thread so it overlaps the program.
+/// The thread initializes GPU_RUNTIME and then keeps precompiling; `get()`
+/// waits only for the device (OnceLock init), never for the precompile.
+fn start_init_thread() {
+    if INIT_START.set(std::time::Instant::now()).is_err() {
+        return;
+    }
     let _ = std::thread::Builder::new().name("rbqn-gpu-init".into()).spawn(|| {
         if let Some(rt) = GPU_RUNTIME.get_or_init(build_runtime_logged) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| precompile(rt)));

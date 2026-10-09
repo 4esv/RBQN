@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use crate::array::BqnArr;
 use crate::value::{B, ARR_TAG, tagu64};
@@ -48,7 +48,30 @@ std::thread_local! {
     static ARR_STORE: std::mem::ManuallyDrop<std::cell::RefCell<IdMap<Arc<BqnArr>>>> = std::mem::ManuallyDrop::new(std::cell::RefCell::new(IdMap::default()));
 }
 
+/// Element count from which a freshly tagged array means "this program does
+/// array work": the first such array fires the hook registered with
+/// `register_large_arr_hook` (once per process). The GPU runtime uses it to
+/// start device creation only in programs that may need a device.
+pub const LARGE_ARR_HINT: usize = 1 << 16;
+static LARGE_ARR_HOOK: OnceLock<fn()> = OnceLock::new();
+static LARGE_ARR_FIRED: AtomicBool = AtomicBool::new(false);
+
+pub fn register_large_arr_hook(f: fn()) {
+    let _ = LARGE_ARR_HOOK.set(f);
+}
+
+#[inline]
+fn large_arr_hint(ia: usize) {
+    if ia >= LARGE_ARR_HINT
+        && let Some(f) = LARGE_ARR_HOOK.get()
+        && !LARGE_ARR_FIRED.swap(true, Ordering::Relaxed)
+    {
+        f();
+    }
+}
+
 pub fn tag_arr(arr: BqnArr) -> B {
+    large_arr_hint(arr.ia());
     let id = ARR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let arr = Arc::new(arr);
     ARR_STORE.with(|s| s.borrow_mut().insert(id, arr));
@@ -59,6 +82,7 @@ pub fn tag_arr(arr: BqnArr) -> B {
 /// Uses bit 0 of the payload to distinguish from plain arrays (LSTM).
 /// v_set checks this bit to destructure along the first axis (major cells).
 pub fn tag_arr_merge(arr: BqnArr) -> B {
+    large_arr_hint(arr.ia());
     let id = ARR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let arr = Arc::new(arr);
     ARR_STORE.with(|s| s.borrow_mut().insert(id, arr));

@@ -143,6 +143,13 @@ fn interp_main(mut t: std::time::Instant) {
     if args.repl {
         repl::run_repl(&rt, args.silent);
     }
+    rbqn::timing::lap(&mut t, "end of interp_main");
+    if std::env::var_os("RBQN_FAST_EXIT").is_some() {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        drop(_gpu_summary);
+        unsafe { libc::_exit(0) };
+    }
 }
 
 /// REPL state: accumulated variable names and values across REPL lines.

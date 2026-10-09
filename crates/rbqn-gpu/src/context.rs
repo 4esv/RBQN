@@ -18,6 +18,8 @@ impl GpuContext {
             wgpu::Backends::all()
         };
 
+        let dbg = std::env::var_os("RBQN_GPU_DEBUG").is_some();
+        let t0 = std::time::Instant::now();
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
             ..Default::default()
@@ -30,6 +32,7 @@ impl GpuContext {
                 force_fallback_adapter: false,
             })
             .await?;
+        let t1 = t0.elapsed();
 
         let adapter_info = adapter.get_info();
 
@@ -57,6 +60,13 @@ impl GpuContext {
             }, None)
             .await
             .ok()?;
+        if dbg {
+            eprintln!(
+                "[gpu] init stages: adapter {:.2}ms device {:.2}ms",
+                t1.as_secs_f64() * 1e3,
+                (t0.elapsed() - t1).as_secs_f64() * 1e3
+            );
+        }
 
         let feats = device.features();
         let mappable_primary_buffers = feats.contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS);
