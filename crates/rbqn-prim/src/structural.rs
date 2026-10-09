@@ -467,6 +467,41 @@ fn repeat_bits(src: &[u64], n: usize, total: usize) -> Vec<u64> {
     out
 }
 
+/// Fill `total` elements with one atom, directly in the narrowest ArrData that holds it.
+/// Same element type and fill as the old path (vec of f64 then squeeze_num).
+fn fill_atom(x: B, total: usize, shape: Vec<usize>) -> BqnArr {
+    if x.is_c32() {
+        let c = x.0 as u32;
+        let data = if c <= 0xFF {
+            ArrData::C8(vec![c as u8; total])
+        } else if c <= 0xFFFF {
+            ArrData::C16(vec![c as u16; total])
+        } else {
+            ArrData::C32(vec![c; total])
+        };
+        return BqnArr { shape, data, fill: Some(B::m_c32(b' ' as u32)) };
+    }
+    let v = x.o2f();
+    let i = v as i32;
+    let data = if v != i as f64 {
+        ArrData::F64(vec![v; total])
+    } else if i == 0 || i == 1 {
+        let mut words = vec![if i == 1 { u64::MAX } else { 0 }; total.div_ceil(64)];
+        if i == 1 && total % 64 != 0 {
+            // keep padding bits zero, as repeat_bits does
+            *words.last_mut().unwrap() = (1u64 << (total % 64)) - 1;
+        }
+        ArrData::Bit(words)
+    } else if i as i8 as i32 == i {
+        ArrData::I8(vec![i as i8; total])
+    } else if i as i16 as i32 == i {
+        ArrData::I16(vec![i as i16; total])
+    } else {
+        ArrData::I32(vec![i; total])
+    };
+    BqnArr { shape, data, fill: Some(B::m_f64(0.0)) }
+}
+
 // ⥊ dyad: reshape
 pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let new_shape = if w.is_f64() {
@@ -487,18 +522,7 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     let new_ia: usize = new_shape.iter().product();
 
     if x.is_atom() {
-        if x.is_c32() {
-            // NOTE: reshape a char atom — fill with the char, not a numeric value
-            let codepoint = x.0 as u32;
-            let vals = vec![codepoint; new_ia];
-            let mut out = BqnArr::new_vec_c32(vals);
-            out.shape = new_shape;
-            return Ok(PrimResult::Array(out));
-        }
-        let vals = vec![x.o2f(); new_ia];
-        let mut out = BqnArr::new_vec_f64(vals);
-        out.shape = new_shape;
-        return Ok(PrimResult::Array(array::squeeze_num(out)));
+        return Ok(PrimResult::Array(fill_atom(x, new_ia, new_shape)));
     }
 
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⥊𝕩: 𝕩 must be an array".into()))?;
@@ -546,6 +570,14 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         ArrData::C8(v) => ArrData::C8(v[..m].to_vec()),
         ArrData::C16(v) => ArrData::C16(v[..m].to_vec()),
         ArrData::C32(v) => ArrData::C32(v[..m].to_vec()),
+        ArrData::Boxed(v) if m == 1 && !v[0].is_f64() && !v[0].is_c32() => {
+            // Single non-number/char element (e.g. <"ab"): plain fill, no per-element retyping.
+            return Ok(PrimResult::Array(BqnArr {
+                shape: new_shape,
+                data: ArrData::Boxed(vec![v[0]; new_ia]),
+                fill: result_fill,
+            }));
+        }
         ArrData::Boxed(v) => {
             // Boxed keeps the old path's re-typing (all-number / all-char boxed collapse).
             let result = repeat_to(&v[..m], new_ia);
