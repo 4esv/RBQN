@@ -4,19 +4,15 @@
 //! When the self-hosted formatter is not loaded (e.g., runtime1 fails),
 //! tests that require formatter-specific output are marked `#[ignore]`.
 //!
-//! Run: CBQN_PATH=/path/to/CBQN cargo test -p rbqn --test formatter -- --test-threads=1
+//! Self-contained: the compiler/runtime bins are embedded, no CBQN_PATH needed.
+//! Run: cargo test -p rbqn --test formatter
 
 use std::process::Command;
 
 /// Run `rbqn -p <expr>` and return (stdout, stderr, success).
 fn eval(expr: &str) -> (String, String, bool) {
-    let cbqn_path = std::env::var("CBQN_PATH")
-        .expect("CBQN_PATH must be set to run formatter tests");
-
-    // Build path to the binary via cargo
-    let output = Command::new(env!("CARGO"))
-        .args(["run", "-q", "-p", "rbqn", "--", "-p", expr])
-        .env("CBQN_PATH", &cbqn_path)
+    let output = Command::new(env!("CARGO_BIN_EXE_rbqn"))
+        .args(["-p", expr])
         .output()
         .expect("failed to run rbqn");
 
@@ -134,11 +130,8 @@ fn fmt_nothing() {
 #[test]
 fn fallback_bootstrap_no_crash() {
     // Verify bootstrap completes without crashing (even if runtime1 fails)
-    let cbqn_path = std::env::var("CBQN_PATH")
-        .expect("CBQN_PATH must be set");
-    let output = Command::new(env!("CARGO"))
-        .args(["run", "-q", "-p", "rbqn", "--", "--help"])
-        .env("CBQN_PATH", &cbqn_path)
+    let output = Command::new(env!("CARGO_BIN_EXE_rbqn"))
+        .arg("--help")
         .output()
         .expect("failed to run rbqn");
     assert!(
