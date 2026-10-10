@@ -2047,21 +2047,27 @@ fn native_repr_c1(x: B) -> B {
     str_to_b(&native_repr_str(x))
 }
 
+/// Format a number like CBQN: shortest round-trip digits, positional when the
+/// decimal exponent is in -4..15, otherwise `d.ddde<exp>`; `¯` for negatives.
+pub fn fmt_f64(v: f64) -> String {
+    if v.is_nan() { return "NaN".to_string(); }
+    if v.is_infinite() {
+        return if v > 0.0 { "∞".to_string() } else { "¯∞".to_string() };
+    }
+    let abs = v.abs();
+    let sci = format!("{:e}", abs);
+    let exp: i32 = sci.rsplit_once('e').and_then(|(_, e)| e.parse().ok()).unwrap_or(0);
+    let s = if abs == 0.0 || (-4..15).contains(&exp) {
+        format!("{}", abs)
+    } else {
+        sci.replace('-', "¯")
+    };
+    if v < 0.0 { format!("¯{}", s) } else { s }
+}
+
 fn native_repr_str(x: B) -> String {
     if x.is_f64() {
-        let v = x.o2f();
-        if v.is_nan() { return "NaN".to_string(); }
-        if v.is_infinite() {
-            return if v > 0.0 { "∞".to_string() } else { "¯∞".to_string() };
-        }
-        let neg = v < 0.0;
-        let abs = v.abs();
-        let s = if abs == abs.floor() && abs < 1e15 {
-            format!("{}", abs as i64)
-        } else {
-            format!("{}", abs)
-        };
-        if neg { format!("¯{}", s) } else { s }
+        fmt_f64(x.o2f())
     } else if x.is_c32() {
         let cp = x.0 as u32;
         if cp == 0 {
