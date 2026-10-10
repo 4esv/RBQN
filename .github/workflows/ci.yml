@@ -17,6 +17,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # NOTE: bins/*.bin are LFS; without this rbqn embeds pointer files and panics.
+          lfs: true
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -29,12 +32,6 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: DEBUG panic site
-        continue-on-error: true
-        run: |
-          rustc --version
-          lldb --batch -o 'breakpoint set -n _Unwind_RaiseException' -o run -o 'bt 40' -o 'frame variable' -- target/release/rbqn -p '1+1'
 
       - name: Smoke
         # NOTE: RBQN_GPU_DEBUG=1 un-suppresses panic output so a silent exit 1 is visible.
