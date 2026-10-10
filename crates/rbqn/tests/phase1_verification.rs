@@ -20,23 +20,6 @@ fn run_bqn(expr: &str) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-fn run_bqn_eval(expr: &str) -> String {
-    let output = Command::new("cargo")
-        .args(["run", "-p", "rbqn", "-q", "--", "-e", expr])
-        .env(
-            "CBQN_PATH",
-            std::env::var("CBQN_PATH").unwrap_or_default(),
-        )
-        .output()
-        .expect("failed to run rbqn");
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
-        panic!("rbqn -e '{expr}' failed: {stderr}");
-    }
-    stdout
-}
-
 fn run_bqn_piped(input: &str) -> String {
     let output = Command::new("cargo")
         .args(["run", "-p", "rbqn", "-q", "--"])

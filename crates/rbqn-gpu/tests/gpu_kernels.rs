@@ -220,7 +220,7 @@ fn test_softmax_uniform() {
         assert_approx(
             "test_softmax_uniform",
             &result,
-            &vec![expected_each; 4],
+            &[expected_each; 4],
             1e-5,
         );
     });
@@ -961,7 +961,7 @@ mod int64_tests {
             });
             rbqn_gpu::buffer::sync(dev, || rx.try_recv().ok());
         };
-        let mut bench = |label: &str, f: &mut dyn FnMut()| {
+        let bench = |label: &str, f: &mut dyn FnMut()| {
             for _ in 0..5 {
                 f();
                 wait(&dev, &q);

@@ -891,6 +891,8 @@ fn arith_bound(op: &str, wb: f64, xb: f64) -> f64 {
 /// is < 2^31 and no leaf is i64; else i64 (needs SHADER_INT64, else None).
 /// When the tree outgrows MAX_NODES / MAX_LEAVES the operands are evaluated
 /// to buffers first and the node starts from two leaves.
+// NOTE: GpuArr holds Rc/RefCell (thread-local); Arc is required by tag_device's Arc<dyn DeviceValue>.
+#[allow(clippy::arc_with_non_send_sync)]
 fn lazy_node(
     op: &str,
     mk: &dyn Fn() -> Option<(Operand, Operand)>,
@@ -992,6 +994,8 @@ fn gpu_arith_scalar(op: &str, s: f64, scalar_left: bool, a: B) -> Option<B> {
 /// Device `↕n` for n at the arith threshold (or under force): a lazy iota
 /// leaf, never uploaded; a host consumer gets it built on the host.
 /// Registered as GPU_IOTA_HOOK in rbqn-prim at startup.
+// NOTE: GpuArr holds Rc/RefCell (thread-local); Arc is required by tag_device's Arc<dyn DeviceValue>.
+#[allow(clippy::arc_with_non_send_sync)]
 pub fn gpu_iota(n: usize) -> Option<B> {
     if gpu_mode() == GpuMode::Off || GPU_DISABLED.load(Ordering::Relaxed) { return None; }
     if n == 0 || n >= i32::MAX as usize || !should_dispatch("arith", n) || !gpu_possible() { return None; }
@@ -1254,6 +1258,8 @@ pub fn gpu_scan(f: B, x: B) -> Option<B> {
     guarded("scan", || gpu_scan_inner(f, x))
 }
 
+// NOTE: GpuArr holds Rc/RefCell (thread-local); Arc is required by tag_device's Arc<dyn DeviceValue>.
+#[allow(clippy::arc_with_non_send_sync)]
 fn gpu_scan_inner(f: B, x: B) -> Option<B> {
     let (shape, host) = operand_shape(x)?;
     if shape.len() != 1 || shape[0] == 0 { return None; }

@@ -323,23 +323,22 @@ fn retry_scope(
     let mut args = [B::SENTINEL; 8];
     {
         let vars = current_sc.vars.borrow();
-        for i in 0..arg_count.min(8) {
-            args[i] = vars.get(i).copied().unwrap_or(B::SENTINEL);
+        for (i, a) in args.iter_mut().enumerate().take(arg_count) {
+            *a = vars.get(i).copied().unwrap_or(B::SENTINEL);
         }
     }
     let args = &args[..arg_count.min(8)];
     let var_am = next_body.var_am.max(args.len() as u16);
     // pscs holds clones of current_sc; drop them so the uniqueness check is meaningful
     pscs.clear();
-    if current_sc.psc.is_some() {
-        if let Some(s) = std::rc::Rc::get_mut(current_sc) {
-            if s.ext.is_none() {
-                s.body = next_body.clone();
-                s.var_am = var_am;
-                *s.vars.get_mut() = crate::scope::Vars::new(var_am as usize, args);
-                return;
-            }
-        }
+    if current_sc.psc.is_some()
+        && let Some(s) = std::rc::Rc::get_mut(current_sc)
+        && s.ext.is_none()
+    {
+        s.body = next_body.clone();
+        s.var_am = var_am;
+        *s.vars.get_mut() = crate::scope::Vars::new(var_am as usize, args);
+        return;
     }
     let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
     *current_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, args));
@@ -350,16 +349,16 @@ fn retry_scope(
 fn vm_trace_op(stack: &[B], pc: usize, op: Option<Op>, op_val: u32) {
     let op_name = op.map(|o| format!("{:?}", o)).unwrap_or_else(|| format!("0x{:02x}", op_val));
     let stack_info: String = stack.iter().rev().take(4).enumerate().map(|(i, b)| {
-        if b.is_arr() {
-            let ia = get_arr(*b).map_or(-1i64, |a| a.ia() as i64);
-            format!("s[{}]=arr(ia={})", i, ia)
-        } else if b.is_f64() {
-            format!("s[{}]={}", i, b.o2f())
-        } else if b.is_fun() {
-            format!("s[{}]=fun", i)
-        } else {
-            format!("s[{}]={:#x}", i, b.0)
-        }
+    if b.is_arr() {
+        let ia = get_arr(*b).map_or(-1i64, |a| a.ia() as i64);
+        format!("s[{}]=arr(ia={})", i, ia)
+    } else if b.is_f64() {
+        format!("s[{}]={}", i, b.o2f())
+    } else if b.is_fun() {
+        format!("s[{}]=fun", i)
+    } else {
+        format!("s[{}]={:#x}", i, b.0)
+    }
     }).collect::<Vec<_>>().join(" ");
     vm_trace_push(format!("OP pc={} {} stk=[{}]", pc, op_name, stack_info));
 }
@@ -546,8 +545,8 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
 #[inline]
 fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     let mut frame = Frame::enter(t, body.max_stack as usize, body.max_psc as usize);
-    let mut stack = &mut frame.stack;
-    let mut pscs = &mut frame.pscs;
+    let stack = &mut frame.stack;
+    let pscs = &mut frame.pscs;
     let bc: &[i32] = &bl.bc;
     let mut pc = body.bc_offset;
     let mut current_sc = sc;
@@ -597,7 +596,7 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
         let op = Op::from_u32(op_val);
 
         if vm_debug {
-            vm_trace_op(&stack, pc - 1, op, op_val);
+            vm_trace_op(stack, pc - 1, op, op_val);
         }
 
         match op {
@@ -694,32 +693,32 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
             // --- List/array construction ---
             Some(Op::LSTO) | Some(Op::LSTM) => {
                 let sz = read_u32!() as usize;
-                let l = build_list(&mut stack, sz, 0);
+                let l = build_list(stack, sz, 0);
                 push!(l);
             }
             Some(Op::ARMO) => {
                 let sz = read_u32!() as usize;
-                let l = build_list(&mut stack, sz, 1);
+                let l = build_list(stack, sz, 1);
                 push!(l);
             }
             Some(Op::ARMM) => {
                 let sz = read_u32!() as usize;
-                let l = build_list(&mut stack, sz, 2);
+                let l = build_list(stack, sz, 2);
                 push!(l);
             }
 
             // --- Block definitions ---
             Some(Op::DFND0) => {
                 let bl_idx = read_u64!() as usize;
-                push!(dfnd(0, bl, bl_idx, &pscs, &current_sc));
+                push!(dfnd(0, bl, bl_idx, pscs, &current_sc));
             }
             Some(Op::DFND1) => {
                 let bl_idx = read_u64!() as usize;
-                push!(dfnd(1, bl, bl_idx, &pscs, &current_sc));
+                push!(dfnd(1, bl, bl_idx, pscs, &current_sc));
             }
             Some(Op::DFND2) => {
                 let bl_idx = read_u64!() as usize;
-                push!(dfnd(2, bl, bl_idx, &pscs, &current_sc));
+                push!(dfnd(2, bl, bl_idx, pscs, &current_sc));
             }
 
             // --- Modifier application ---
@@ -798,7 +797,7 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
             Some(Op::EXTO) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                push!(ext_get(&pscs, d, p, 0));
+                push!(ext_get(pscs, d, p, 0));
             }
             Some(Op::EXTM) => {
                 let d = read_u32!();
@@ -808,7 +807,7 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
             Some(Op::EXTU) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                push!(ext_get(&pscs, d, p, 1));
+                push!(ext_get(pscs, d, p, 1));
             }
 
             // --- Dynamic variables ---
@@ -826,30 +825,30 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
             Some(Op::SETN) => {
                 let s = pop!();
                 let x = pop!();
-                v_set(&pscs, s, x, false, true);
+                v_set(pscs, s, x, false, true);
                 push!(x);
             }
             Some(Op::SETU) => {
                 let s = pop!();
                 let x = pop!();
-                v_set(&pscs, s, x, true, true);
+                v_set(pscs, s, x, true, true);
                 push!(x);
             }
             Some(Op::SETM) => {
                 let s = pop!();
                 let f = pop!();
                 let x = pop!();
-                let w = v_get(&pscs, s, true);
+                let w = v_get(pscs, s, true);
                 let r = c2(f, w, x);
-                v_set(&pscs, s, r, true, false);
+                v_set(pscs, s, r, true, false);
                 push!(r);
             }
             Some(Op::SETC) => {
                 let s = pop!();
                 let f = pop!();
-                let x = v_get(&pscs, s, true);
+                let x = v_get(pscs, s, true);
                 let r = c1(f, x);
-                v_set(&pscs, s, r, true, false);
+                v_set(pscs, s, r, true, false);
                 push!(r);
             }
 
@@ -932,8 +931,8 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                 let s = pop!();
                 let x = pop!();
                 let next_body_idx = read_u64!() as usize;
-                if !v_seth(&pscs, s, x) {
-                    pc = retry_to(bl, next_body_idx, "No matching header", &mut current_sc, &mut pscs, &mut stack);
+                if !v_seth(pscs, s, x) {
+                    pc = retry_to(bl, next_body_idx, "No matching header", &mut current_sc, pscs, stack);
                     continue;
                 }
             }
@@ -942,9 +941,9 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                 let x = pop!();
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
-                if !v_seth(&pscs, s, x) {
+                if !v_seth(pscs, s, x) {
                     let next_idx = pick_idx(&current_sc, mono_idx, dy_idx);
-                    pc = retry_to(bl, next_idx, "No matching header", &mut current_sc, &mut pscs, &mut stack);
+                    pc = retry_to(bl, next_idx, "No matching header", &mut current_sc, pscs, stack);
                     continue;
                 }
             }
@@ -960,7 +959,7 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                     }
                 }
                 if !x.o2b() {
-                    pc = retry_to(bl, next_body_idx, "No matching predicate", &mut current_sc, &mut pscs, &mut stack);
+                    pc = retry_to(bl, next_body_idx, "No matching predicate", &mut current_sc, pscs, stack);
                     continue;
                 }
             }
@@ -976,7 +975,7 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
                 }
                 if !x.o2b() {
                     let next_idx = pick_idx(&current_sc, mono_idx, dy_idx);
-                    pc = retry_to(bl, next_idx, "No matching predicate", &mut current_sc, &mut pscs, &mut stack);
+                    pc = retry_to(bl, next_idx, "No matching predicate", &mut current_sc, pscs, stack);
                     continue;
                 }
             }
@@ -1031,7 +1030,7 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
 
             // --- Return opcodes ---
             Some(Op::RETD) => {
-                return ret_d(body, &mut stack, &pscs, &current_sc);
+                return ret_d(body, stack, pscs, &current_sc);
             }
             Some(Op::RETN) => {
                 let r = pop!();

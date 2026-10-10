@@ -2748,7 +2748,7 @@ pub fn fast_fmt_ints(x: B, repr: bool) -> Option<String> {
     }
     if x.is_num() {
         let v = x.o2f();
-        if !(v.abs() < LIM) || v.fract() != 0.0 {
+        if v.is_nan() || v.abs() >= LIM || v.fract() != 0.0 {
             return None;
         }
         let mut s = String::new();

@@ -201,16 +201,16 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
             vec![n; first_dim]
         } else {
             let warr = wa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕨 must be a number or array".into()))?;
-            let w_ref: &BqnArr;
+            
             let effective_warr;
-            if warr.rank() == 0 {
+            let w_ref: &BqnArr = if warr.rank() == 0 {
                 let inner_b = warr.get(0).map_err(|_| BqnError::Type("𝕨/𝕩: rank-0 𝕨 must enclose an array".into()))?;
                 effective_warr = get_arr(inner_b)
                     .ok_or_else(|| BqnError::Type("𝕨/𝕩: rank-0 𝕨 must enclose an integer array".into()))?;
-                w_ref = &effective_warr;
+                &effective_warr
             } else {
-                w_ref = warr;
-            }
+                warr
+            };
             if w_ref.rank() != 1 {
                 return Err(BqnError::Rank(format!(
                     "𝕨/𝕩: 𝕨 must be rank-1, got rank {}",

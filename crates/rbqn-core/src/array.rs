@@ -65,7 +65,7 @@ impl ArrData {
 
 impl BqnArr {
     pub fn ia(&self) -> usize {
-        self.shape.iter().copied().product::<usize>().max(0)
+        self.shape.iter().copied().product::<usize>()
     }
 
     pub fn rank(&self) -> Rank {

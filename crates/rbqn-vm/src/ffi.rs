@@ -40,7 +40,7 @@ impl FfiType {
             "f64" => FfiType::F64,
             "*u8:c8" | "*:c8" => FfiType::PtrU8C8,
             other => rbqn_core::error::throw(
-                &format!("•FFI: unsupported type \"{}\"", other)
+                format!("•FFI: unsupported type \"{}\"", other)
             ),
         }
     }
@@ -89,7 +89,7 @@ fn load_library(path: &str) -> Arc<libloading::Library> {
     } else {
         unsafe { libloading::Library::new(path) }
             .unwrap_or_else(|e| {
-                rbqn_core::error::throw(&format!("•FFI: couldn't load library \"{}\": {}", path, e))
+                rbqn_core::error::throw(format!("•FFI: couldn't load library \"{}\": {}", path, e))
             })
     };
     let arc = Arc::new(lib);
@@ -161,7 +161,7 @@ pub fn ffi_load(path: B, spec: B) -> B {
     unsafe {
         let _sym: libloading::Symbol<*const ()> = lib.get(ffi_spec.func_name.as_bytes())
             .unwrap_or_else(|e| {
-                rbqn_core::error::throw(&format!(
+                rbqn_core::error::throw(format!(
                     "•FFI: couldn't find symbol \"{}\" in \"{}\": {}",
                     ffi_spec.func_name, ffi_spec.lib_path, e
                 ))
@@ -178,7 +178,7 @@ pub fn ffi_call(spec_id: usize, args: &[B]) -> B {
     let lib = load_library(&spec.lib_path);
 
     if args.len() != spec.arg_types.len() {
-        rbqn_core::error::throw(&format!(
+        rbqn_core::error::throw(format!(
             "•FFI {}: expected {} argument(s), got {}",
             spec.func_name, spec.arg_types.len(), args.len()
         ));
@@ -192,7 +192,7 @@ pub fn ffi_call(spec_id: usize, args: &[B]) -> B {
 
     let func_ptr: *const () = unsafe {
         let sym: libloading::Symbol<*const ()> = lib.get(spec.func_name.as_bytes())
-            .unwrap_or_else(|e| rbqn_core::error::throw(&format!("•FFI: symbol lookup failed: {}", e)));
+            .unwrap_or_else(|e| rbqn_core::error::throw(format!("•FFI: symbol lookup failed: {}", e)));
         *sym
     };
     let code_ptr = libffi::middle::CodePtr::from_ptr(func_ptr as *const _);

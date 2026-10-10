@@ -488,7 +488,7 @@ fn fill_atom(x: B, total: usize, shape: Vec<usize>) -> BqnArr {
         ArrData::F64(vec![v; total])
     } else if i == 0 || i == 1 {
         let mut words = vec![if i == 1 { u64::MAX } else { 0 }; total.div_ceil(64)];
-        if i == 1 && total % 64 != 0 {
+        if i == 1 && !total.is_multiple_of(64) {
             // keep padding bits zero, as repeat_bits does
             *words.last_mut().unwrap() = (1u64 << (total % 64)) - 1;
         }

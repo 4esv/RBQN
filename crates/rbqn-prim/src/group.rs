@@ -217,7 +217,7 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
             let mut rem = elem_flat;
             for (k, &cs) in cell_strides.iter().enumerate() {
                 let stride = if k < ndim - 1 { cs } else { 1 };
-                let r = if stride > 0 { rem / stride } else { 0 };
+                let r = rem.checked_div(stride).unwrap_or(0);
                 rem %= stride.max(1);
                 r_per_dim.push(r);
             }
