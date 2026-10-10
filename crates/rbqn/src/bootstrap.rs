@@ -321,6 +321,105 @@ fn exec_stage(
     Ok(eval_fun_block(block, root_scope))
 }
 
+std::thread_local! {
+    /// (provide, runtime_0) from bootstrap, consumed by init_runtime1.
+    static RT1_INPUTS: std::cell::RefCell<Option<(Vec<B>, Vec<B>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Execute runtime1 and register what it provides: setPrims/setInv callbacks and the
+/// BQN-defined ⌾ and ⚇. Runs on first use via rbqn_vm::derive::ensure_rt1.
+fn init_runtime1() {
+    let Some((provide, runtime_0)) = RT1_INPUTS.with(|c| c.borrow_mut().take()) else {
+        return;
+    };
+    let mut t = std::time::Instant::now();
+    let rt1_bin = embedded::decode_bytecode(embedded::RUNTIME1_BIN);
+    // runtime1's objects reference runtime_0 results via RuntimePrev(n)
+    let r1_objs = build_objs(&rt1_bin, &provide, Some(&runtime_0), None);
+    let r1_blocks = build_blocks(&rt1_bin);
+    let r1_bodies = build_bodies(&rt1_bin);
+
+    let r1_result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        exec_stage(&rt1_bin, r1_objs, r1_blocks, r1_bodies, "runtime1")
+    })) {
+        Ok(Ok(result)) => result,
+        Ok(Err(e)) => {
+            eprintln!("rbqn: warning: runtime1 failed: {e}. Inverses and BQN ⌾/⚇ unavailable.");
+            return;
+        }
+        Err(panic) => {
+            let msg = panic.downcast_ref::<String>().map(|s| s.as_str())
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown");
+            eprintln!("rbqn: warning: runtime1 panicked: {msg}. Inverses and BQN ⌾/⚇ unavailable.");
+            return;
+        }
+    };
+
+    // runtime1 returns ⟨runtime_array, setPrims, setInv⟩
+    let Some(r1_arr) = get_arr(r1_result) else {
+        eprintln!("rbqn: warning: runtime1 did not return an array. Inverses and BQN ⌾/⚇ unavailable.");
+        return;
+    };
+    let rt_obj_raw = match r1_arr.get(0) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("rbqn: warning: runtime1 result missing element 0: {e}. Inverses and BQN ⌾/⚇ unavailable.");
+            return;
+        }
+    };
+    let set_prims = r1_arr.get(1).ok();
+    let set_inv = r1_arr.get(2).ok();
+
+    // NOTE: Like CBQN (load.c line 522), the runtime array uses native fruntime primitives
+    // instead of the BQN-defined wrappers from runtime1. CBQN does this when all
+    // builtins are natively implemented (rtComplete[] all true):
+    //   B r = nnbi? Get(rtObjRaw, i) : inc(fruntime[i]);
+    // The BQN wrappers (e.g. `Indices ⊘ Replicate` for `/`) don't have primitive indices,
+    // which breaks the inverse system (⁼) since it uses •PrimInd + •Glyph to look up
+    // inverses by glyph character. Native fruntime entries have correct prim_idx values.
+
+    // Invoke setPrims callback — registers •Decompose and •PrimInd with the runtime.
+    // CBQN: c1(setPrims, ⟨bi_decp, bi_primInd⟩)
+    if let Some(sp) = set_prims {
+        let decompose_fn = m_sys_fn(1);  // •Decompose
+        let primind_fn = m_sys_fn(5);    // •PrimInd
+        let args = tag_arr(BqnArr::from_b_vec(vec![decompose_fn, primind_fn]));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(sp, args)));
+    }
+
+    // Invoke setInv callback — registers inverse tables for ⁼ and ⌾.
+    // CBQN: c2(setInv, bi_setInvSwap, bi_setInvReg) — called dyadically.
+    // bi_setInvSwap = sys_idx 9, bi_setInvReg = sys_idx 8
+    if let Some(si) = set_inv {
+        let bi_set_inv_swap = m_sys_fn(9);
+        let bi_set_inv_reg = m_sys_fn(8);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c2(si, bi_set_inv_swap, bi_set_inv_reg)
+        }));
+    }
+
+    // Extract BQN runtime's Under (⌾) function from rtObjRaw[57].
+    // CBQN (load.c line 506): gc_add(rt_under = Get(rtObjRaw, n_under));
+    // This is the BQN-defined Under that handles structural cases correctly.
+    // Our native Under is a naive G⁻¹(F(G(x))) which fails for structural G
+    // (e.g. mask⊸/). The BQN runtime's Under handles both computational and
+    // structural cases, matching CBQN's def_fn_uc1 fallback behavior.
+    if let Some(rt_obj_arr) = get_arr(rt_obj_raw) {
+        if let Ok(rt_under_fn) = rt_obj_arr.get(57)
+            && rt_under_fn.is_md2() {
+                rbqn_vm::modifiers::set_rt_under(rt_under_fn);
+            }
+        // Extract BQN runtime's Depth (⚇) function from rtObjRaw[61]
+        if let Ok(rt_depth_fn) = rt_obj_arr.get(61)
+            && rt_depth_fn.is_md2() {
+                rbqn_vm::modifiers::set_rt_depth(rt_depth_fn);
+            }
+    }
+    crate::timing::lap(&mut t, "runtime1 (deferred)");
+}
+
 pub fn bootstrap() -> Result<Runtime, BqnError> {
     let mut t = std::time::Instant::now();
     let prims = rbqn_prim::get_runtime().to_vec();
@@ -340,13 +439,11 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
     crate::timing::lap(&mut t, "prims+build_provide");
 
     // Decode embedded bytecode from .bin files (committed to repo)
-    let rt0_bin = embedded::decode_bytecode(embedded::RUNTIME0_BIN);
-    let rt1_bin = embedded::decode_bytecode(embedded::RUNTIME1_BIN);
     let cc_bin = embedded::decode_bytecode(embedded::COMPILER_BIN);
     let fmt_bin = embedded::decode_bytecode(embedded::FORMATTER_BIN);
     crate::timing::lap(&mut t, "decode bins");
 
-    if rt0_bin.is_empty() {
+    if cc_bin.is_empty() {
         return Ok(Runtime {
             prims,
             fruntime: fruntime.clone(),
@@ -401,149 +498,26 @@ pub fn bootstrap() -> Result<Runtime, BqnError> {
         fruntime[59], // 22: ◶ (choose)
         fruntime[62], // 23: ⍟ (repeat)
     ];
-    // NOTE: runtime0 bytecode is available (rt0_bin) but we do NOT execute it
+    // NOTE: runtime0 bytecode (embedded::RUNTIME0_BIN) is not decoded or executed
     // because the bytecodeSubmodule build expects native primitives as runtime_0, not BQN
     // derived functions. Running runtime0 bytecode would produce BQN FunBlocks that fail
     // in runtime1 context (confirmed: causes fork→add on function arrays crash).
-    let _ = &rt0_bin; // suppress unused warning
 
     // Register primitive B values so reshape_computed can identify reshape modes.
     // fruntime[6] = ⌊ (floor, mode 1), fruntime[26] = ↑ (take, mode 3 = ceil+pad).
     rbqn_prim::structural::set_floor_prim(fruntime[6]);
     rbqn_prim::structural::set_take_prim(fruntime[26]);
 
-    // --- Stage 2: Execute runtime1 (graceful fallback if it panics) ---
-    // runtime1's objects reference runtime_0 results via RuntimePrev(n)
-    let r1_objs = build_objs(&rt1_bin, &provide, Some(&runtime_0), None);
-    let r1_blocks = build_blocks(&rt1_bin);
-    let r1_bodies = build_bodies(&rt1_bin);
-    crate::timing::lap(&mut t, "runtime1 objs/blocks");
-
-    let r1_stage_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        exec_stage(&rt1_bin, r1_objs, r1_blocks, r1_bodies, "runtime1")
-    }));
-
-    let r1_result = match r1_stage_result {
-        Ok(Ok(result)) => result,
-        Ok(Err(e)) => {
-            eprintln!("rbqn: warning: runtime1 failed: {e}. Using fruntime as fallback.");
-            return Ok(Runtime {
-                prims,
-                fruntime: fruntime.clone(),
-                runtime_0,
-                runtime: fruntime,
-                compgen: B::SENTINEL,
-            compiler: B::SENTINEL,
-                formatter: None,
-                glyphs,
-            });
-        }
-        Err(panic) => {
-            let msg = panic.downcast_ref::<String>().map(|s| s.as_str())
-                .or_else(|| panic.downcast_ref::<&str>().copied())
-                .unwrap_or("unknown");
-            eprintln!("rbqn: warning: runtime1 panicked: {}. Using fruntime as fallback.", msg);
-            return Ok(Runtime {
-                prims,
-                fruntime: fruntime.clone(),
-                runtime_0,
-                runtime: fruntime,
-                compgen: B::SENTINEL,
-            compiler: B::SENTINEL,
-                formatter: None,
-                glyphs,
-            });
-        }
-    };
-
-    // runtime1 returns ⟨runtime_array, setPrims, setInv⟩
-    let r1_arr = match get_arr(r1_result) {
-        Some(arr) => arr,
-        None => {
-            eprintln!("rbqn: warning: runtime1 did not return an array. Using fruntime as fallback.");
-            return Ok(Runtime {
-                prims,
-                fruntime: fruntime.clone(),
-                runtime_0,
-                runtime: fruntime,
-                compgen: B::SENTINEL,
-            compiler: B::SENTINEL,
-                formatter: None,
-                glyphs,
-            });
-        }
-    };
-
-    let rt_obj_raw = match r1_arr.get(0) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("rbqn: warning: runtime1 result missing element 0: {e}. Using fruntime as fallback.");
-            return Ok(Runtime {
-                prims,
-                fruntime: fruntime.clone(),
-                runtime_0,
-                runtime: fruntime,
-                compgen: B::SENTINEL,
-            compiler: B::SENTINEL,
-                formatter: None,
-                glyphs,
-            });
-        }
-    };
-    crate::timing::lap(&mut t, "runtime1 exec");
-    let set_prims = r1_arr.get(1).ok();
-    let set_inv = r1_arr.get(2).ok();
-
-    // NOTE: Like CBQN (load.c line 522), use native fruntime primitives for the runtime
-    // array instead of the BQN-defined wrappers from runtime1. CBQN does this when all
-    // builtins are natively implemented (rtComplete[] all true):
-    //   B r = nnbi? Get(rtObjRaw, i) : inc(fruntime[i]);
-    // The BQN wrappers (e.g. `Indices ⊘ Replicate` for `/`) don't have primitive indices,
-    // which breaks the inverse system (⁼) since it uses •PrimInd + •Glyph to look up
-    // inverses by glyph character. Native fruntime entries have correct prim_idx values.
+    // --- Stage 2: runtime1, deferred to first use (#20) ---
+    // Its only live outputs are the setInv resolvers and BQN ⌾/⚇, so it runs when
+    // one of those is first needed. runtime_0 and provide are kept so it sees the
+    // same primitive values as the compiler's objects.
+    RT1_INPUTS.with(|c| *c.borrow_mut() = Some((provide.clone(), runtime_0.clone())));
+    rbqn_vm::derive::register_rt1_init(init_runtime1);
     let runtime: Vec<B> = fruntime.clone();
-
-    // Invoke setPrims callback — registers •Decompose and •PrimInd with the runtime.
-    // CBQN: c1(setPrims, ⟨bi_decp, bi_primInd⟩)
-    if let Some(sp) = set_prims {
-        let decompose_fn = m_sys_fn(1);  // •Decompose
-        let primind_fn = m_sys_fn(5);    // •PrimInd
-        let args = tag_arr(BqnArr::from_b_vec(vec![decompose_fn, primind_fn]));
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(sp, args)));
-    }
-
-    // Invoke setInv callback — registers inverse tables for ⁼ and ⌾.
-    // CBQN: c2(setInv, bi_setInvSwap, bi_setInvReg) — called dyadically.
-    // bi_setInvSwap = sys_idx 9, bi_setInvReg = sys_idx 8
-    if let Some(si) = set_inv {
-        let bi_set_inv_swap = rbqn_vm::derive::m_sys_fn(9);
-        let bi_set_inv_reg = rbqn_vm::derive::m_sys_fn(8);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            c2(si, bi_set_inv_swap, bi_set_inv_reg)
-        }));
-    }
-
-    // Extract BQN runtime's Under (⌾) function from rtObjRaw[57].
-    // CBQN (load.c line 506): gc_add(rt_under = Get(rtObjRaw, n_under));
-    // This is the BQN-defined Under that handles structural cases correctly.
-    // Our native Under is a naive G⁻¹(F(G(x))) which fails for structural G
-    // (e.g. mask⊸/). The BQN runtime's Under handles both computational and
-    // structural cases, matching CBQN's def_fn_uc1 fallback behavior.
-    if let Some(rt_obj_arr) = get_arr(rt_obj_raw) {
-        if let Ok(rt_under_fn) = rt_obj_arr.get(57)
-            && rt_under_fn.is_md2() {
-                rbqn_vm::modifiers::set_rt_under(rt_under_fn);
-            }
-        // Extract BQN runtime's Depth (⚇) function from rtObjRaw[61]
-        if let Ok(rt_depth_fn) = rt_obj_arr.get(61)
-            && rt_depth_fn.is_md2() {
-                rbqn_vm::modifiers::set_rt_depth(rt_depth_fn);
-            }
-    }
 
     // --- Stage 3: Execute compiler (graceful fallback if it panics) ---
     // Swap in bi_casrt for assert during compilation (CBQN does this)
-    crate::timing::lap(&mut t, "setPrims+setInv");
     let c_objs = build_objs(&cc_bin, &provide, Some(&runtime_0), Some(&runtime));
     let c_blocks = build_blocks(&cc_bin);
     let c_bodies = build_bodies(&cc_bin);
