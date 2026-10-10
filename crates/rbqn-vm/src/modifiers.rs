@@ -624,8 +624,11 @@ fn fold_c1(f: B, x: B) -> B {
                 return result;
             }
     let arr = arr_of(x);
-    if arr.rank() == 0 {
-        rbqn_core::error::throw("´: 𝕩 must have rank ≥ 1");
+    // NOTE: Fold takes a list only; cells go through ˝ (matches CBQN)
+    if arr.rank() != 1 {
+        let sh = if arr.rank() == 0 { "⟨⟩".to_string() }
+            else { arr.shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("‿") };
+        rbqn_core::error::throw(format!("𝔽´𝕩: 𝕩 must be a list ({sh} ≡ ≢𝕩)"));
     }
     let n = arr.ia();
     if n == 0 {
