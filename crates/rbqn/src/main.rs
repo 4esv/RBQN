@@ -1,7 +1,18 @@
 mod cli;
+#[cfg(feature = "gpu")]
 mod gpu_host;
+#[cfg(feature = "gpu")]
 mod gpu_runtime;
 mod repl;
+
+// NOTE: CPU-only build (--no-default-features): the entry points main uses, as no-ops.
+#[cfg(not(feature = "gpu"))]
+mod gpu_runtime {
+    pub struct SummaryGuard;
+    pub fn report_panic(_: &std::panic::PanicHookInfo<'_>) {}
+    pub fn init(_no_gpu: bool) {}
+    pub fn print_summary() {}
+}
 
 use rbqn::bootstrap;
 use rbqn::exec::exec_string;
@@ -49,30 +60,33 @@ fn interp_main(mut t: std::time::Instant) {
 
     gpu_runtime::init(args.no_gpu);
 
-    // NOTE: Register GPU dispatch hooks into rbqn-prim after GPU runtime is initialized.
-    // Function pointer pattern avoids circular dependency (rbqn-prim cannot depend on rbqn).
-    rbqn_prim::arith_dyad::register_gpu_arith(gpu_runtime::gpu_arith_binary);
-    rbqn_prim::structural::register_gpu_iota(gpu_runtime::gpu_iota);
+    #[cfg(feature = "gpu")]
+    {
+        // NOTE: Register GPU dispatch hooks into rbqn-prim after GPU runtime is initialized.
+        // Function pointer pattern avoids circular dependency (rbqn-prim cannot depend on rbqn).
+        rbqn_prim::arith_dyad::register_gpu_arith(gpu_runtime::gpu_arith_binary);
+        rbqn_prim::structural::register_gpu_iota(gpu_runtime::gpu_iota);
 
-    // NOTE: Register GPU fused arithmetic hook for explicit multi-op dispatch.
-    // FusionBuilder wired here; true expression-level auto-fusion is future work (requires
-    // VM-level lookahead — the BQN evaluator calls c2 one call at a time with no lookahead).
-    rbqn_prim::arith_dyad::register_gpu_fused(gpu_runtime::gpu_fused_arith);
+        // NOTE: Register GPU fused arithmetic hook for explicit multi-op dispatch.
+        // FusionBuilder wired here; true expression-level auto-fusion is future work (requires
+        // VM-level lookahead — the BQN evaluator calls c2 one call at a time with no lookahead).
+        rbqn_prim::arith_dyad::register_gpu_fused(gpu_runtime::gpu_fused_arith);
 
-    // NOTE: Register GPU matmul and softmax hooks into rbqn-vm::derive.
-    // These enable •math.MatMul and •math.Softmax to dispatch to GPU when available.
-    rbqn_vm::derive::register_gpu_matmul(gpu_runtime::gpu_matmul);
-    rbqn_vm::derive::register_gpu_softmax(gpu_runtime::gpu_softmax);
+        // NOTE: Register GPU matmul and softmax hooks into rbqn-vm::derive.
+        // These enable •math.MatMul and •math.Softmax to dispatch to GPU when available.
+        rbqn_vm::derive::register_gpu_matmul(gpu_runtime::gpu_matmul);
+        rbqn_vm::derive::register_gpu_softmax(gpu_runtime::gpu_softmax);
 
-    // NOTE: Register GPU fold/scan hooks into rbqn-vm modifiers.
-    // These enable +´ and +` to dispatch to GPU for large arrays.
-    rbqn_vm::modifiers::register_gpu_fold(gpu_runtime::gpu_fold);
-    rbqn_vm::modifiers::register_gpu_scan(gpu_runtime::gpu_scan);
+        // NOTE: Register GPU fold/scan hooks into rbqn-vm modifiers.
+        // These enable +´ and +` to dispatch to GPU for large arrays.
+        rbqn_vm::modifiers::register_gpu_fold(gpu_runtime::gpu_fold);
+        rbqn_vm::modifiers::register_gpu_scan(gpu_runtime::gpu_scan);
 
-    // NOTE: Register GPU grade and sort hooks into rbqn-prim.
-    // These enable ⍋/⍒ and ∧/∨ to dispatch to GPU for large arrays.
-    rbqn_prim::sort::register_gpu_grade(gpu_runtime::gpu_grade);
-    rbqn_prim::sort::register_gpu_sort(gpu_runtime::gpu_sort);
+        // NOTE: Register GPU grade and sort hooks into rbqn-prim.
+        // These enable ⍋/⍒ and ∧/∨ to dispatch to GPU for large arrays.
+        rbqn_prim::sort::register_gpu_grade(gpu_runtime::gpu_grade);
+        rbqn_prim::sort::register_gpu_sort(gpu_runtime::gpu_sort);
+    }
 
     rbqn::timing::lap(&mut t, "cli+gpu hooks");
     let rt = match bootstrap::bootstrap() {
