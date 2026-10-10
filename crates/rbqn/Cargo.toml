@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+default = ["gpu"]
+# gpu: wgpu backend. Off (--no-default-features) gives a CPU-only binary that
+# does not link Metal/QuartzCore, so dyld skips them at launch (issue #21).
+gpu = ["dep:rbqn-gpu"]
 # gen-tools: enables the rbqn-gen binary for regenerating embedded .bin files.
 # NOT in default features — not compiled during normal cargo build or cargo install.
 gen-tools = []
@@ -14,7 +18,7 @@ libc = "0.2"
 rbqn-core.workspace = true
 rbqn-vm.workspace = true
 rbqn-prim.workspace = true
-rbqn-gpu.workspace = true
+rbqn-gpu = { workspace = true, optional = true }
 rustyline = "15"
 pollster = "0.4"
 
@@ -36,3 +40,8 @@ required-features = ["gen-tools"]
 [[bench]]
 name = "gpu_bench"
 harness = false
+required-features = ["gpu"]
+
+[[test]]
+name = "gpu_dispatch"
+required-features = ["gpu"]

@@ -392,6 +392,7 @@ pub fn exec_string_inner(
 
     // Call compiler: compiler(args, source) → ⟨bc, objs, blocks, bodies, indices?, tokenInfo?⟩
     let comp_result = c2(rt.compiler, comp_args, src_b);
+    #[cfg(feature = "gpu")]
     rbqn_gpu::stats::reset_run(); // GPU counters report the program, not its compile
 
     let comp_arr = get_arr(comp_result)
