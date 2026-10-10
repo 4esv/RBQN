@@ -14,7 +14,7 @@ pub fn assert_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
         if v == 1.0 {
             return Ok(PrimResult::Scalar(x));
         }
-        return Err(BqnError::Assert(format!("Assertion failed: {}", format_assert_val(x))));
+        return Err(BqnError::Assert("Assertion error".to_string()));
     }
     // For non-float x: throw the value directly (CBQN: thr(x))
     // Format the thrown value as a string for the error message.
@@ -41,6 +41,10 @@ fn format_assert_msg(x: B) -> String {
         }
         // Try to decode as boxed array of strings (nested message)
         if let rbqn_core::array::ArrData::Boxed(ref v) = arr.data {
+            // Compiler errors are ⟨position, message⟩; CBQN shows only the message.
+            if v.len() == 2 && rbqn_core::get_arr(v[0]).is_some_and(|p| p.f64_iter().is_ok()) {
+                return format_assert_msg(v[1]);
+            }
             let parts: Vec<String> = v.iter().map(|&b| format_assert_msg(b)).collect();
             return parts.join(": ");
         }
@@ -52,15 +56,6 @@ fn format_assert_msg(x: B) -> String {
         return format!("Assertion failed (array ia={})", arr.ia());
     }
     "Assertion failed".to_string()
-}
-
-/// Format a B value for a failed assert message.
-fn format_assert_val(x: B) -> String {
-    if x.is_f64() {
-        format!("{}", x.o2f())
-    } else {
-        "value".to_string()
-    }
 }
 
 // ! dyad: assert with message
