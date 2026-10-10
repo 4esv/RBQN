@@ -453,22 +453,31 @@ fn pervasive_mixed_boxed(
                 let result_fill = results.first().copied().map(crate::structural::prototype_of);
                 return Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)));
             }
-            if wa_a.shape != xa_a.shape {
+            // Leading-axis agreement: each element of the lower-rank side pairs with
+            // one major cell of the other (blocks, not a cycle).
+            let (w_rep, x_rep) = if wa_a.shape == xa_a.shape {
+                (1, 1)
+            } else if is_shape_prefix(&wa_a.shape, &xa_a.shape) {
+                (xa_a.ia() / wa_a.ia().max(1), 1)
+            } else if is_shape_prefix(&xa_a.shape, &wa_a.shape) {
+                (1, wa_a.ia() / xa_a.ia().max(1))
+            } else {
                 return Err(BqnError::Shape(format!(
-                    "shape mismatch ({:?} vs {:?})", wa_a.shape, xa_a.shape
+                    "Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)", wa_a.shape, xa_a.shape
                 )));
-            }
-            let n = wa_a.ia();
+            };
+            let big = if wa_a.rank() >= xa_a.rank() { wa_a } else { xa_a };
+            let n = big.ia();
             let mut results = Vec::with_capacity(n);
             for i in 0..n {
-                let wi = wa_a.get(i)?;
-                let xi = xa_a.get(i)?;
+                let wi = wa_a.get(i / w_rep.max(1))?;
+                let xi = xa_a.get(i / x_rep.max(1))?;
                 let wi_a = get_arr(wi);
                 let xi_a = get_arr(xi);
                 results.push(to_b(op_fn(wi, wi_a.as_deref(), xi, xi_a.as_deref())?));
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
-            Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)))
+            Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, big.shape.clone(), result_fill)))
         }
         (None, Some(xa_a)) => {
             let n = xa_a.ia();
