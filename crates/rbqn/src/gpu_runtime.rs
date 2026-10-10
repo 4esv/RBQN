@@ -1368,6 +1368,8 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
         let kx = xa.shape[0];
         let n = xa.shape[1];
         if k != kx { return None; }
+        // NOTE: wgpu rejects zero-size bindings ("Binding size 0 ... less than minimum 4").
+        if m * k * n == 0 { return None; }
 
         // NOTE: Threshold check — dispatch to GPU for larger matrices.
         // For small matrices, CPU is faster due to transfer overhead.
@@ -1377,6 +1379,12 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
         // Extract f64 data from arrays; skip if char/boxed
         let w_f64: Vec<f64> = arr_to_f64(&wa)?;
         let x_f64: Vec<f64> = arr_to_f64(&xa)?;
+
+        // NOTE: The kernel is f32. Take it only when every product and partial sum
+        // is an integer below 2^24, where f32 is exact; otherwise the CPU keeps f64
+        // (16777217 rounded to 16777216, 0.1×3 gave 0.6000000238418579).
+        let max_int = |v: &[f64]| v.iter().try_fold(0.0f64, |m, &e| (e.fract() == 0.0).then(|| m.max(e.abs())));
+        if max_int(&w_f64)? * max_int(&x_f64)? * k as f64 >= 16_777_216.0 { return None; }
 
         let device = &gpu.ctx.device;
         let queue = &gpu.ctx.queue;
@@ -1423,7 +1431,8 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
 
 /// GPU-accelerated softmax: •math.Softmax x → probability distribution.
 /// Returns None when GPU unavailable or data is invalid (CPU fallback).
-/// Registered as GPU_SOFTMAX_HOOK in rbqn-vm::derive at startup.
+/// NOTE: Not registered (f32 result differs from the CPU's f64, see main.rs).
+#[allow(dead_code)]
 pub fn gpu_softmax(x: B) -> Option<B> {
     guarded("softmax", || {
         let xa = rbqn_vm::vm::get_arr(x)?;
