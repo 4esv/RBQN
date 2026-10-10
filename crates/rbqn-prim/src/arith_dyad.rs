@@ -4,11 +4,25 @@ use crate::dispatch::PrimResult;
 
 // NOTE: GPU dispatch hook — set by rbqn crate at startup via register_gpu_arith.
 // Using a function pointer in a OnceLock avoids a direct dependency on rbqn (which depends on rbqn-prim).
-type GpuArithFn = fn(op: &str, w_arr: &BqnArr, x_arr: &BqnArr) -> Option<BqnArr>;
+// Takes `B` (not `&BqnArr`) so pending device values are consumed without a readback.
+type GpuArithFn = fn(op: &str, w: B, x: B) -> Option<B>;
 static GPU_ARITH_HOOK: OnceLock<GpuArithFn> = OnceLock::new();
 
 pub fn register_gpu_arith(f: GpuArithFn) {
     let _ = GPU_ARITH_HOOK.set(f);
+}
+
+/// GPU arithmetic for `+ - × ⌊ ⌈` (array-array or number-array), called by the VM before it forces
+/// the operands with `get_arr`. None means take the CPU path.
+#[inline]
+pub fn try_gpu_arith(glyph: &str, w: B, x: B) -> Option<B> {
+    // NOTE: bit tests only: atom-atom and char/boxed-atom operands never reach the hook.
+    let (wa, xa) = (w.is_arr(), x.is_arr());
+    if !(wa && xa || wa && x.is_num() || xa && w.is_num()) {
+        return None;
+    }
+    let op = gpu_op_name(glyph)?;
+    GPU_ARITH_HOOK.get().and_then(|h| h(op, w, x))
 }
 
 // NOTE: GPU fused dispatch hook — set by rbqn crate at startup via register_gpu_fused.
@@ -50,6 +64,8 @@ fn gpu_op_name(name: &str) -> Option<&'static str> {
         "-" => Some("sub"),
         "×" => Some("mul"),
         "÷" => Some("div"),
+        "⌊" => Some("min"),
+        "⌈" => Some("max"),
         _ => None,
     }
 }
@@ -62,10 +78,10 @@ fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
 
 /// Recursively apply a scalar dyadic function element-wise through Boxed arrays.
 /// This handles depth>1 pervasion: e.g. `3 + ⟨1, 2, ⟨3, 4⟩⟩ → ⟨4, 5, ⟨6, 7⟩⟩`.
-fn pervasive_boxed_scalar_arr(
+fn pervasive_boxed_scalar_arr<F: Fn(f64, f64) -> f64 + Copy>(
     w: B,
     xa_arr: &BqnArr,
-    scalar_fn: fn(f64, f64) -> f64,
+    scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
     // NOTE: If w is a rank-0 box broadcasting over xa_arr, extract its content
@@ -86,7 +102,7 @@ fn pervasive_boxed_scalar_arr(
     for i in 0..n {
         let xi = xa_arr.get(i)?;
         let xi_arr = get_arr(xi);
-        let r = pervasive_dyad(w_eff, w_eff_arr_opt.as_ref(), xi, xi_arr.as_ref(), scalar_fn, name)?;
+        let r = pervasive_dyad(w_eff, w_eff_arr_opt.as_deref(), xi, xi_arr.as_deref(), scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
     let result_fill = pervasive_fill(&results, xa_arr.fill);
@@ -94,10 +110,10 @@ fn pervasive_boxed_scalar_arr(
     Ok(PrimResult::Array(out))
 }
 
-fn pervasive_boxed_arr_scalar(
+fn pervasive_boxed_arr_scalar<F: Fn(f64, f64) -> f64 + Copy>(
     wa_arr: &BqnArr,
     x: B,
-    scalar_fn: fn(f64, f64) -> f64,
+    scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
     // NOTE: If x is a rank-0 box (BQN scalar broadcast), extract its content so the
@@ -112,7 +128,7 @@ fn pervasive_boxed_arr_scalar(
             for i in 0..n {
                 let wi = wa_arr.get(i)?;
                 let wi_arr = get_arr(wi);
-                let r = pervasive_dyad(wi, wi_arr.as_ref(), x_content, x_content_arr.as_ref(), scalar_fn, name)?;
+                let r = pervasive_dyad(wi, wi_arr.as_deref(), x_content, x_content_arr.as_deref(), scalar_fn, name)?;
                 results.push(prim_result_to_b(r));
             }
             let result_fill = pervasive_fill(&results, wa_arr.fill);
@@ -124,7 +140,7 @@ fn pervasive_boxed_arr_scalar(
     for i in 0..n {
         let wi = wa_arr.get(i)?;
         let wi_arr = get_arr(wi);
-        let r = pervasive_dyad(wi, wi_arr.as_ref(), x, None, scalar_fn, name)?;
+        let r = pervasive_dyad(wi, wi_arr.as_deref(), x, None, scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
     let result_fill = pervasive_fill(&results, wa_arr.fill);
@@ -132,10 +148,10 @@ fn pervasive_boxed_arr_scalar(
     Ok(PrimResult::Array(out))
 }
 
-fn pervasive_boxed_arr_arr(
+fn pervasive_boxed_arr_arr<F: Fn(f64, f64) -> f64 + Copy>(
     wa_arr: &BqnArr,
     xa_arr: &BqnArr,
-    scalar_fn: fn(f64, f64) -> f64,
+    scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
     if wa_arr.shape != xa_arr.shape {
@@ -151,7 +167,7 @@ fn pervasive_boxed_arr_arr(
         let xi = xa_arr.get(i)?;
         let wi_arr = get_arr(wi);
         let xi_arr = get_arr(xi);
-        let r = pervasive_dyad(wi, wi_arr.as_ref(), xi, xi_arr.as_ref(), scalar_fn, name)?;
+        let r = pervasive_dyad(wi, wi_arr.as_deref(), xi, xi_arr.as_deref(), scalar_fn, name)?;
         results.push(prim_result_to_b(r));
     }
     // NOTE: Compute fill from result elements (not wa_arr.fill) since the result
@@ -178,12 +194,12 @@ fn pervasive_fill(results: &[B], fallback: Option<B>) -> Option<B> {
     }
 }
 
-fn pervasive_dyad(
+fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
     w: B,
     wa: Option<&BqnArr>,
     x: B,
     xa: Option<&BqnArr>,
-    scalar_fn: fn(f64, f64) -> f64,
+    scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
     match (wa, xa) {
@@ -192,11 +208,11 @@ fn pervasive_dyad(
             // If either side is a box (rank-0 array), open it and recurse.
             if x.is_arr() {
                 let xa_arr = get_arr(x);
-                return pervasive_dyad(w, None, x, xa_arr.as_ref(), scalar_fn, name);
+                return pervasive_dyad(w, None, x, xa_arr.as_deref(), scalar_fn, name);
             }
             if w.is_arr() {
                 let wa_arr = get_arr(w);
-                return pervasive_dyad(w, wa_arr.as_ref(), x, None, scalar_fn, name);
+                return pervasive_dyad(w, wa_arr.as_deref(), x, None, scalar_fn, name);
             }
             let wf = w.to_f64().map_err(|_| BqnError::Type(format!("𝕨{name}𝕩: Unexpected argument types")))?;
             let xf = x.to_f64().map_err(|_| BqnError::Type(format!("𝕨{name}𝕩: Unexpected argument types")))?;
@@ -205,7 +221,11 @@ fn pervasive_dyad(
         // scalar-array
         (None, Some(xa_arr)) => {
             if let Ok(wf) = w.to_f64()
-                && let Ok(xvals) = xa_arr.f64_iter() {
+                && let Some(out) = typed_scalar_arr(name, wf, xa_arr, true) {
+                    return Ok(PrimResult::Array(out));
+                }
+            if let Ok(wf) = w.to_f64()
+                && let Ok(xvals) = num_view(xa_arr) {
                     let result: Vec<f64> = xvals.iter().map(|&xv| scalar_fn(wf, xv)).collect();
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = xa_arr.shape.clone();
@@ -217,7 +237,11 @@ fn pervasive_dyad(
         // array-scalar
         (Some(wa_arr), None) => {
             if let Ok(xf) = x.to_f64()
-                && let Ok(wvals) = wa_arr.f64_iter() {
+                && let Some(out) = typed_scalar_arr(name, xf, wa_arr, false) {
+                    return Ok(PrimResult::Array(out));
+                }
+            if let Ok(xf) = x.to_f64()
+                && let Ok(wvals) = num_view(wa_arr) {
                     let result: Vec<f64> = wvals.iter().map(|&wv| scalar_fn(wv, xf)).collect();
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = wa_arr.shape.clone();
@@ -238,15 +262,9 @@ fn pervasive_dyad(
             if xa_arr.rank() == 0 {
                 return pervasive_dyad(w, Some(wa_arr), x, None, scalar_fn, name);
             }
-            // GPU dispatch for large matching-shape numeric arrays
-            if wa_arr.shape == xa_arr.shape
-                && let Some(gpu_op) = gpu_op_name(name)
-                    && let Some(hook) = GPU_ARITH_HOOK.get()
-                        && let Some(result) = hook(gpu_op, wa_arr, xa_arr) {
-                            return Ok(PrimResult::Array(result));
-                        }
+            // NOTE: GPU dispatch happens earlier, in try_gpu_arith (called from derive::c2).
             // Try fast numeric path first
-            if let (Ok(wvals), Ok(xvals)) = (wa_arr.f64_iter(), xa_arr.f64_iter()) {
+            if let (Ok(wvals), Ok(xvals)) = (num_view(wa_arr), num_view(xa_arr)) {
                 if wa_arr.shape == xa_arr.shape {
                     let result: Vec<f64> = wvals
                         .iter()
@@ -257,21 +275,22 @@ fn pervasive_dyad(
                     out.shape = wa_arr.shape.clone();
                     return Ok(PrimResult::Array(array::squeeze_num(out)));
                 } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
-                    let w_ia = wa_arr.ia().max(1);
+                    // Each w element pairs with a contiguous block of x (leading axis agreement).
+                    let rep = (xa_arr.ia() / wa_arr.ia().max(1)).max(1);
                     let result: Vec<f64> = xvals
                         .iter()
                         .enumerate()
-                        .map(|(i, &xv)| scalar_fn(wvals[i % w_ia], xv))
+                        .map(|(i, &xv)| scalar_fn(wvals[i / rep], xv))
                         .collect();
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = xa_arr.shape.clone();
                     return Ok(PrimResult::Array(array::squeeze_num(out)));
                 } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
-                    let x_ia = xa_arr.ia().max(1);
+                    let rep = (wa_arr.ia() / xa_arr.ia().max(1)).max(1);
                     let result: Vec<f64> = wvals
                         .iter()
                         .enumerate()
-                        .map(|(i, &wv)| scalar_fn(wv, xvals[i % x_ia]))
+                        .map(|(i, &wv)| scalar_fn(wv, xvals[i / rep]))
                         .collect();
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = wa_arr.shape.clone();
@@ -286,6 +305,14 @@ fn pervasive_dyad(
             // Boxed fallback: recurse element-wise
             pervasive_boxed_arr_arr(wa_arr, xa_arr, scalar_fn, name)
         }
+    }
+}
+
+/// Numeric contents as f64, borrowing when the array already stores f64.
+fn num_view(a: &BqnArr) -> Result<std::borrow::Cow<'_, [f64]>> {
+    match &a.data {
+        array::ArrData::F64(v) => Ok(std::borrow::Cow::Borrowed(v)),
+        _ => a.f64_iter().map(std::borrow::Cow::Owned),
     }
 }
 
@@ -317,6 +344,33 @@ fn char_num_class(v: B, va: Option<&BqnArr>) -> char {
         if a.is_num_arr() { return 'n'; }
     }
     'o'
+}
+
+/// Scalar number-number fast path for primitive index `op` (0..=17: `+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥`).
+/// Mirrors the `w.is_f64() && x.is_f64()` branch of each `*_c2` below and the scalar
+/// comparison functions in compare.rs; comparisons return 0.0/1.0.
+#[inline(always)]
+pub fn scalar_dyad(op: u8, w: f64, x: f64) -> f64 {
+    match op {
+        0 => w + x,
+        1 => w - x,
+        2 => w * x,
+        3 => w / (x + 0.0),
+        4 => (w + 0.0).powf(x),
+        5 => (x + 0.0).powf(1.0 / (0.0 + w)),
+        6 => w.min(x),
+        7 => w.max(x),
+        8 => pfmod(x, w),
+        9 => 1.0 + w - x,
+        10 => w * x,
+        11 => w + x - w * x,
+        12 => (w < x) as i32 as f64,
+        13 => (w > x) as i32 as f64,
+        14 => (w != x) as i32 as f64,
+        15 => (w == x) as i32 as f64,
+        16 => (w <= x) as i32 as f64,
+        _ => (w >= x) as i32 as f64,
+    }
 }
 
 // + dyad: add
@@ -368,7 +422,7 @@ fn pervasive_mixed_boxed(
                 for i in 0..n {
                     let xi = xa_a.get(i).unwrap_or(B::SENTINEL);
                     let xi_a = get_arr(xi);
-                    results.push(to_b(op_fn(inner, inner_arr.as_ref(), xi, xi_a.as_ref())?));
+                    results.push(to_b(op_fn(inner, inner_arr.as_deref(), xi, xi_a.as_deref())?));
                 }
                 let result_fill = results.first().copied().map(crate::structural::prototype_of);
                 return Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, xa_a.shape.clone(), result_fill)));
@@ -382,7 +436,7 @@ fn pervasive_mixed_boxed(
                 for i in 0..n {
                     let wi = wa_a.get(i).unwrap_or(B::SENTINEL);
                     let wi_a = get_arr(wi);
-                    results.push(to_b(op_fn(wi, wi_a.as_ref(), inner, inner_arr.as_ref())?));
+                    results.push(to_b(op_fn(wi, wi_a.as_deref(), inner, inner_arr.as_deref())?));
                 }
                 let result_fill = results.first().copied().map(crate::structural::prototype_of);
                 return Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)));
@@ -399,7 +453,7 @@ fn pervasive_mixed_boxed(
                 let xi = xa_a.get(i)?;
                 let wi_a = get_arr(wi);
                 let xi_a = get_arr(xi);
-                results.push(to_b(op_fn(wi, wi_a.as_ref(), xi, xi_a.as_ref())?));
+                results.push(to_b(op_fn(wi, wi_a.as_deref(), xi, xi_a.as_deref())?));
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
             Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)))
@@ -411,7 +465,7 @@ fn pervasive_mixed_boxed(
             for i in 0..n {
                 let xi = xa_a.get(i)?;
                 let xi_a = get_arr(xi);
-                results.push(to_b(op_fn(w, w_a.as_ref(), xi, xi_a.as_ref())?));
+                results.push(to_b(op_fn(w, w_a.as_deref(), xi, xi_a.as_deref())?));
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
             Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, xa_a.shape.clone(), result_fill)))
@@ -423,7 +477,7 @@ fn pervasive_mixed_boxed(
             for i in 0..n {
                 let wi = wa_a.get(i)?;
                 let wi_a = get_arr(wi);
-                results.push(to_b(op_fn(wi, wi_a.as_ref(), x, x_a.as_ref())?));
+                results.push(to_b(op_fn(wi, wi_a.as_deref(), x, x_a.as_deref())?));
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
             Ok(PrimResult::Array(array::typed_arr_from_b_vec(results, wa_a.shape.clone(), result_fill)))
@@ -432,7 +486,7 @@ fn pervasive_mixed_boxed(
             let wa2 = get_arr(w);
             let xa2 = get_arr(x);
             if wa2.is_some() || xa2.is_some() {
-                return pervasive_mixed_boxed(w, wa2.as_ref(), x, xa2.as_ref(), op_fn);
+                return pervasive_mixed_boxed(w, wa2.as_deref(), x, xa2.as_deref(), op_fn);
             }
             Err(BqnError::Type("Unexpected argument types".into()))
         }
@@ -500,9 +554,9 @@ fn pervasive_char_add(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>, w_is
                 out.shape = ca_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else if is_shape_prefix(&ca_arr.shape, &na_arr.shape) {
-                let c_ia = ca_arr.ia().max(1);
+                let rep = (na_arr.ia() / ca_arr.ia().max(1)).max(1);
                 let result: std::result::Result<Vec<u32>, _> = nums.iter().enumerate().map(|(i, &n)| {
-                    let r = chars[i % c_ia] as i64 + n as i64;
+                    let r = chars[i / rep] as i64 + n as i64;
                     if r < 0 || r > value::CHR_MAX as i64 {
                         Err(BqnError::Domain("𝕨+𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
@@ -511,9 +565,9 @@ fn pervasive_char_add(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>, w_is
                 out.shape = na_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else if is_shape_prefix(&na_arr.shape, &ca_arr.shape) {
-                let n_ia = na_arr.ia().max(1);
+                let rep = (ca_arr.ia() / na_arr.ia().max(1)).max(1);
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().enumerate().map(|(i, &c)| {
-                    let r = c as i64 + nums[i % n_ia] as i64;
+                    let r = c as i64 + nums[i / rep] as i64;
                     if r < 0 || r > value::CHR_MAX as i64 {
                         Err(BqnError::Domain("𝕨+𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
@@ -549,7 +603,7 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
         }
         (None, Some(xa_arr)) => {
             let c = w.o2c()?;
-            let nums = xa_arr.f64_iter()?;
+            let nums = num_view(xa_arr)?;
             let result: std::result::Result<Vec<u32>, _> = nums.iter().map(|&n| {
                 let r = c as i64 - n as i64;
                 if r < 0 || r > value::CHR_MAX as i64 {
@@ -575,7 +629,7 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
         }
         (Some(wa_arr), Some(xa_arr)) => {
             let chars = wa_arr.c32_iter()?;
-            let nums = xa_arr.f64_iter()?;
+            let nums = num_view(xa_arr)?;
             if wa_arr.shape == xa_arr.shape {
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
                     let r = c as i64 - n as i64;
@@ -587,9 +641,10 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
                 out.shape = wa_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
-                let w_ia = wa_arr.ia().max(1);
+                // Each w element pairs with a contiguous block of x (leading axis agreement).
+                    let rep = (xa_arr.ia() / wa_arr.ia().max(1)).max(1);
                 let result: std::result::Result<Vec<u32>, _> = nums.iter().enumerate().map(|(i, &n)| {
-                    let r = chars[i % w_ia] as i64 - n as i64;
+                    let r = chars[i / rep] as i64 - n as i64;
                     if r < 0 || r > value::CHR_MAX as i64 {
                         Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
@@ -598,9 +653,9 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
                 out.shape = xa_arr.shape.clone();
                 Ok(PrimResult::Array(out))
             } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
-                let x_ia = xa_arr.ia().max(1);
+                let rep = (wa_arr.ia() / xa_arr.ia().max(1)).max(1);
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().enumerate().map(|(i, &c)| {
-                    let r = c as i64 - nums[i % x_ia] as i64;
+                    let r = c as i64 - nums[i / rep] as i64;
                     if r < 0 || r > value::CHR_MAX as i64 {
                         Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
@@ -652,16 +707,17 @@ fn pervasive_char_sub_char(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>)
                 out.shape = wa_arr.shape.clone();
                 Ok(PrimResult::Array(array::squeeze_num(out)))
             } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
-                let w_ia = wa_arr.ia().max(1);
+                // Each w element pairs with a contiguous block of x (leading axis agreement).
+                    let rep = (xa_arr.ia() / wa_arr.ia().max(1)).max(1);
                 let result: Vec<f64> = xchars.iter().enumerate()
-                    .map(|(i, &xc)| (wchars[i % w_ia] as i64 - xc as i64) as f64).collect();
+                    .map(|(i, &xc)| (wchars[i / rep] as i64 - xc as i64) as f64).collect();
                 let mut out = BqnArr::new_vec_f64(result);
                 out.shape = xa_arr.shape.clone();
                 Ok(PrimResult::Array(array::squeeze_num(out)))
             } else if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
-                let x_ia = xa_arr.ia().max(1);
+                let rep = (wa_arr.ia() / xa_arr.ia().max(1)).max(1);
                 let result: Vec<f64> = wchars.iter().enumerate()
-                    .map(|(i, &wc)| (wc as i64 - xchars[i % x_ia] as i64) as f64).collect();
+                    .map(|(i, &wc)| (wc as i64 - xchars[i / rep] as i64) as f64).collect();
                 let mut out = BqnArr::new_vec_f64(result);
                 out.shape = wa_arr.shape.clone();
                 Ok(PrimResult::Array(array::squeeze_num(out)))
@@ -815,7 +871,7 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
         }
         (None, Some(xa_arr)) => {
             let c = w.o2c()? as i64;
-            let nums = xa_arr.f64_iter()?;
+            let nums = num_view(xa_arr)?;
             let result: std::result::Result<Vec<u32>, _> = nums.iter().map(|&n| {
                 let r = c + 1 - n as i64;
                 if r < 0 || r > value::CHR_MAX as i64 {
@@ -841,7 +897,7 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
         }
         (Some(wa_arr), Some(xa_arr)) => {
             let chars = wa_arr.c32_iter()?;
-            let nums = xa_arr.f64_iter()?;
+            let nums = num_view(xa_arr)?;
             if wa_arr.shape == xa_arr.shape {
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
                     let r = c as i64 + 1 - n as i64;
@@ -885,4 +941,144 @@ pub fn log_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
         return Ok(PrimResult::Scalar(B::m_f64(x.o2f().ln() / w.o2f().ln())));
     }
     pervasive_dyad(w, wa, x, xa, |a, b| b.ln() / a.ln(), "⋆⁼")
+}
+
+// ---------------------------------------------------------------------------
+// Typed scalar-array fast path
+// ---------------------------------------------------------------------------
+
+/// Integer-typed array contents (Bit/I8/I16/I32) as i32, borrowing for I32.
+fn int_view(a: &BqnArr) -> Option<std::borrow::Cow<'_, [i32]>> {
+    use std::borrow::Cow;
+    Some(match &a.data {
+        array::ArrData::I32(v) => Cow::Borrowed(&v[..]),
+        array::ArrData::I16(v) => Cow::Owned(v.iter().map(|&x| x as i32).collect()),
+        array::ArrData::I8(v) => Cow::Owned(v.iter().map(|&x| x as i32).collect()),
+        array::ArrData::Bit(w) => {
+            let n = a.ia();
+            Cow::Owned((0..n).map(|i| ((w[i / 64] >> (i % 64)) & 1) as i32).collect())
+        }
+        _ => return None,
+    })
+}
+
+/// Pack a predicate over a slice into a Bit array's words.
+fn pack_bits<F: Fn(i32) -> bool>(v: &[i32], f: F) -> Vec<u64> {
+    let mut words = vec![0u64; v.len().div_ceil(64)];
+    for (w, chunk) in words.iter_mut().zip(v.chunks(64)) {
+        let mut acc = 0u64;
+        for (j, &x) in chunk.iter().enumerate() {
+            acc |= (f(x) as u64) << j;
+        }
+        *w = acc;
+    }
+    words
+}
+
+/// Build the narrowest integer array for `vals`, matching `squeeze_num`.
+fn narrow_i32(vals: Vec<i32>, shape: Vec<usize>) -> BqnArr {
+    let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+    for &v in &vals {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    let data = if lo >= 0 && hi <= 1 {
+        array::ArrData::Bit(pack_bits(&vals, |x| x == 1))
+    } else if lo >= i8::MIN as i32 && hi <= i8::MAX as i32 {
+        array::ArrData::I8(vals.iter().map(|&v| v as i8).collect())
+    } else if lo >= i16::MIN as i32 && hi <= i16::MAX as i32 {
+        array::ArrData::I16(vals.iter().map(|&v| v as i16).collect())
+    } else {
+        array::ArrData::I32(vals)
+    };
+    BqnArr { shape, data, fill: Some(B::m_f64(0.0)) }
+}
+
+/// Map with an i64 kernel; None if any result leaves the i32 range.
+#[inline]
+fn map_int<F: Fn(i32) -> i64>(v: &[i32], f: F) -> Option<Vec<i32>> {
+    let mut bad = false;
+    let out: Vec<i32> = v
+        .iter()
+        .map(|&x| {
+            let r = f(x);
+            bad |= r != r as i32 as i64;
+            r as i32
+        })
+        .collect();
+    if bad { None } else { Some(out) }
+}
+
+#[inline(always)]
+fn floored_mod(x: i32, m: i32) -> i32 {
+    // m == 0 is excluded by the caller (CBQN gives NaN); result takes the sign of m.
+    let r = x.wrapping_rem(m);
+    if r != 0 && ((r < 0) != (m < 0)) { r + m } else { r }
+}
+
+/// Typed scalar-vs-array pervasive op for integer arrays. `scalar_left` says
+/// whether the scalar is the left argument. Returns None when the case is not
+/// covered (non-integer array, non-integer scalar for arithmetic, ÷, overflow),
+/// in which case the caller uses the generic f64 path.
+pub(crate) fn typed_scalar_arr(name: &str, s: f64, arr: &BqnArr, scalar_left: bool) -> Option<BqnArr> {
+    if arr.ia() == 0 || !s.is_finite() {
+        return None;
+    }
+    let v = int_view(arr)?;
+    let shape = arr.shape.clone();
+    // Comparisons: any numeric scalar, result is a Bit array.
+    macro_rules! cmp {
+        ($op:tt) => {{
+            let words = if scalar_left {
+                pack_bits(&v, |x| s $op (x as f64))
+            } else {
+                pack_bits(&v, |x| (x as f64) $op s)
+            };
+            return Some(BqnArr { shape, data: array::ArrData::Bit(words), fill: Some(B::m_f64(0.0)) });
+        }};
+    }
+    match name {
+        "=" => cmp!(==),
+        "≠" => cmp!(!=),
+        "<" => cmp!(<),
+        ">" => cmp!(>),
+        "≤" => cmp!(<=),
+        "≥" => cmp!(>=),
+        _ => {}
+    }
+    if s.fract() != 0.0 || s.abs() > i32::MAX as f64 {
+        return None;
+    }
+    let si = s as i32;
+    let sl = si as i64;
+    let out = match (name, scalar_left) {
+        ("+", _) => map_int(&v, |x| x as i64 + sl)?,
+        ("-", true) => map_int(&v, |x| sl - x as i64)?,
+        ("-", false) => map_int(&v, |x| x as i64 - sl)?,
+        ("×", _) | ("∧", _) => map_int(&v, |x| x as i64 * sl)?,
+        ("∨", _) => map_int(&v, |x| x as i64 + sl - x as i64 * sl)?,
+        ("⌊", _) => v.iter().map(|&x| x.min(si)).collect(),
+        ("⌈", _) => v.iter().map(|&x| x.max(si)).collect(),
+        // s|x
+        ("|", true) => {
+            if si == 0 {
+                return None;
+            }
+            if si > 0 && (si & (si - 1)) == 0 {
+                let mask = si - 1;
+                v.iter().map(|&x| x & mask).collect()
+            } else {
+                v.iter().map(|&x| floored_mod(x, si)).collect()
+            }
+        }
+        // x|s
+        ("|", false) => {
+            if v.contains(&0) {
+                return None;
+            }
+            v.iter().map(|&m| floored_mod(si, m)).collect()
+        }
+        _ => return None,
+    };
+    Some(narrow_i32(out, shape))
 }

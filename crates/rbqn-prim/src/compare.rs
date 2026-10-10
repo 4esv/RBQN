@@ -142,6 +142,10 @@ fn cmp_pervasive(
     match (wa, xa) {
         (None, None) => Ok(PrimResult::Scalar(B::m_i32(scalar_fn(w, x)))),
         (None, Some(xa_arr)) => {
+            if w.is_f64()
+                && let Some(out) = crate::arith_dyad::typed_scalar_arr(name, w.o2f(), xa_arr, true) {
+                    return Ok(PrimResult::Array(out));
+                }
             let ia = xa_arr.ia();
             let mut result = Vec::with_capacity(ia);
             for i in 0..ia {
@@ -153,6 +157,10 @@ fn cmp_pervasive(
             Ok(PrimResult::Array(out))
         }
         (Some(wa_arr), None) => {
+            if x.is_f64()
+                && let Some(out) = crate::arith_dyad::typed_scalar_arr(name, x.o2f(), wa_arr, false) {
+                    return Ok(PrimResult::Array(out));
+                }
             let ia = wa_arr.ia();
             let mut result = Vec::with_capacity(ia);
             for i in 0..ia {

@@ -1,7 +1,6 @@
 // NOTE: exec.rs — shared BQN compilation/execution logic.
 // Used by both main.rs (REPL/file execution) and rbqn-gen (--verify self-compilation).
 
-use std::sync::Arc;
 
 use rbqn_core::array::BqnArr;
 use rbqn_core::error::BqnError;
@@ -393,6 +392,7 @@ pub fn exec_string_inner(
 
     // Call compiler: compiler(args, source) → ⟨bc, objs, blocks, bodies, indices?, tokenInfo?⟩
     let comp_result = c2(rt.compiler, comp_args, src_b);
+    rbqn_gpu::stats::reset_run(); // GPU counters report the program, not its compile
 
     let comp_arr = get_arr(comp_result)
         .ok_or_else(|| BqnError::Domain("compiler did not return an array".into()))?;
@@ -444,6 +444,6 @@ pub fn exec_string_inner(
 
     let body = block.bodies[0].clone();
     let var_am = body.var_am;
-    let root_scope = Arc::new(Scope::new(body.clone(), None, var_am, &[]));
+    let root_scope = std::rc::Rc::new(Scope::new(body.clone(), None, var_am, &[]));
     Ok(eval_fun_block(block, root_scope))
 }

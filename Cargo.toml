@@ -22,3 +22,9 @@ wgpu = "24"
 bytemuck = { version = "1", features = ["derive"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 pollster = "0.4"
+
+# NOTE: No panic = "abort": ⎊ and error reporting rely on catch_unwind.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

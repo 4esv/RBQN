@@ -1,11 +1,10 @@
-use std::sync::Arc;
 
 use crate::scope::Scope;
 
 #[derive(Debug, Clone)]
 pub struct Env {
     pub pos: u64,
-    pub sc: Arc<Scope>,
+    pub sc: std::rc::Rc<Scope>,
 }
 
 pub struct EnvStack {
@@ -19,7 +18,7 @@ impl EnvStack {
         }
     }
 
-    pub fn push(&mut self, sc: Arc<Scope>, bc_pos: u64) {
+    pub fn push(&mut self, sc: std::rc::Rc<Scope>, bc_pos: u64) {
         if self.stack.len() >= 10000 {
             rbqn_core::error::throw("Stack overflow");
         }

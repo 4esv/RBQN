@@ -5,3 +5,6 @@ Cargo.lock
 *.swo
 .DS_Store
 .claude/
+/src/preprocessed/
+.test-results/run-*
+/bench/probes/target/

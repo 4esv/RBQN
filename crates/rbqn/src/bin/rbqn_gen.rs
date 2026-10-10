@@ -3,6 +3,12 @@
 // Modes:
 //   --self           Compile all 4 BQN sources using RBQN (no CBQN needed).
 //                    Requires BQN_SRC=/path/to/BQN/src. Writes to bins/.
+//                    Also requires src/preprocessed/{r0,r1}.bqn at the repo
+//                    root (gitignored, generated). `bqn src/pr.bqn 0` prints
+//                    nothing; generate them with:
+//                      cd $BQN_SRC && bqn -e '•Out (⟨"0"⟩ •Import "pr.bqn").src' > r0.bqn
+//                      cd $BQN_SRC && bqn -e '•Out (⟨"1"⟩ •Import "pr.bqn").src' > r1.bqn
+//                    and copy both into <repo>/src/preprocessed/.
 //   --fixpoint-check Run --self twice and verify byte-for-byte identical output.
 //   --verify         (Legacy) Test self-compilation, write to embedded/self-compiled/.
 //   (default)        Parse CBQN gen/ files. Requires CBQN_PATH.

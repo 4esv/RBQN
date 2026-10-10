@@ -1,4 +1,5 @@
 mod cli;
+mod gpu_host;
 mod gpu_runtime;
 mod repl;
 
@@ -12,12 +13,37 @@ use rbqn_vm::derive::{c1, c2};
 use rbqn_vm::scope::Scope;
 use rbqn_vm::vm::{get_arr, tag_arr};
 
-use std::sync::Arc;
+
+/// Stack for the interpreter thread. Reserved virtual memory: pages are only
+/// committed when touched, so a deep recursion costs memory, a shallow one not.
+const INTERP_STACK_BYTES: usize = 512 << 20;
 
 fn main() {
-    // Suppress default panic output — BQN errors use panic-based throw()
+    let t0 = std::time::Instant::now();
+    // NOTE: All interpreter work (bootstrap, evaluation, REPL, •Exit) runs on this
+    // one thread: the value stores are thread-local, and the default 8 MB main
+    // stack overflowed at a few thousand BQN calls. std::process::exit from the
+    // interpreter thread ends the whole process as before.
+    let handle = std::thread::Builder::new()
+        .name("rbqn".into())
+        .stack_size(INTERP_STACK_BYTES)
+        .spawn(move || interp_main(t0))
+        .unwrap_or_else(|e| {
+            eprintln!("rbqn: could not start interpreter thread: {e}");
+            std::process::exit(1);
+        });
+    if handle.join().is_err() {
+        std::process::exit(1);
+    }
+}
+
+fn interp_main(mut t: std::time::Instant) {
+    rbqn::timing::lap(&mut t, "thread spawn");
+    let _gpu_summary = gpu_runtime::SummaryGuard;
+    // Suppress default panic output: BQN errors use panic-based throw()
     // and we catch them with catch_unwind for clean error messages.
-    std::panic::set_hook(Box::new(|_| {}));
+    // GPU dispatch panics are still reported under RBQN_GPU_DEBUG=1.
+    std::panic::set_hook(Box::new(gpu_runtime::report_panic));
 
     let args = cli::parse_args();
 
@@ -26,6 +52,7 @@ fn main() {
     // NOTE: Register GPU dispatch hooks into rbqn-prim after GPU runtime is initialized.
     // Function pointer pattern avoids circular dependency (rbqn-prim cannot depend on rbqn).
     rbqn_prim::arith_dyad::register_gpu_arith(gpu_runtime::gpu_arith_binary);
+    rbqn_prim::structural::register_gpu_iota(gpu_runtime::gpu_iota);
 
     // NOTE: Register GPU fused arithmetic hook for explicit multi-op dispatch.
     // FusionBuilder wired here; true expression-level auto-fusion is future work (requires
@@ -47,6 +74,7 @@ fn main() {
     rbqn_prim::sort::register_gpu_grade(gpu_runtime::gpu_grade);
     rbqn_prim::sort::register_gpu_sort(gpu_runtime::gpu_sort);
 
+    rbqn::timing::lap(&mut t, "cli+gpu hooks");
     let rt = match bootstrap::bootstrap() {
         Ok(rt) => rt,
         Err(e) => {
@@ -55,18 +83,22 @@ fn main() {
         }
     };
 
+    rbqn::timing::lap(&mut t, "bootstrap (total)");
     // NOTE: Register the global runtime state for •BQN re-evaluation after bootstrap.
     rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
 
     // NOTE: Register derived function structural equality with rbqn-core (for ≡ and = on functions).
     rbqn_vm::derive::register_derived_equality();
+    rbqn::timing::lap(&mut t, "set_sys_runtime+eq");
 
     // Set •args to empty for -e/-p mode (file args will override when executing a file)
     rbqn_vm::derive::set_sys_args(&[]);
+    rbqn::timing::lap(&mut t, "set_sys_args");
     // Set •path and •name to empty for -e/-p mode
     rbqn_vm::derive::set_sys_path("");
 
     let _ = args.heap_max; // TODO: enforce heap limit
+    rbqn::timing::lap(&mut t, "post-bootstrap setup");
 
     // Execute pre-REPL arguments
     for action in &args.actions {
@@ -101,13 +133,22 @@ fn main() {
         };
         if let Err(e) = result {
             eprintln!("Error: {e}");
+            gpu_runtime::print_summary();
             std::process::exit(1);
         }
+        rbqn::timing::lap(&mut t, "action eval");
     }
 
     // REPL if requested or no actions given
     if args.repl {
         repl::run_repl(&rt, args.silent);
+    }
+    rbqn::timing::lap(&mut t, "end of interp_main");
+    if std::env::var_os("RBQN_FAST_EXIT").is_some() {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        drop(_gpu_summary);
+        unsafe { libc::_exit(0) };
     }
 }
 
@@ -300,13 +341,13 @@ fn exec_repl_line_inner(
     // Execute directly with eval_bc so we retain scope access afterwards.
     // The root block is ty=0, imm=true. exec_block would create a child scope
     // and we'd lose the variable values. Instead we call eval_bc with our scope.
-    let exec_scope = Arc::new(Scope::new(body.clone(), None, var_am, &init_vars));
+    let exec_scope = std::rc::Rc::new(Scope::new(body.clone(), None, var_am, &init_vars));
     let result = rbqn_vm::vm::eval_bc(&body, exec_scope.clone(), &block);
 
     // Read back variable values from exec_scope
     let mut new_values = Vec::with_capacity(var_am as usize);
     {
-        let vars = exec_scope.vars.lock().unwrap_or_else(|e| e.into_inner());
+        let vars = exec_scope.vars.borrow_mut();
         for i in 0..var_am as usize {
             if i < vars.len() {
                 new_values.push(vars[i]);
@@ -369,6 +410,9 @@ fn output_raw(val: &B) -> rbqn_core::Result<()> {
 }
 
 fn format_result(rt: &bootstrap::Runtime, val: &B) -> String {
+    if let Some(s) = rbqn_vm::derive::fast_fmt_ints(*val, false) {
+        return s;
+    }
     // Try using the formatter if available
     if let Some((ref fmt_fn, _)) = rt.formatter
         && let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

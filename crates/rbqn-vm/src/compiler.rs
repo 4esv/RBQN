@@ -451,7 +451,7 @@ fn compile_block(
                                 let mut csc = sc;
                                 for _ in depth..cdepth {
                                     match &csc.psc {
-                                        Some(p) => csc = unsafe { &*Arc::as_ptr(p) },
+                                        Some(p) => csc = unsafe { &*std::rc::Rc::as_ptr(p) },
                                         None => rbqn_core::error::throw("VM compiler: VAR_ has an out-of-bounds depth"),
                                     }
                                 }

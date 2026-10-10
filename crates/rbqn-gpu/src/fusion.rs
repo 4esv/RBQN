@@ -2,7 +2,7 @@ use std::sync::Arc;
 use wgpu;
 
 use crate::buffer::{ElementKind, GpuBuffer};
-use crate::dispatch::{WORKGROUP_SIZE, workgroup_count};
+use crate::dispatch::{WORKGROUP_SIZE, grid_for};
 use crate::pipeline::{PipelineCache, PipelineKey};
 
 #[derive(Clone, Debug)]
@@ -51,6 +51,7 @@ impl FusionBuilder {
             ElementKind::F32 => "f32",
             ElementKind::I32 => "i32",
             ElementKind::U32 => "u32",
+            ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
         };
 
         let entry = format!("fused_{}", self.ops.len());
@@ -75,9 +76,9 @@ impl FusionBuilder {
         }
 
         src.push_str(&format!(
-            "@compute @workgroup_size(256)\nfn {entry}(@builtin(global_invocation_id) id: vec3<u32>) {{\n"
+            "@compute @workgroup_size(256)\nfn {entry}(@builtin(global_invocation_id) id: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {{\n"
         ));
-        src.push_str("    let idx = id.x;\n");
+        src.push_str("    let idx = id.x + id.y * nwg.x * 256u;\n");
 
         let out_binding = "output";
         src.push_str(&format!(
@@ -146,9 +147,10 @@ impl FusionBuilder {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroup_count(out.len(), WORKGROUP_SIZE), 1, 1);
+            let (gx, gy) = grid_for(out.len(), WORKGROUP_SIZE);
+        pass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
         }
-        queue.submit(std::iter::once(encoder.finish()));
+        queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
     }
 
     pub fn clear(&mut self) {

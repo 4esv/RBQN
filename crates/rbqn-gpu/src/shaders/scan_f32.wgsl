@@ -9,17 +9,18 @@ fn scan_add_f32(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
     let n = arrayLength(&input);
-    let idx = gid.x;
+    let wg = wid.y * nwg.x + wid.x; // linear workgroup index on the 2D grid
     let local_idx = lid.x;
 
     // Load into shared memory (Blelloch scan uses 2x elements per workgroup)
     let ai = local_idx;
     let bi = local_idx + 256u;
 
-    let a_idx = wid.x * 512u + ai;
-    let b_idx = wid.x * 512u + bi;
+    let a_idx = wg * 512u + ai;
+    let b_idx = wg * 512u + bi;
 
     if (a_idx < n) { temp[ai] = input[a_idx]; } else { temp[ai] = 0.0; }
     if (b_idx < n) { temp[bi] = input[b_idx]; } else { temp[bi] = 0.0; }
@@ -38,7 +39,8 @@ fn scan_add_f32(
 
     // Store block sum and clear last element
     if (local_idx == 0u) {
-        block_sums[wid.x] = temp[511];
+        // Spare workgroups on the last grid row must not write block_sums.
+        if (wg < arrayLength(&block_sums)) { block_sums[wg] = temp[511]; }
         temp[511] = 0.0;
     }
 
@@ -68,8 +70,9 @@ fn scan_add_f32(
 @compute @workgroup_size(256)
 fn propagate_f32(
     @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(num_workgroups) nwg: vec3<u32>,
 ) {
-    let idx = gid.x;
+    let idx = gid.x + gid.y * nwg.x * 256u; // 2D grid, see dispatch::workgroup_grid
     if (idx < arrayLength(&scan_output)) {
         // NOTE: Each scan block covers 512 elements (ELEMENTS_PER_WORKGROUP).
         // Map the global element index to the correct block_sums entry.

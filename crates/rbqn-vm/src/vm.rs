@@ -7,36 +7,39 @@ use crate::block::{Block, Body, eval_fun_block, m_md1_block, m_md2_block};
 use crate::bytecode::Op;
 use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_partial_r};
 use crate::namespace::{self, NS, get_ns, store_ns};
-use crate::scope::{Scope, v_get, v_set, v_seth, v_check_bad_read};
+use crate::scope::{ScRef, Scope, TLS, Tls, v_get, v_set, v_seth, v_check_bad_read};
 
-pub fn exec_block(bl: &Block, body: Arc<Body>, psc: Arc<Scope>) -> B {
+pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
     let var_am = body.var_am;
-    let sc = Arc::new(Scope::new(body.clone(), Some(psc), var_am, &[]));
+    let sc = std::rc::Rc::new(Scope::new(body.clone(), Some(psc), var_am, &[]));
     eval_bc(&body, sc, bl)
 }
 
-pub fn exec_block_with_args(bl: &Block, body: Arc<Body>, psc: Arc<Scope>, args: &[B]) -> B {
+#[inline(never)]
+pub fn exec_block_with_args(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
     let var_am = body.var_am.max(args.len() as u16);
-    let sc = Arc::new(Scope::new(body.clone(), Some(psc), var_am, args));
-    eval_bc(&body, sc, bl)
+    TLS.with(|t| {
+        let sc = Scope::new_rc_in(t, body, psc, var_am, args);
+        eval_bc_in(t, body, sc, bl)
+    })
 }
 
-fn build_pscs(sc: &Arc<Scope>, max_psc: u16) -> Vec<Arc<Scope>> {
-    let mut pscs = Vec::with_capacity(max_psc as usize);
+/// Fill `pscs` with the scope chain starting at `sc`, up to `max_psc` entries.
+fn build_pscs(pscs: &mut Vec<ScRef>, sc: &std::rc::Rc<Scope>, max_psc: u16) {
+    pscs.clear();
     if max_psc > 0 {
-        pscs.push(sc.clone());
-        let mut current = sc.clone();
+        let mut cur: &Scope = sc;
+        pscs.push(ScRef::new(sc));
         for _ in 1..max_psc {
-            match &current.psc {
+            match &cur.psc {
                 Some(p) => {
-                    pscs.push(p.clone());
-                    current = p.clone();
+                    pscs.push(ScRef::new(p));
+                    cur = p;
                 }
                 None => break,
             }
         }
     }
-    pscs
 }
 
 /// Helper: unpack an immediate variable reference from a u64.
@@ -77,6 +80,17 @@ std::thread_local! {
     static VM_TRACE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Push a formatted line to the VM trace buffer, only when RBQN_PRIM_TRACE is set.
+/// The format! runs inside the branch so the hot path pays one bool load.
+#[macro_export]
+macro_rules! vm_trace {
+    ($($arg:tt)*) => {
+        if $crate::vm::prim_trace_enabled() {
+            $crate::vm::vm_trace_push(format!($($arg)*));
+        }
+    };
+}
+
 pub fn vm_trace_push(msg: String) {
     VM_TRACE.with(|t| {
         let mut buf = t.borrow_mut();
@@ -89,6 +103,10 @@ pub fn vm_trace_dump() -> Vec<String> {
     // NOTE: Temporary debugging function - remove when not needed
     VM_TRACE.with(|t| t.borrow().clone())
 }
+
+// NOTE: RBQN_VM_TRACE env-var gate, read once instead of per block execution
+static VM_DEBUG_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("RBQN_VM_TRACE").is_ok());
 
 // NOTE: RBQN_PRIM_TRACE env-var gate — checked once at startup, zero cost when unset
 static PRIM_TRACE_ENABLED: std::sync::LazyLock<bool> =
@@ -139,7 +157,7 @@ pub fn fmt_b_short(b: B) -> String {
     }
     if b.is_fun() {
         let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
-        if let Some(d) = DERIVED_STORE.lock().ok().and_then(|m| m.get(&id).cloned()) {
+        if let Some(d) = crate::derive::try_get_derived(id) {
             return match &d.kind {
                 crate::derive::DerivedKind::NativeFn { prim_idx } => format!("fun(prim={})", prim_idx),
                 crate::derive::DerivedKind::FunBlock => "fun(block)".to_string(),
@@ -155,7 +173,7 @@ pub fn fmt_b_short(b: B) -> String {
     }
     if b.is_md() {
         let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
-        if let Some(d) = DERIVED_STORE.lock().ok().and_then(|m| m.get(&id).cloned()) {
+        if let Some(d) = crate::derive::try_get_derived(id) {
             return match &d.kind {
                 crate::derive::DerivedKind::NativeMd1 { prim_idx } => format!("md1(prim={})", prim_idx),
                 crate::derive::DerivedKind::NativeMd2 { prim_idx } => format!("md2(prim={})", prim_idx),
@@ -237,19 +255,307 @@ pub fn fmt_b_detail(b: B) -> String {
     fmt_b_short(b)
 }
 
-// NOTE: re-export the DERIVED_STORE accessor for fmt_b_short
-use crate::derive::DERIVED_STORE;
 
-pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
-    let bc = &bl.bc;
+/// Maximum nesting of block evaluations before raising "Stack overflow".
+/// Measured on an 8 MB stack: one level costs 1.6-2.5 KB of native stack across
+/// eight recursion shapes (direct 𝕊, ⍟, ¨, ˘, ∘, ⟜, ⌜, ⎊). 20000 levels is at
+/// most ~50 MB, a 10x margin under the 512 MB interpreter thread stack.
+pub const MAX_EVAL_DEPTH: u32 = 20_000;
+
+/// One block evaluation's pooled buffers plus the depth count. Entering takes
+/// both vectors from the thread-local pool and bumps the depth in a single TLS
+/// access; Drop (also on unwinding from a BQN error) returns them in one more.
+struct Frame {
+    stack: Vec<B>,
+    pscs: Vec<ScRef>,
+    /// The thread's TLS block, looked up once by the caller of `eval_bc_in`.
+    t: *const Tls,
+}
+
+impl Frame {
+    #[inline]
+    fn enter(t: &Tls, max_stack: usize, max_psc: usize) -> Frame {
+        let n = t.depth.get() + 1;
+        t.depth.set(n);
+        // SAFETY: single-threaded, and no other code runs while the pool is borrowed.
+        let (mut stack, mut pscs) = unsafe { (*t.frames.get()).pop() }.unwrap_or_default();
+        stack.reserve(max_stack);
+        pscs.reserve(max_psc);
+        let fr = Frame { stack, pscs, t };
+        if n > MAX_EVAL_DEPTH {
+            rbqn_core::error::throw("Stack overflow");
+        }
+        fr
+    }
+}
+
+impl Drop for Frame {
+    #[inline]
+    fn drop(&mut self) {
+        let mut stack = std::mem::take(&mut self.stack);
+        let mut pscs = std::mem::take(&mut self.pscs);
+        // B and ScRef have no destructors: clearing is just a length reset.
+        unsafe {
+            stack.set_len(0);
+            pscs.set_len(0);
+        }
+        // SAFETY: the TLS block outlives every frame on its thread (ManuallyDrop, never torn down).
+        let t = unsafe { &*self.t };
+        t.depth.set(t.depth.get() - 1);
+        // SAFETY: see Frame::enter.
+        let p = unsafe { &mut *t.frames.get() };
+        if p.len() < 1024 && stack.capacity() <= 4096 {
+            p.push((stack, pscs));
+        }
+    }
+}
+
+/// Switch `current_sc` to `next_body` for a header/predicate retry, carrying the
+/// first `arg_count` vars over. When the scope is not shared (no closure,
+/// namespace or pscs entry holds it) it is reset in place; otherwise a fresh
+/// Scope is built so captured scopes keep the failed body's variables.
+fn retry_scope(
+    current_sc: &mut std::rc::Rc<Scope>,
+    pscs: &mut Vec<ScRef>,
+    next_body: &Arc<Body>,
+    arg_count: usize,
+) {
+    let mut args = [B::SENTINEL; 8];
+    {
+        let vars = current_sc.vars.borrow();
+        for i in 0..arg_count.min(8) {
+            args[i] = vars.get(i).copied().unwrap_or(B::SENTINEL);
+        }
+    }
+    let args = &args[..arg_count.min(8)];
+    let var_am = next_body.var_am.max(args.len() as u16);
+    // pscs holds clones of current_sc; drop them so the uniqueness check is meaningful
+    pscs.clear();
+    if current_sc.psc.is_some() {
+        if let Some(s) = std::rc::Rc::get_mut(current_sc) {
+            if s.ext.is_none() {
+                s.body = next_body.clone();
+                s.var_am = var_am;
+                *s.vars.get_mut() = crate::scope::Vars::new(var_am as usize, args);
+                return;
+            }
+        }
+    }
+    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
+    *current_sc = std::rc::Rc::new(Scope::new(next_body.clone(), Some(parent), var_am, args));
+}
+
+#[cold]
+#[inline(never)]
+fn vm_trace_op(stack: &[B], pc: usize, op: Option<Op>, op_val: u32) {
+    let op_name = op.map(|o| format!("{:?}", o)).unwrap_or_else(|| format!("0x{:02x}", op_val));
+    let stack_info: String = stack.iter().rev().take(4).enumerate().map(|(i, b)| {
+        if b.is_arr() {
+            let ia = get_arr(*b).map_or(-1i64, |a| a.ia() as i64);
+            format!("s[{}]=arr(ia={})", i, ia)
+        } else if b.is_f64() {
+            format!("s[{}]={}", i, b.o2f())
+        } else if b.is_fun() {
+            format!("s[{}]=fun", i)
+        } else {
+            format!("s[{}]={:#x}", i, b.0)
+        }
+    }).collect::<Vec<_>>().join(" ");
+    vm_trace_push(format!("OP pc={} {} stk=[{}]", pc, op_name, stack_info));
+}
+
+// NOTE: Debug trace for FN2C with empty array arguments
+#[cold]
+#[inline(never)]
+fn vm_trace_fn2c(w: B, f: B, x: B, pc: usize) {
+    if x.is_arr()
+        && let Some(xa) = get_arr(x)
+            && xa.ia() == 0 && w.is_f64() {
+                let f_tag = (f.0 >> 48) as u16;
+                vm_trace_push(format!(
+                    "FN2C w={} f_tag={:#06x} x=EMPTY_ARR shape={:?} bc_pc={}",
+                    w.o2f(), f_tag, xa.shape, pc
+                ));
+                if f.is_fun() {
+                    let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
+                    let d = crate::derive::get_derived(id);
+                    vm_trace_push(format!("  f_kind={:?}", d.kind));
+                }
+            }
+}
+
+#[cold]
+#[inline(never)]
+fn vm_trace_varo(val: B, d: u32, p: u32) {
+    if val.is_arr()
+        && let Some(a) = get_arr(val)
+            && a.ia() == 0 {
+                vm_trace_push(format!("  VARO d={} p={} → EMPTY_ARR shape={:?}", d, p, a.shape));
+            }
+}
+
+#[cold]
+#[inline(never)]
+fn pop_underflow() -> ! {
+    rbqn_core::error::throw("VM: stack underflow")
+}
+
+#[cold]
+#[inline(never)]
+fn bad_opcode(op_val: u32) -> ! {
+    rbqn_core::error::throw(format!("VM: unhandled opcode 0x{:02x}", op_val))
+}
+
+// NOTE: BQN predicates require a boolean (0 or 1), not arbitrary numbers
+#[cold]
+#[inline(never)]
+fn pred_not_bool() -> ! {
+    rbqn_core::error::throw("Expected boolean")
+}
+
+/// Pop `sz` values into list order and build the array for LSTO/LSTM (mode 0),
+/// ARMO (1: merge, like `>`) or ARMM (2: merge-destructuring target).
+#[inline(never)]
+fn build_list(stack: &mut Vec<B>, sz: usize, mode: u8) -> B {
+    if mode == 0 && sz == 0 {
+        return tag_arr(BqnArr::empty_harr());
+    }
+    let mut elems = vec![B::SENTINEL; sz];
+    for i in 0..sz {
+        elems[sz - i - 1] = stack.pop().unwrap_or_else(|| pop_underflow());
+    }
+    match mode {
+        0 => b_vec_to_arr(elems),
+        1 => bqn_merge(elems),
+        _ => rbqn_core::tag_arr_merge(BqnArr::from_b_vec(elems)),
+    }
+}
+
+#[inline(never)]
+fn dfnd(kind: u8, bl: &Block, bl_idx: usize, pscs: &[ScRef], current_sc: &std::rc::Rc<Scope>) -> B {
+    if bl_idx < bl.blocks.len() {
+        let child_bl = bl.blocks[bl_idx].clone();
+        let psc = if !pscs.is_empty() { pscs[0].to_rc() } else { current_sc.clone() };
+        match kind {
+            0 => eval_fun_block(child_bl, psc),
+            1 => m_md1_block(child_bl, psc),
+            _ => m_md2_block(child_bl, psc),
+        }
+    } else {
+        rbqn_core::error::throw(format!("DFND{}: block index out of bounds", kind))
+    }
+}
+
+/// EXTO (mode 0, checks for undefined) / EXTU (mode 1, reads then clears).
+#[inline(never)]
+fn ext_get(pscs: &[ScRef], d: u32, p: u32, mode: u8) -> B {
+    if let Some(ref ext) = pscs[d as usize].ext {
+        let val = ext.vars.borrow_mut()[p as usize];
+        if mode == 0 {
+            if v_check_bad_read(val) {
+                rbqn_core::error::throw("Attempting to read ext variable which is not yet defined");
+            }
+        } else {
+            ext.vars.borrow_mut()[p as usize] = B::OPT_OUT;
+        }
+        val
+    } else if mode == 0 {
+        rbqn_core::error::throw("EXTO: no scope extension")
+    } else {
+        rbqn_core::error::throw("EXTU: no scope extension")
+    }
+}
+
+#[inline(never)]
+fn pick_idx(current_sc: &std::rc::Rc<Scope>, mono_idx: usize, dy_idx: usize) -> usize {
+    let vars = current_sc.vars.borrow_mut();
+    let is_dyadic = vars.get(2).is_some_and(|b| !b.q_n());
+    if is_dyadic { dy_idx } else { mono_idx }
+}
+
+/// Header/predicate retry: switch to body `next_idx`, return its bytecode offset.
+#[inline(never)]
+fn retry_to(
+    bl: &Block,
+    next_idx: usize,
+    no_match: &str,
+    current_sc: &mut std::rc::Rc<Scope>,
+    pscs: &mut Vec<ScRef>,
+    stack: &mut Vec<B>,
+) -> usize {
+    let next_body = bl.bodies[next_idx].clone();
+    if !next_body.exists {
+        rbqn_core::error::throw(no_match);
+    }
+    // NOTE: Preserve original args when retrying; needed for modifier blocks
+    // where 𝕣 (var[0]) and 𝔽 (operand) must be available in the next body.
+    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
+    retry_scope(current_sc, pscs, &next_body, arg_count);
+    build_pscs(pscs, current_sc, next_body.max_psc);
+    stack.clear();
+    next_body.bc_offset
+}
+
+#[inline(never)]
+fn fld_get(ns_val: B, gid: i32, mode: u8) -> B {
+    if !ns_val.is_nsp() {
+        rbqn_core::error::throw("Trying to read a field from non-namespace");
+    }
+    let ns = get_ns(ns_val);
+    match ns.get_by_gid(gid) {
+        Some(v) => v,
+        None => match mode {
+            0 => rbqn_core::error::throw(format!("Namespace does not have field '{}'", namespace::gid2str(gid))),
+            1 => B::SENTINEL, // optional: Nothing if not found
+            _ => rbqn_core::error::throw(format!(
+                "Namespace does not have field '{}' for modification",
+                namespace::gid2str(gid)
+            )),
+        },
+    }
+}
+
+/// ALIAS_TAG encoding: bits 47:32 = GID, bits 31:16 = depth, bits 15:0 = pos
+#[inline(never)]
+fn alias_make(o: B, gid: i32) -> B {
+    let depth16 = o.v_depth() as u16;
+    let pos16 = (o.v_pos() & 0xFFFF) as u16;
+    let alias_payload = ((gid as u64 & 0xFFFF) << 32) | ((depth16 as u64) << 16) | (pos16 as u64);
+    rbqn_core::tagu64(alias_payload, rbqn_core::ALIAS_TAG)
+}
+
+#[inline(never)]
+fn ret_d(body: &Body, stack: &mut Vec<B>, pscs: &[ScRef], current_sc: &std::rc::Rc<Scope>) -> B {
+    if let Some(ref ns_desc) = body.ns_desc {
+        if !stack.is_empty() {
+            stack.pop();
+        }
+        return store_ns(NS {
+            desc: ns_desc.clone(),
+            sc: if !pscs.is_empty() { pscs[0].to_rc() } else { current_sc.clone() },
+        });
+    }
+    stack.pop().unwrap_or(B::SENTINEL)
+}
+
+#[inline(never)]
+pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
+    TLS.with(|t| eval_bc_in(t, body, sc, bl))
+}
+
+#[inline]
+fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
+    let mut frame = Frame::enter(t, body.max_stack as usize, body.max_psc as usize);
+    let mut stack = &mut frame.stack;
+    let mut pscs = &mut frame.pscs;
+    let bc: &[i32] = &bl.bc;
     let mut pc = body.bc_offset;
-    let mut stack: Vec<B> = Vec::with_capacity(body.max_stack as usize);
-    let mut current_sc = sc.clone();
-    let mut pscs = build_pscs(&current_sc, body.max_psc);
+    let mut current_sc = sc;
+    build_pscs(pscs, &current_sc, body.max_psc);
 
     macro_rules! pop {
         () => {
-            stack.pop().unwrap_or_else(|| rbqn_core::error::throw("VM: stack underflow"))
+            stack.pop().unwrap_or_else(|| pop_underflow())
         };
     }
     macro_rules! push {
@@ -279,32 +585,19 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
     }
 
     // NOTE: Debug flag for targeted tracing during runtime1 bootstrap
-    let vm_debug = std::env::var("RBQN_VM_TRACE").is_ok();
+    let vm_debug = *VM_DEBUG_ENABLED;
 
     loop {
-        if pc >= bc.len() {
+        let Some(&op_raw) = bc.get(pc) else {
             rbqn_core::error::throw("VM: bytecode overrun");
-        }
-        let op_val = bc[pc] as u32;
+        };
         pc += 1;
+        let op_val = op_raw as u32;
 
         let op = Op::from_u32(op_val);
 
         if vm_debug {
-            let op_name = op.map(|o| format!("{:?}", o)).unwrap_or_else(|| format!("0x{:02x}", op_val));
-            let stack_info: String = stack.iter().rev().take(4).enumerate().map(|(i, b)| {
-                if b.is_arr() {
-                    let ia = get_arr(*b).map_or(-1i64, |a| a.ia() as i64);
-                    format!("s[{}]=arr(ia={})", i, ia)
-                } else if b.is_f64() {
-                    format!("s[{}]={}", i, b.o2f())
-                } else if b.is_fun() {
-                    format!("s[{}]=fun", i)
-                } else {
-                    format!("s[{}]={:#x}", i, b.0)
-                }
-            }).collect::<Vec<_>>().join(" ");
-            vm_trace_push(format!("OP pc={} {} stk=[{}]", pc-1, op_name, stack_info));
+            vm_trace_op(&stack, pc - 1, op, op_val);
         }
 
         match op {
@@ -343,21 +636,9 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let w = pop!();
                 let f = pop!();
                 let x = pop!();
-                // NOTE: Debug trace for FN2C with empty array arguments
-                if vm_debug && x.is_arr()
-                    && let Some(xa) = get_arr(x)
-                        && xa.ia() == 0 && w.is_f64() {
-                            let f_tag = (f.0 >> 48) as u16;
-                            vm_trace_push(format!(
-                                "FN2C w={} f_tag={:#06x} x=EMPTY_ARR shape={:?} bc_pc={}",
-                                w.o2f(), f_tag, xa.shape, pc
-                            ));
-                            if f.is_fun() {
-                                let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
-                                let d = crate::derive::get_derived(id);
-                                vm_trace_push(format!("  f_kind={:?}", d.kind));
-                            }
-                        }
+                if vm_debug {
+                    vm_trace_fn2c(w, f, x, pc);
+                }
                 push!(c2(f, w, x));
             }
             Some(Op::FN2O) => {
@@ -413,72 +694,32 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             // --- List/array construction ---
             Some(Op::LSTO) | Some(Op::LSTM) => {
                 let sz = read_u32!() as usize;
-                if sz == 0 {
-                    push!(tag_arr(BqnArr::empty_harr()));
-                } else {
-                    let mut elems = vec![B::SENTINEL; sz];
-                    for i in 0..sz {
-                        elems[sz - i - 1] = pop!();
-                    }
-                    // NOTE: try to produce typed array (numeric/char) when homogeneous
-                    push!(b_vec_to_arr(elems));
-                }
+                let l = build_list(&mut stack, sz, 0);
+                push!(l);
             }
             Some(Op::ARMO) => {
                 let sz = read_u32!() as usize;
-                let mut elems = vec![B::SENTINEL; sz];
-                for i in 0..sz {
-                    elems[sz - i - 1] = pop!();
-                }
-                // FIX: ARMO is "array merge observable" — equivalent to > on the
-                // collected list. It merges elements (all same-shape arrays) into
-                // a single array with one extra leading dimension.
-                push!(bqn_merge(elems));
+                let l = build_list(&mut stack, sz, 1);
+                push!(l);
             }
             Some(Op::ARMM) => {
                 let sz = read_u32!() as usize;
-                let mut elems = vec![B::SENTINEL; sz];
-                for i in 0..sz {
-                    elems[sz - i - 1] = pop!();
-                }
-                // NOTE: ARMM uses tag_arr_merge to mark as merge-destructuring target.
-                // v_set checks this to split by major cells instead of flat elements.
-                push!(rbqn_core::tag_arr_merge(BqnArr::from_b_vec(elems)));
+                let l = build_list(&mut stack, sz, 2);
+                push!(l);
             }
 
             // --- Block definitions ---
             Some(Op::DFND0) => {
-                let bl_data = read_u64!();
-                let bl_idx = bl_data as usize;
-                if bl_idx < bl.blocks.len() {
-                    let child_bl = bl.blocks[bl_idx].clone();
-                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() };
-                    push!(eval_fun_block(child_bl, psc));
-                } else {
-                    rbqn_core::error::throw("DFND0: block index out of bounds");
-                }
+                let bl_idx = read_u64!() as usize;
+                push!(dfnd(0, bl, bl_idx, &pscs, &current_sc));
             }
             Some(Op::DFND1) => {
-                let bl_data = read_u64!();
-                let bl_idx = bl_data as usize;
-                if bl_idx < bl.blocks.len() {
-                    let child_bl = bl.blocks[bl_idx].clone();
-                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() };
-                    push!(m_md1_block(child_bl, psc));
-                } else {
-                    rbqn_core::error::throw("DFND1: block index out of bounds");
-                }
+                let bl_idx = read_u64!() as usize;
+                push!(dfnd(1, bl, bl_idx, &pscs, &current_sc));
             }
             Some(Op::DFND2) => {
-                let bl_data = read_u64!();
-                let bl_idx = bl_data as usize;
-                if bl_idx < bl.blocks.len() {
-                    let child_bl = bl.blocks[bl_idx].clone();
-                    let psc = if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() };
-                    push!(m_md2_block(child_bl, psc));
-                } else {
-                    rbqn_core::error::throw("DFND2: block index out of bounds");
-                }
+                let bl_idx = read_u64!() as usize;
+                push!(dfnd(2, bl, bl_idx, &pscs, &current_sc));
             }
 
             // --- Modifier application ---
@@ -534,11 +775,9 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let d = read_u32!();
                 let p = read_u32!();
                 let val = pscs[d as usize].var_get(p as usize);
-                if vm_debug && val.is_arr()
-                    && let Some(a) = get_arr(val)
-                        && a.ia() == 0 {
-                            vm_trace_push(format!("  VARO d={} p={} → EMPTY_ARR shape={:?}", d, p, a.shape));
-                        }
+                if vm_debug {
+                    vm_trace_varo(val, d, p);
+                }
                 if v_check_bad_read(val) {
                     rbqn_core::error::throw("Attempting to read variable which is not yet defined");
                 }
@@ -559,15 +798,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::EXTO) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                if let Some(ref ext) = pscs[d as usize].ext {
-                    let val = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize];
-                    if v_check_bad_read(val) {
-                        rbqn_core::error::throw("Attempting to read ext variable which is not yet defined");
-                    }
-                    push!(val);
-                } else {
-                    rbqn_core::error::throw("EXTO: no scope extension");
-                }
+                push!(ext_get(&pscs, d, p, 0));
             }
             Some(Op::EXTM) => {
                 let d = read_u32!();
@@ -577,15 +808,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::EXTU) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                if let Some(ref ext) = pscs[d as usize].ext {
-                    let val = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize];
-                    push!(val);
-                } else {
-                    rbqn_core::error::throw("EXTU: no scope extension");
-                }
-                if let Some(ref ext) = pscs[d as usize].ext {
-                    ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p as usize] = B::OPT_OUT;
-                }
+                push!(ext_get(&pscs, d, p, 1));
             }
 
             // --- Dynamic variables ---
@@ -710,26 +933,7 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let x = pop!();
                 let next_body_idx = read_u64!() as usize;
                 if !v_seth(&pscs, s, x) {
-                    let next_body = bl.bodies[next_body_idx].clone();
-                    if !next_body.exists {
-                        rbqn_core::error::throw("No matching header");
-                    }
-                    // NOTE: Preserve original args when retrying — needed for modifier blocks
-                    // where 𝕣 (var[0]) and 𝔽 (operand) must be available in the next body.
-                    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
-                    let args: Vec<B> = if arg_count > 0 {
-                        let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
-                        (0..arg_count).map(|i| vars.get(i).copied().unwrap_or(B::SENTINEL)).collect()
-                    } else {
-                        vec![]
-                    };
-                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
-                    let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
-                    current_sc = new_sc;
-                    pscs = build_pscs(&current_sc, next_body.max_psc);
-                    pc = next_body.bc_offset;
-                    stack.clear();
+                    pc = retry_to(bl, next_body_idx, "No matching header", &mut current_sc, &mut pscs, &mut stack);
                     continue;
                 }
             }
@@ -739,26 +943,8 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
                 if !v_seth(&pscs, s, x) {
-                    let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
-                    let is_dyadic = vars.get(2).is_some_and(|b| !b.q_n());
-                    let next_idx = if is_dyadic { dy_idx } else { mono_idx };
-                    let next_body = bl.bodies[next_idx].clone();
-                    if !next_body.exists {
-                        rbqn_core::error::throw("No matching header");
-                    }
-                    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
-                    let args: Vec<B> = (0..arg_count).map(|i| {
-                        vars.get(i).copied().unwrap_or(B::SENTINEL)
-                    }).collect();
-                    drop(vars);
-                    // Iterative retry: reset VM state for the new body
-                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
-                    let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
-                    current_sc = new_sc;
-                    pscs = build_pscs(&current_sc, next_body.max_psc);
-                    pc = next_body.bc_offset;
-                    stack.clear();
+                    let next_idx = pick_idx(&current_sc, mono_idx, dy_idx);
+                    pc = retry_to(bl, next_idx, "No matching header", &mut current_sc, &mut pscs, &mut stack);
                     continue;
                 }
             }
@@ -767,33 +953,14 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::PRED1) => {
                 let x = pop!();
                 let next_body_idx = read_u64!() as usize;
-                // NOTE: BQN predicates require a boolean (0 or 1), not arbitrary numbers
                 if x.is_f64() {
                     let v = x.o2f();
                     if v != 0.0 && v != 1.0 {
-                        rbqn_core::error::throw("Expected boolean");
+                        pred_not_bool();
                     }
                 }
                 if !x.o2b() {
-                    let next_body = bl.bodies[next_body_idx].clone();
-                    if !next_body.exists {
-                        rbqn_core::error::throw("No matching predicate");
-                    }
-                    // Iterative retry: preserve original args for modifier blocks
-                    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
-                    let args: Vec<B> = if arg_count > 0 {
-                        let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
-                        (0..arg_count).map(|i| vars.get(i).copied().unwrap_or(B::SENTINEL)).collect()
-                    } else {
-                        vec![]
-                    };
-                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
-                    let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
-                    current_sc = new_sc;
-                    pscs = build_pscs(&current_sc, next_body.max_psc);
-                    pc = next_body.bc_offset;
-                    stack.clear();
+                    pc = retry_to(bl, next_body_idx, "No matching predicate", &mut current_sc, &mut pscs, &mut stack);
                     continue;
                 }
             }
@@ -801,34 +968,15 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
                 let x = pop!();
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
-                // NOTE: BQN predicates require a boolean (0 or 1), not arbitrary numbers
                 if x.is_f64() {
                     let v = x.o2f();
                     if v != 0.0 && v != 1.0 {
-                        rbqn_core::error::throw("Expected boolean");
+                        pred_not_bool();
                     }
                 }
                 if !x.o2b() {
-                    let vars = current_sc.vars.lock().unwrap_or_else(|e| e.into_inner());
-                    let is_dyadic = vars.get(2).is_some_and(|b| !b.q_n());
-                    let next_idx = if is_dyadic { dy_idx } else { mono_idx };
-                    let next_body = bl.bodies[next_idx].clone();
-                    if !next_body.exists {
-                        rbqn_core::error::throw("No matching predicate");
-                    }
-                    let arg_count = crate::block::arg_count(bl.ty, bl.imm) as usize;
-                    let args: Vec<B> = (0..arg_count).map(|i| {
-                        vars.get(i).copied().unwrap_or(B::SENTINEL)
-                    }).collect();
-                    drop(vars);
-                    // Iterative retry
-                    let parent = current_sc.psc.clone().unwrap_or(current_sc.clone());
-                    let var_am = next_body.var_am.max(args.len() as u16);
-                    let new_sc = Arc::new(Scope::new(next_body.clone(), Some(parent), var_am, &args));
-                    current_sc = new_sc;
-                    pscs = build_pscs(&current_sc, next_body.max_psc);
-                    pc = next_body.bc_offset;
-                    stack.clear();
+                    let next_idx = pick_idx(&current_sc, mono_idx, dy_idx);
+                    pc = retry_to(bl, next_idx, "No matching predicate", &mut current_sc, &mut pscs, &mut stack);
                     continue;
                 }
             }
@@ -837,58 +985,23 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
             Some(Op::FLDG) => {
                 let ns_val = pop!();
                 let gid = read_u32!() as i32;
-                if !ns_val.is_nsp() {
-                    rbqn_core::error::throw("Trying to read a field from non-namespace");
-                }
-                let ns = get_ns(ns_val);
-                match ns.get_by_gid(gid) {
-                    Some(v) => push!(v),
-                    None => rbqn_core::error::throw(
-                        format!("Namespace does not have field '{}'", namespace::gid2str(gid))
-                    ),
-                }
+                push!(fld_get(ns_val, gid, 0));
             }
             Some(Op::FLDO) => {
                 let ns_val = pop!();
                 let gid = read_u32!() as i32;
-                if !ns_val.is_nsp() {
-                    rbqn_core::error::throw("Trying to read a field from non-namespace");
-                }
-                let ns = get_ns(ns_val);
-                match ns.get_by_gid(gid) {
-                    Some(v) => push!(v),
-                    None => push!(B::SENTINEL), // optional: Nothing if not found
-                }
+                push!(fld_get(ns_val, gid, 1));
             }
             Some(Op::FLDM) => {
                 let ns_val = pop!();
                 let gid = read_u32!() as i32;
-                if !ns_val.is_nsp() {
-                    rbqn_core::error::throw("Trying to read a field from non-namespace");
-                }
-                let ns = get_ns(ns_val);
-                match ns.get_by_gid(gid) {
-                    Some(v) => push!(v),
-                    None => rbqn_core::error::throw(
-                        format!("Namespace does not have field '{}' for modification", namespace::gid2str(gid))
-                    ),
-                }
+                push!(fld_get(ns_val, gid, 2));
             }
 
             Some(Op::ALIM) => {
-                // Build a field-alias value that stores both the variable reference
-                // (depth+pos from the VARM result) and the GID for namespace extraction.
-                // ALIAS_TAG encoding: bits 47:32 = GID, bits 31:16 = depth, bits 15:0 = pos
                 let o = pop!();
                 let gid = read_u32!() as i32;
-                // o is a VAR-tagged value: bits 47:32 = depth, bits 31:0 = pos
-                // For alias, depth fits in 16 bits (typically 0-15); pos also small.
-                let depth16 = o.v_depth() as u16;
-                let pos16 = (o.v_pos() & 0xFFFF) as u16;
-                let alias_payload = ((gid as u64 & 0xFFFF) << 32)
-                    | ((depth16 as u64) << 16)
-                    | (pos16 as u64);
-                push!(rbqn_core::tagu64(alias_payload, rbqn_core::ALIAS_TAG));
+                push!(alias_make(o, gid));
             }
 
             Some(Op::CHKV) => {
@@ -918,29 +1031,16 @@ pub fn eval_bc(body: &Body, sc: Arc<Scope>, bl: &Block) -> B {
 
             // --- Return opcodes ---
             Some(Op::RETD) => {
-                // Build namespace from scope exports and return it
-                if let Some(ref ns_desc) = body.ns_desc {
-                    // Pop the unused stack value if present
-                    if !stack.is_empty() {
-                        pop!();
-                    }
-                    return store_ns(NS {
-                        desc: ns_desc.clone(),
-                        sc: if !pscs.is_empty() { pscs[0].clone() } else { current_sc.clone() },
-                    });
-                }
-                // No namespace descriptor: just return top of stack or SENTINEL
-                if stack.is_empty() {
-                    return B::SENTINEL;
-                }
-                return pop!();
+                return ret_d(body, &mut stack, &pscs, &current_sc);
             }
             Some(Op::RETN) => {
-                return pop!();
+                let r = pop!();
+                Scope::recycle_in(t, current_sc);
+                return r;
             }
 
             _ => {
-                rbqn_core::error::throw(format!("VM: unhandled opcode 0x{:02x}", op_val));
+                bad_opcode(op_val);
             }
         }
     }
@@ -986,7 +1086,7 @@ fn bqn_merge(elems: Vec<B>) -> B {
     }
     // If all elements are arrays, merge them
     if elems.iter().all(|b| b.is_arr()) {
-        let arrs: Vec<BqnArr> = elems.iter().filter_map(|b| get_arr(*b)).collect();
+        let arrs: Vec<std::sync::Arc<BqnArr>> = elems.iter().filter_map(|b| get_arr(*b)).collect();
         if arrs.len() == elems.len() {
             let inner_shape = &arrs[0].shape;
             let inner_ia: usize = inner_shape.iter().product();
@@ -1016,7 +1116,7 @@ pub fn tag_arr(arr: BqnArr) -> B {
     rbqn_core::tag_arr(arr)
 }
 
-pub fn get_arr(b: B) -> Option<BqnArr> {
+pub fn get_arr(b: B) -> Option<std::sync::Arc<BqnArr>> {
     rbqn_core::get_arr(b)
 }
 
@@ -1028,9 +1128,9 @@ impl Clone for Scope {
             var_am: self.var_am,
             ext: self.ext.as_ref().map(|e| crate::scope::ScopeExt {
                 var_am: e.var_am,
-                vars: std::sync::Mutex::new(e.vars.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+                vars: std::cell::RefCell::new(e.vars.borrow_mut().clone()),
             }),
-            vars: std::sync::Mutex::new(self.vars.lock().unwrap_or_else(|e| e.into_inner()).clone()),
+            vars: std::cell::RefCell::new(self.vars.borrow_mut().clone()),
         }
     }
 }

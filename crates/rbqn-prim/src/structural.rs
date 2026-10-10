@@ -426,10 +426,81 @@ pub fn deshape_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Ok(PrimResult::Array(typed_arr(vec![x], vec![1], None)));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⥊𝕩: 𝕩 must be an array".into()))?;
+    // NOTE: callers hand us a &BqnArr cloned out of the registry (get_arr clones, no Arc),
+    // so there is nothing to unwrap; one typed Vec clone is the floor.
     let ia = arr.ia();
-    let mut out = arr.clone();
-    out.shape = vec![ia];
-    Ok(PrimResult::Array(out))
+    Ok(PrimResult::Array(BqnArr {
+        shape: vec![ia],
+        data: arr.data.clone(),
+        fill: arr.fill,
+    }))
+}
+
+/// Repeat `src` cyclically to exactly `total` elements using whole-slice copies.
+fn repeat_to<T: Copy>(src: &[T], total: usize) -> Vec<T> {
+    let n = src.len();
+    if total == 0 || n == 0 {
+        return Vec::new();
+    }
+    // Doubling: each step copies what is already there, so a short source
+    // (`1e7⥊3‿1‿2`) costs log2(total/n) memcpys instead of total/n slice pushes.
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(&src[..n.min(total)]);
+    while out.len() < total {
+        let take = out.len().min(total - out.len());
+        out.extend_from_within(..take);
+    }
+    out
+}
+
+fn repeat_bits(src: &[u64], n: usize, total: usize) -> Vec<u64> {
+    let mut out = vec![0u64; total.div_ceil(64)];
+    let mut j = 0usize;
+    for i in 0..total {
+        if (src[j / 64] >> (j % 64)) & 1 != 0 {
+            out[i / 64] |= 1u64 << (i % 64);
+        }
+        j += 1;
+        if j == n {
+            j = 0;
+        }
+    }
+    out
+}
+
+/// Fill `total` elements with one atom, directly in the narrowest ArrData that holds it.
+/// Same element type and fill as the old path (vec of f64 then squeeze_num).
+fn fill_atom(x: B, total: usize, shape: Vec<usize>) -> BqnArr {
+    if x.is_c32() {
+        let c = x.0 as u32;
+        let data = if c <= 0xFF {
+            ArrData::C8(vec![c as u8; total])
+        } else if c <= 0xFFFF {
+            ArrData::C16(vec![c as u16; total])
+        } else {
+            ArrData::C32(vec![c; total])
+        };
+        return BqnArr { shape, data, fill: Some(B::m_c32(b' ' as u32)) };
+    }
+    let v = x.o2f();
+    let i = v as i32;
+    let data = if v != i as f64 {
+        ArrData::F64(vec![v; total])
+    } else if i == 0 || i == 1 {
+        let mut words = vec![if i == 1 { u64::MAX } else { 0 }; total.div_ceil(64)];
+        if i == 1 && total % 64 != 0 {
+            // keep padding bits zero, as repeat_bits does
+            *words.last_mut().unwrap() = (1u64 << (total % 64)) - 1;
+        }
+        ArrData::Bit(words)
+    } else if i as i8 as i32 == i {
+        ArrData::I8(vec![i as i8; total])
+    } else if i as i16 as i32 == i {
+        ArrData::I16(vec![i as i16; total])
+    } else {
+        ArrData::I32(vec![i; total])
+    };
+    BqnArr { shape, data, fill: Some(B::m_f64(0.0)) }
 }
 
 // ⥊ dyad: reshape
@@ -452,18 +523,7 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     let new_ia: usize = new_shape.iter().product();
 
     if x.is_atom() {
-        if x.is_c32() {
-            // NOTE: reshape a char atom — fill with the char, not a numeric value
-            let codepoint = x.0 as u32;
-            let vals = vec![codepoint; new_ia];
-            let mut out = BqnArr::new_vec_c32(vals);
-            out.shape = new_shape;
-            return Ok(PrimResult::Array(out));
-        }
-        let vals = vec![x.o2f(); new_ia];
-        let mut out = BqnArr::new_vec_f64(vals);
-        out.shape = new_shape;
-        return Ok(PrimResult::Array(array::squeeze_num(out)));
+        return Ok(PrimResult::Array(fill_atom(x, new_ia, new_shape)));
     }
 
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⥊𝕩: 𝕩 must be an array".into()))?;
@@ -492,11 +552,51 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         arr.fill
     };
 
-    let mut result = Vec::with_capacity(new_ia);
-    for i in 0..new_ia {
-        result.push(arr.get(i % old_ia)?);
-    }
-    Ok(PrimResult::Array(typed_arr(result, new_shape, result_fill)))
+    let num_fill = arr.fill.or(Some(B::m_f64(0.0)));
+    let chr_fill = arr.fill.or(Some(B::m_c32(b' ' as u32)));
+    // Only the first m source elements can appear in the result.
+    let m = old_ia.min(new_ia);
+    // NOTE: numeric sources are re-squeezed on the first m elements (the old path squeezed
+    // the whole result; the element set is identical so the narrowed type is identical).
+    // Downstream fast paths key on the squeezed type, so keeping the source type is a 40x regression.
+    let narrowed = |f: Vec<f64>| {
+        array::squeeze_num(BqnArr { shape: vec![m], data: ArrData::F64(f), fill: None }).data
+    };
+    let src = match &arr.data {
+        ArrData::I8(v) => narrowed(v[..m].iter().map(|&x| x as f64).collect()),
+        ArrData::I16(v) => narrowed(v[..m].iter().map(|&x| x as f64).collect()),
+        ArrData::I32(v) => narrowed(v[..m].iter().map(|&x| x as f64).collect()),
+        ArrData::F64(v) => narrowed(v[..m].to_vec()),
+        ArrData::Bit(v) => ArrData::Bit(v[..m.div_ceil(64)].to_vec()),
+        ArrData::C8(v) => ArrData::C8(v[..m].to_vec()),
+        ArrData::C16(v) => ArrData::C16(v[..m].to_vec()),
+        ArrData::C32(v) => ArrData::C32(v[..m].to_vec()),
+        ArrData::Boxed(v) if m == 1 && !v[0].is_f64() && !v[0].is_c32() => {
+            // Single non-number/char element (e.g. <"ab"): plain fill, no per-element retyping.
+            return Ok(PrimResult::Array(BqnArr {
+                shape: new_shape,
+                data: ArrData::Boxed(vec![v[0]; new_ia]),
+                fill: result_fill,
+            }));
+        }
+        ArrData::Boxed(v) => {
+            // Boxed keeps the old path's re-typing (all-number / all-char boxed collapse).
+            let result = repeat_to(&v[..m], new_ia);
+            return Ok(PrimResult::Array(typed_arr(result, new_shape, result_fill)));
+        }
+    };
+    let (data, fill) = match &src {
+        ArrData::Bit(v) => (ArrData::Bit(repeat_bits(v.as_slice(), m, new_ia)), num_fill),
+        ArrData::I8(v) => (ArrData::I8(repeat_to(v.as_slice(), new_ia)), num_fill),
+        ArrData::I16(v) => (ArrData::I16(repeat_to(v.as_slice(), new_ia)), num_fill),
+        ArrData::I32(v) => (ArrData::I32(repeat_to(v.as_slice(), new_ia)), num_fill),
+        ArrData::F64(v) => (ArrData::F64(repeat_to(v.as_slice(), new_ia)), num_fill),
+        ArrData::C8(v) => (ArrData::C8(repeat_to(v.as_slice(), new_ia)), chr_fill),
+        ArrData::C16(v) => (ArrData::C16(repeat_to(v.as_slice(), new_ia)), chr_fill),
+        ArrData::C32(v) => (ArrData::C32(repeat_to(v.as_slice(), new_ia)), chr_fill),
+        ArrData::Boxed(_) => unreachable!(),
+    };
+    Ok(PrimResult::Array(BqnArr { shape: new_shape, data, fill }))
 }
 
 /// Handle reshape with computed dimension (shape contains ∘, ⌊, ⌽, or ↑).
@@ -640,7 +740,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         let content = arr.get(0)?;
         if content.is_arr() {
             return match get_arr(content) {
-                Some(a) => Ok(PrimResult::Array(a)),
+                Some(a) => Ok(PrimResult::Array((*a).clone())),
                 None => Ok(PrimResult::Scalar(content)),
             };
         }
@@ -858,6 +958,10 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Err(BqnError::Type("∾𝕩: elements of 𝕩 must be arrays".into()));
     }
 
+    if let Some(r) = join_typed_vectors(arr) {
+        return Ok(PrimResult::Array(r));
+    }
+
     // NOTE: BQN ∾ monad on a rank-1 list of arrays: elements may differ by at most 1 in rank.
     // Find the maximum element rank to determine the common trailing shape.
     // Lower-rank elements (rank = max_rank - 1) are treated as having first dim 1.
@@ -953,6 +1057,139 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         arr.fill
     };
     Ok(PrimResult::Array(typed_arr(result, new_shape, result_fill)))
+}
+
+/// Fast path for ∾ on a rank-1 boxed list whose elements are all rank-1 typed
+/// arrays of one kind (all numeric or all character). Widens to the widest
+/// element type, allocates once and copies slices. Returns None to fall back.
+fn join_typed_vectors(arr: &BqnArr) -> Option<BqnArr> {
+    let ArrData::Boxed(elems) = &arr.data else { return None };
+    let mut uniq: Vec<std::sync::Arc<BqnArr>> = Vec::new();
+    let mut seen: IdMap<u32> = IdMap::default();
+    let mut order: Vec<u32> = Vec::with_capacity(elems.len());
+    let mut ukeys: Vec<u64> = Vec::new();
+    let mut ulen: Vec<usize> = Vec::new();
+    // width code: numeric 0=Bit 1=I8 2=I16 3=I32 4=F64; char 1=C8 2=C16 3=C32
+    let mut is_char: Option<bool> = None;
+    let mut width = 0u8;
+    let mut total = 0usize;
+    for &e in elems {
+        // Few distinct elements (typical for ⥊-built lists): linear scan beats hashing.
+        let hit = if ukeys.len() <= 8 {
+            ukeys.iter().position(|&b| b == e.0).map(|p| p as u32)
+        } else {
+            seen.get(&e.0).copied()
+        };
+        if let Some(k) = hit {
+            order.push(k);
+            total += ulen[k as usize];
+            continue;
+        }
+        let a = get_arr(e)?;
+        if a.rank() != 1 {
+            return None;
+        }
+        let (c, w) = match &a.data {
+            ArrData::Bit(_) => (false, 0),
+            ArrData::I8(_) => (false, 1),
+            ArrData::I16(_) => (false, 2),
+            ArrData::I32(_) => (false, 3),
+            ArrData::F64(_) => (false, 4),
+            ArrData::C8(_) => (true, 1),
+            ArrData::C16(_) => (true, 2),
+            ArrData::C32(_) => (true, 3),
+            ArrData::Boxed(_) => return None,
+        };
+        match is_char {
+            None => is_char = Some(c),
+            Some(k) if k != c => return None,
+            _ => {}
+        }
+        width = width.max(w);
+        total += a.ia();
+        let k = uniq.len() as u32;
+        seen.insert(e.0, k);
+        ukeys.push(e.0);
+        ulen.push(a.ia());
+        uniq.push(a);
+        order.push(k);
+    }
+    if total == 0 {
+        return None;
+    }
+    let is_char = is_char?;
+    fn cat<T: Copy>(
+        uniq: &[std::sync::Arc<BqnArr>],
+        order: &[u32],
+        total: usize,
+        f: impl Fn(&BqnArr, &mut Vec<T>),
+    ) -> Vec<T> {
+        // Widen each distinct element once, then copy slices in order.
+        let wide: Vec<Vec<T>> = uniq
+            .iter()
+            .map(|a| {
+                let mut w = Vec::with_capacity(a.ia());
+                f(a, &mut w);
+                w
+            })
+            .collect();
+        let mut out: Vec<T> = Vec::with_capacity(total);
+        for &k in order {
+            out.extend_from_slice(&wide[k as usize]);
+        }
+        debug_assert_eq!(out.len(), total);
+        out
+    }
+    fn bits(a: &BqnArr) -> impl Iterator<Item = u8> + '_ {
+        let v: &[u64] = match &a.data {
+            ArrData::Bit(v) => v,
+            _ => &[],
+        };
+        (0..a.ia()).map(move |i| ((v[i / 64] >> (i % 64)) & 1) as u8)
+    }
+    macro_rules! widen {
+        ($t:ty, $a:expr, $o:expr) => {
+            match &$a.data {
+                ArrData::Bit(_) => $o.extend(bits($a).map(|x| x as $t)),
+                ArrData::I8(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::I16(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::I32(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::F64(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::C8(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::C16(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::C32(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
+                ArrData::Boxed(_) => {}
+            }
+        };
+    }
+    let data = if is_char {
+        match width {
+            1 => ArrData::C8(cat(&uniq, &order, total, |a, o: &mut Vec<u8>| widen!(u8, a, o))),
+            2 => ArrData::C16(cat(&uniq, &order, total, |a, o: &mut Vec<u16>| widen!(u16, a, o))),
+            _ => ArrData::C32(cat(&uniq, &order, total, |a, o: &mut Vec<u32>| widen!(u32, a, o))),
+        }
+    } else {
+        match width {
+            0 => {
+                let mut out = vec![0u64; total.div_ceil(64)];
+                let mut k = 0;
+                for &u in &order {
+                    let a = &*uniq[u as usize];
+                    for b in bits(a) {
+                        out[k / 64] |= (b as u64) << (k % 64);
+                        k += 1;
+                    }
+                }
+                ArrData::Bit(out)
+            }
+            1 => ArrData::I8(cat(&uniq, &order, total, |a, o: &mut Vec<i8>| widen!(i8, a, o))),
+            2 => ArrData::I16(cat(&uniq, &order, total, |a, o: &mut Vec<i16>| widen!(i16, a, o))),
+            3 => ArrData::I32(cat(&uniq, &order, total, |a, o: &mut Vec<i32>| widen!(i32, a, o))),
+            _ => ArrData::F64(cat(&uniq, &order, total, |a, o: &mut Vec<f64>| widen!(f64, a, o))),
+        }
+    };
+    let fill = if is_char { B::m_c32(b' ' as u32) } else { B::m_f64(0.0) };
+    Some(BqnArr { shape: vec![total], data, fill: Some(fill) })
 }
 
 // ∾ dyad: join to
@@ -1553,10 +1790,21 @@ fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
     Ok(PrimResult::Array(typed_arr(current_data, current_shape, fill)))
 }
 
+// NOTE: GPU iota hook, set by the rbqn crate at startup: `↕n` as a lazy
+// device value (never uploaded). None keeps the host path.
+static GPU_IOTA_HOOK: std::sync::OnceLock<fn(usize) -> Option<B>> = std::sync::OnceLock::new();
+
+pub fn register_gpu_iota(f: fn(usize) -> Option<B>) {
+    let _ = GPU_IOTA_HOOK.set(f);
+}
+
 // ↕ monad: range
 pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_f64() {
         let n = x.to_usz()?;
+        if let Some(b) = GPU_IOTA_HOOK.get().and_then(|h| h(n)) {
+            return Ok(PrimResult::Scalar(b));
+        }
         let vals: Vec<i32> = (0..n as i32).collect();
         return Ok(PrimResult::Array(BqnArr::new_vec_i32(vals)));
     }

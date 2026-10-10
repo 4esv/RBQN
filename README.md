@@ -2,7 +2,7 @@
 
 A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language with experimental GPU dispatch.
 
-> **Experimental / Archived.** Built primarily with Claude as a fun experiment. Slower than [CBQN](https://github.com/dzaima/CBQN) and unlikely to receive further updates. Use CBQN for anything serious.
+> **Experimental.** Built primarily with Claude. Passes the full official BQN test suite and runs 2-6x slower than [CBQN](https://github.com/dzaima/CBQN) on most array workloads (see [Performance](#performance)). Use CBQN for anything serious.
 
 ## What works
 
@@ -18,13 +18,30 @@ A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array langu
 
 ## What doesn't
 
-- Slower than CBQN across the board
+- Slower than CBQN: 2-6x on array workloads, up to ~14x on per-element paths like `•Fmt` of large arrays (startup is ~15 ms vs CBQN's ~3 ms)
 - No REPL completion or history
 - `•FFI` is stubbed but non-functional
 - `•file.Open` not implemented
 - Error messages are often unhelpful
 - No namespace support beyond the built-in ones
-- Edge cases in lesser-used primitives: passes most but not all of the BQN test suite
+- Known divergences from CBQN: rank>1 fold returns a value instead of erroring, `⌊`/`⌈` with NaN follow Rust `min`/`max`, large floats print with all digits instead of `1e308`, error message wording differs
+- Deeper recursion than CBQN is allowed (limit 20000 block levels; native recursion on deeply nested arrays is not guarded)
+
+## Performance
+
+Measured with `bench/compare.sh` (hyperfine, mean ms, Apple Silicon). Before/after files are in `bench/`.
+
+| expression | CBQN ms | RBQN ms | ratio |
+|---|---:|---:|---:|
+| `+´↕10000000` | 6.5 | 24.9 | 3.8x |
+| `+´ {𝕩+1}¨ ↕1000000` | 20.0 | 96.8 | 4.8x |
+| `{𝕩<2 ? 𝕩 ; (𝕊 𝕩-1)+𝕊 𝕩-2} 27` | 33.9 | 120.7 | 3.6x |
+| `≠ ⊐ 3000000⥊↕1000` | 5.6 | 32.8 | 5.9x |
+| `+´⥊ (↕3000) ×⌜ ↕3000` | 7.4 | 30.3 | 4.1x |
+| ``+´ +` ↕5000000`` | 13.5 | 29.0 | 2.1x |
+| `≠ •Fmt ↕1000000` | 223.5 | 3087.3 | 13.8x |
+
+Before the October 2026 performance work these rows were 10-200x slower than CBQN (`bench/baseline.md`). The remaining gap is mostly per-call scope allocation and boxing in `¨`; see the git log for `perf(...)` commits.
 
 ## Usage
 

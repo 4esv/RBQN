@@ -2,18 +2,19 @@ use std::sync::Arc;
 use wgpu;
 
 use crate::buffer::{ElementKind, GpuBuffer};
-use crate::dispatch::{WORKGROUP_SIZE, workgroup_count};
+use crate::dispatch::{WORKGROUP_SIZE, grid_for};
 use crate::pipeline::{PipelineCache, PipelineKey};
 
 const SHADER_F32: &str = include_str!("../shaders/arith_f32.wgsl");
-const SHADER_I32: &str = include_str!("../shaders/arith_i32.wgsl");
+pub(crate) const SHADER_I32: &str = include_str!("../shaders/arith_i32.wgsl");
 const SHADER_SCALAR_F32: &str = include_str!("../shaders/arith_scalar_f32.wgsl");
-const SHADER_SCALAR_I32: &str = include_str!("../shaders/arith_scalar_i32.wgsl");
+pub(crate) const SHADER_SCALAR_I32: &str = include_str!("../shaders/arith_scalar_i32.wgsl");
 
 fn shader_for(elem: ElementKind) -> (&'static str, &'static str) {
     match elem {
         ElementKind::F32 => ("arith_f32", SHADER_F32),
         ElementKind::I32 | ElementKind::U32 => ("arith_i32", SHADER_I32),
+        ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
     }
 }
 
@@ -21,6 +22,7 @@ fn scalar_shader_for(elem: ElementKind) -> (&'static str, &'static str) {
     match elem {
         ElementKind::F32 => ("arith_scalar_f32", SHADER_SCALAR_F32),
         ElementKind::I32 | ElementKind::U32 => ("arith_scalar_i32", SHADER_SCALAR_I32),
+        ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
     }
 }
 
@@ -54,9 +56,10 @@ pub fn arith_binary(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(workgroup_count(out.len(), WORKGROUP_SIZE), 1, 1);
+        let (gx, gy) = grid_for(out.len(), WORKGROUP_SIZE);
+        pass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
     }
-    queue.submit(std::iter::once(encoder.finish()));
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 }
 
 pub fn arith_scalar(
@@ -73,6 +76,7 @@ pub fn arith_scalar(
     let entry = match elem {
         ElementKind::F32 => format!("scalar_{op}_f32"),
         ElementKind::I32 | ElementKind::U32 => format!("scalar_{op}_i32"),
+        ElementKind::I64 => unreachable!("I64 buffers use the *_i64 kernels"),
     };
     let key = PipelineKey::raw(shader_id, &entry);
     let pipeline = cache.get_or_create(&key, source);
@@ -107,7 +111,51 @@ pub fn arith_scalar(
         let mut pass = encoder.begin_compute_pass(&Default::default());
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        pass.dispatch_workgroups(workgroup_count(out.len(), WORKGROUP_SIZE), 1, 1);
+        let (gx, gy) = grid_for(out.len(), WORKGROUP_SIZE);
+        pass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
     }
-    queue.submit(std::iter::once(encoder.finish()));
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
+}
+
+/// `a op s` on I32 data with an exact i32 scalar. Ops: add sub mul min max,
+/// and rsub (`s - a`). Wraps on overflow; callers bound-check first.
+pub fn arith_scalar_i32(
+    device: &Arc<wgpu::Device>,
+    queue: &wgpu::Queue,
+    cache: &mut PipelineCache,
+    op: &str,
+    a: &GpuBuffer,
+    scalar: i32,
+    out: &GpuBuffer,
+) {
+    assert_eq!(a.element_type(), ElementKind::I32, "arith_scalar_i32: input must be I32");
+    let entry = format!("scalar_{op}_i32");
+    let key = PipelineKey::raw("arith_scalar_i32", &entry);
+    let pipeline = cache.get_or_create(&key, SHADER_SCALAR_I32);
+    let scalar_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 4,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&scalar_buf, 0, &scalar.to_ne_bytes());
+    let layout = pipeline.get_bind_group_layout(0);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: a.inner().as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: scalar_buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: out.inner().as_entire_binding() },
+        ],
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        let (gx, gy) = grid_for(out.len(), WORKGROUP_SIZE);
+        pass.dispatch_workgroups(gx, gy, 1); crate::stats::dispatch();
+    }
+    queue.submit(std::iter::once(encoder.finish())); crate::stats::submit();
 }

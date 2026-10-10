@@ -20,7 +20,7 @@ pub struct SysRuntime {
 }
 
 // NOTE: B contains a u64 which is Send-safe; all B values are NaN-boxed pointers or scalars.
-// The Arc<Derived> data structure is immutable after creation.
+// The std::rc::Rc<Derived> data structure is immutable after creation.
 unsafe impl Send for SysRuntime {}
 
 /// Set the global runtime state for •BQN (called after bootstrap).
@@ -115,7 +115,7 @@ pub struct Derived {
     pub g: B,
     pub h: B,
     pub bl: Option<Arc<Block>>,
-    pub sc: Option<Arc<Scope>>,
+    pub sc: Option<std::rc::Rc<Scope>>,
 }
 
 static DERIVED_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -126,21 +126,42 @@ fn next_derived_id() -> u64 {
 
 pub fn store_derived(d: Derived) -> u64 {
     let id = next_derived_id();
-    // NOTE: Use unwrap_or_else to recover from poisoned mutex (caused by catch_unwind)
-    DERIVED_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(id, Arc::new(d));
+    let d = std::rc::Rc::new(d);
+    DERIVED_STORE.with(|s| {
+        let mut v = s.borrow_mut();
+        let i = id as usize;
+        if v.len() <= i {
+            v.resize(i + 1, None);
+        }
+        v[i] = Some(d);
+    });
     id
 }
 
-pub fn get_derived(id: u64) -> Arc<Derived> {
-    DERIVED_STORE.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned()
+/// Derived object by id, or None for an unknown id.
+pub fn try_get_derived(id: u64) -> Option<std::rc::Rc<Derived>> {
+    DERIVED_STORE.with(|s| s.borrow().get(id as usize).and_then(|d| d.clone()))
+}
+
+pub fn get_derived(id: u64) -> std::rc::Rc<Derived> {
+    try_get_derived(id)
         .unwrap_or_else(|| rbqn_core::error::throw("Invalid derived object reference"))
 }
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-pub static DERIVED_STORE: std::sync::LazyLock<Mutex<HashMap<u64, Arc<Derived>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+// NOTE: Stores are thread-local: the interpreter runs on one thread (no spawn, no
+// rayon, GPU and FFI calls are synchronous on the caller's thread). Every borrow
+// below is a single insert or get+Arc clone that runs no user code and cannot
+// panic, so catch_unwind (⎊) can never observe a live borrow.
+// ManuallyDrop: values are never freed today, so skip a teardown walk at exit.
+std::thread_local! {
+    // NOTE: indexed by the sequential id from next_derived_id (never freed, never reused);
+    // slots this thread did not allocate stay None.
+    static DERIVED_STORE: std::mem::ManuallyDrop<std::cell::RefCell<Vec<Option<std::rc::Rc<Derived>>>>> =
+        const { std::mem::ManuallyDrop::new(std::cell::RefCell::new(Vec::new())) };
+}
 
 // Global inverse lookup functions, set by setInv callback during bootstrap.
 // INV_REG_FN: called as c1(inv_reg_fn, func) to get the regular inverse of func
@@ -432,7 +453,7 @@ pub fn m_md2_partial_r(m2: B, g: B) -> B {
     tagu64(id << 3, MD1_TAG)
 }
 
-pub fn m_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_fun_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::FunBlock,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -443,7 +464,7 @@ pub fn m_fun_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
 
 /// Create an inverse-block wrapper. When called (c1 or c2), executes the block's
 /// inv_m_body (monadic) or inv_w_body/inv_x_body (dyadic) header body.
-pub fn m_inv_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_inv_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::InvBlock,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -455,7 +476,7 @@ pub fn m_inv_block(bl: Arc<Block>, psc: Arc<Scope>) -> B {
 /// Create an inverse 1-modifier-block wrapper.
 /// bl = the modifier block (with inv_m_body), f = operand function.
 /// When called, executes bl.inv_m_body with [self, x, w?, modifier, operand] args.
-pub fn m_inv_md1_block(bl: Arc<Block>, psc: Arc<Scope>, operand: B) -> B {
+pub fn m_inv_md1_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>, operand: B) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::InvMd1Block,
         f: operand, g: B::SENTINEL, h: B::SENTINEL,
@@ -466,7 +487,7 @@ pub fn m_inv_md1_block(bl: Arc<Block>, psc: Arc<Scope>, operand: B) -> B {
 
 /// Create an inverse 2-modifier-block wrapper.
 /// bl = the modifier block (with inv_m_body), f = left operand, h = right operand.
-pub fn m_inv_md2_block(bl: Arc<Block>, psc: Arc<Scope>, f_operand: B, g_operand: B) -> B {
+pub fn m_inv_md2_block(bl: Arc<Block>, psc: std::rc::Rc<Scope>, f_operand: B, g_operand: B) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::InvMd2Block,
         f: f_operand, g: B::SENTINEL, h: g_operand,
@@ -475,7 +496,7 @@ pub fn m_inv_md2_block(bl: Arc<Block>, psc: Arc<Scope>, f_operand: B, g_operand:
     tagu64(id << 3, FUN_TAG)
 }
 
-pub fn m_md1_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_md1_block_val(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::Md1Block,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -484,7 +505,7 @@ pub fn m_md1_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     tagu64(id << 3, MD1_TAG)
 }
 
-pub fn m_md2_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
+pub fn m_md2_block_val(bl: Arc<Block>, psc: std::rc::Rc<Scope>) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::Md2Block,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -493,12 +514,55 @@ pub fn m_md2_block_val(bl: Arc<Block>, psc: Arc<Scope>) -> B {
     tagu64(id << 3, MD2_TAG)
 }
 
+std::thread_local! {
+    // PERF: derived id -> scalar-arithmetic primitive index (0..=17), 0xFF otherwise.
+    // Lets c1/c2 skip the derived-store lookup for number-number primitive calls.
+    static SCALAR_OP: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[inline(always)]
+fn scalar_op_of(f: B) -> u8 {
+    if !f.is_fun() { return 0xFF; }
+    let id = ((f.0 & 0xFFFFFFFFFFFF) >> 3) as usize;
+    SCALAR_OP.with(|t| t.borrow().get(id).copied().unwrap_or(0xFF))
+}
+
+/// Number-number primitive call without the derived store or pervasion machinery.
+#[inline(always)]
+pub fn try_scalar_c2(f: B, w: B, x: B) -> Option<B> {
+    if !(w.is_num() && x.is_num()) { return None; }
+    let op = scalar_op_of(f);
+    if op < 18 {
+        Some(B::m_f64(rbqn_prim::arith_dyad::scalar_dyad(op, w.o2f(), x.o2f())))
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
+pub fn try_scalar_c1(f: B, x: B) -> Option<B> {
+    if !x.is_num() { return None; }
+    let op = scalar_op_of(f);
+    if op < 10 {
+        Some(B::m_f64(rbqn_prim::arith_monad::scalar_monad(op, x.o2f())))
+    } else {
+        None
+    }
+}
+
 pub fn m_native_fn(idx: usize) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::NativeFn { prim_idx: idx },
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
         bl: None, sc: None,
     });
+    if idx < 18 {
+        SCALAR_OP.with(|t| {
+            let mut v = t.borrow_mut();
+            if v.len() <= id as usize { v.resize(id as usize + 1, 0xFF); }
+            v[id as usize] = idx as u8;
+        });
+    }
     tagu64(id << 3, FUN_TAG)
 }
 
@@ -583,7 +647,7 @@ pub fn m1_d(m: B, f: B) -> B {
             if bl.imm {
                 let psc = md.sc.as_ref().unwrap().clone();
                 let body = bl.bodies[0].clone();
-                return crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[m, f]);
+                return crate::vm::exec_block_with_args(&bl, &body, psc.clone(), &[m, f]);
             }
         }
         m_md1d(m, f)
@@ -604,7 +668,7 @@ pub fn m2_d(m: B, f: B, g: B) -> B {
             if bl.imm {
                 let psc = md.sc.as_ref().unwrap().clone();
                 let body = bl.bodies[0].clone();
-                return crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[m, f, g]);
+                return crate::vm::exec_block_with_args(&bl, &body, psc.clone(), &[m, f, g]);
             }
         }
         m_md2d(m, f, g)
@@ -614,6 +678,7 @@ pub fn m2_d(m: B, f: B, g: B) -> B {
 }
 
 pub fn c1(f: B, x: B) -> B {
+    if let Some(r) = try_scalar_c1(f, x) { return r; }
     if f.is_fun() {
         let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
@@ -628,14 +693,13 @@ pub fn c1(f: B, x: B) -> B {
                 c1(d.g, hx)
             }
             DerivedKind::FunBlock => {
-                crate::vm::vm_trace_push(format!("c1 FunBlock id={} x={:#x} x_is_arr={} nblocks={}", id, x.0, x.is_arr(), d.bl.as_ref().map_or(0, |b| b.blocks.len())));
+                crate::vm_trace!("c1 FunBlock id={} x={:#x} x_is_arr={} nblocks={}", id, x.0, x.is_arr(), d.bl.as_ref().map_or(0, |b| b.blocks.len()));
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c1] id={} x={}", id, crate::vm::fmt_b_short(x));
                 }
-                let bl = d.bl.as_ref().unwrap().clone();
+                let bl = d.bl.as_ref().unwrap();
                 let psc = d.sc.as_ref().unwrap().clone();
-                let body = bl.bodies[0].clone();
-                let result = crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, B::SENTINEL]);
+                let result = crate::vm::exec_block_with_args(bl, &bl.bodies[0], psc, &[f, x, B::SENTINEL]);
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c1] id={} -> {}", id, crate::vm::fmt_b_short(result));
                 }
@@ -648,18 +712,18 @@ pub fn c1(f: B, x: B) -> B {
                     let mid = (modifier.0 & 0xFFFFFFFFFFFF) >> 3;
                     let md = get_derived(mid);
                     if md.kind == DerivedKind::Md1Block {
-                        crate::vm::vm_trace_push(format!("c1 Md1Block mid={} x={:#x}", mid, x.0));
+                        crate::vm_trace!("c1 Md1Block mid={} x={:#x}", mid, x.0);
                         let bl = md.bl.as_ref().unwrap().clone();
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.bodies[0].clone();
                         return crate::vm::exec_block_with_args(
-                            &bl, body, psc.clone(),
+                            &bl, &body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand],
                         );
                     }
                     if let DerivedKind::NativeMd1 { prim_idx } = &md.kind {
-                        let x_ia = if x.is_arr() { crate::vm::get_arr(x).map_or(-1i64, |a| a.ia() as i64) } else { -2 };
-                        crate::vm::vm_trace_push(format!("c1 NativeMd1 prim={} x={:#x} x_ia={}", prim_idx, x.0, x_ia));
+                        crate::vm_trace!("c1 NativeMd1 prim={} x={:#x} x_ia={}", prim_idx, x.0,
+                            if x.is_arr() { crate::vm::get_arr(x).map_or(-1i64, |a| a.ia() as i64) } else { -2 });
                         return crate::modifiers::native_md1_c1(*prim_idx, operand, f, x);
                     }
                     if md.kind == DerivedKind::Md2PartialL {
@@ -685,7 +749,7 @@ pub fn c1(f: B, x: B) -> B {
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.bodies[0].clone();
                         return crate::vm::exec_block_with_args(
-                            &bl, body, psc.clone(),
+                            &bl, &body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, B::SENTINEL, modifier, operand_f, operand_g],
                         );
                     }
@@ -701,19 +765,30 @@ pub fn c1(f: B, x: B) -> B {
                 let c1_fn = prim.c1.unwrap_or_else(|| {
                     rbqn_core::error::throw(format!("primitive '{}' has no monadic form", prim.glyph))
                 });
+                // Shape-only monads on a pending device value: answer from the
+                // host-side shape with a data-less stand-in, no readback.
+                if matches!(prim.glyph, "≠" | "≢" | "=")
+                    && let Some(d) = rbqn_core::peek_device(x)
+                {
+                    let stand_in = rbqn_core::BqnArr { shape: d.shape().to_vec(), data: rbqn_core::ArrData::Boxed(vec![]), fill: d.fill() };
+                    return match c1_fn(x, Some(&stand_in)) {
+                        Ok(r) => prim_result_to_b(r),
+                        Err(e) => rbqn_core::error::throw_bqn(e),
+                    };
+                }
                 let x_arr = crate::vm::get_arr(x);
-                crate::vm::vm_trace_push(format!(
+                crate::vm_trace!(
                     "c1 prim={} x_tag={:#06x} x_ia={}",
                     prim.glyph,
                     (x.0 >> 48) as u16,
                     x_arr.as_ref().map_or(-1i64, |a| a.ia() as i64),
-                ));
+                );
                 if crate::vm::prim_trace_enabled() {
                     let glyph = PRIM_GLYPHS.chars().nth(prim_idx).map(|c| c.to_string())
                         .unwrap_or_else(|| prim.glyph.to_string());
                     eprintln!("[PRIM c1] {} x={}", glyph, crate::vm::fmt_b_short(x));
                 }
-                let result = match c1_fn(x, x_arr.as_ref()) {
+                let result = match c1_fn(x, x_arr.as_deref()) {
                     Ok(r) => r,
                     Err(e) => rbqn_core::error::throw_bqn(e),
                 };
@@ -760,7 +835,7 @@ pub fn c1(f: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     // Reconstruct the forward block function for 𝕊 binding
                     let forward_fn = m_fun_block(bl.clone(), psc.clone());
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_fn, x, B::SENTINEL])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_fn, x, B::SENTINEL])
                 } else {
                     rbqn_core::error::throw("Block has no monadic inverse header (𝕊⁼:)")
                 }
@@ -776,7 +851,7 @@ pub fn c1(f: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     let modifier_val = make_md1_block_val(&bl, &psc);
                     let forward_derived = m_md1d(modifier_val, operand);
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, operand])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, operand])
                 } else {
                     rbqn_core::error::throw("Modifier block has no inverse header (𝔽_𝕣⁼:)")
                 }
@@ -793,7 +868,7 @@ pub fn c1(f: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     let modifier_val = make_md2_block_val(&bl, &psc);
                     let forward_derived = m_md2d(modifier_val, f_operand, g_operand);
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, f_operand, g_operand])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_derived, x, B::SENTINEL, modifier_val, f_operand, g_operand])
                 } else {
                     rbqn_core::error::throw("2-modifier block has no inverse header")
                 }
@@ -811,6 +886,7 @@ pub fn c1(f: B, x: B) -> B {
 }
 
 pub fn c2(f: B, w: B, x: B) -> B {
+    if let Some(r) = try_scalar_c2(f, w, x) { return r; }
     if f.is_fun() {
         let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
         let d = get_derived(id);
@@ -828,10 +904,10 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c2] id={} w={} x={}", id, crate::vm::fmt_b_short(w), crate::vm::fmt_b_short(x));
                 }
-                let bl = d.bl.as_ref().unwrap().clone();
+                let bl = d.bl.as_ref().unwrap();
                 let psc = d.sc.as_ref().unwrap().clone();
-                let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
-                let result = crate::vm::exec_block_with_args(&bl, body, psc.clone(), &[f, x, w]);
+                let body = bl.dy_body.as_ref().unwrap_or_else(|| &bl.bodies[0]);
+                let result = crate::vm::exec_block_with_args(bl, body, psc, &[f, x, w]);
                 if crate::vm::prim_trace_enabled() {
                     eprintln!("[BLOCK c2] id={} -> {}", id, crate::vm::fmt_b_short(result));
                 }
@@ -848,7 +924,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                         let psc = md.sc.as_ref().unwrap().clone();
                         let body = bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone());
                         return crate::vm::exec_block_with_args(
-                            &bl, body, psc.clone(),
+                            &bl, &body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand],
                         );
                     }
@@ -883,7 +959,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                             rbqn_core::error::throw("This block cannot be called dyadically");
                         };
                         return crate::vm::exec_block_with_args(
-                            &bl, body, psc.clone(),
+                            &bl, &body, psc.clone(),
                             &[tagu64(id << 3, FUN_TAG), x, w, modifier, operand_f, operand_g],
                         );
                     }
@@ -899,22 +975,26 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 let c2_fn = prim.c2.unwrap_or_else(|| {
                     rbqn_core::error::throw(format!("primitive '{}' has no dyadic form", prim.glyph))
                 });
+                // GPU arithmetic sees the raw B so pending device values stay on device.
+                if let Some(r) = rbqn_prim::arith_dyad::try_gpu_arith(prim.glyph, w, x) {
+                    return r;
+                }
                 let w_arr = crate::vm::get_arr(w);
                 let x_arr = crate::vm::get_arr(x);
-                crate::vm::vm_trace_push(format!(
+                crate::vm_trace!(
                     "c2 prim={} w_tag={:#06x} x_tag={:#06x} x_ia={}",
                     prim.glyph,
                     (w.0 >> 48) as u16,
                     (x.0 >> 48) as u16,
                     x_arr.as_ref().map_or(-1i64, |a| a.ia() as i64),
-                ));
+                );
                 if crate::vm::prim_trace_enabled() {
                     let glyph = PRIM_GLYPHS.chars().nth(prim_idx).map(|c| c.to_string())
                         .unwrap_or_else(|| prim.glyph.to_string());
                     eprintln!("[PRIM c2] w={} {} x={} (prim_idx={})",
                         crate::vm::fmt_b_short(w), glyph, crate::vm::fmt_b_short(x), prim_idx);
                 }
-                let result = match c2_fn(w, w_arr.as_ref(), x, x_arr.as_ref()) {
+                let result = match c2_fn(w, w_arr.as_deref(), x, x_arr.as_deref()) {
                     Ok(r) => r,
                     Err(e) => {
                         if crate::vm::prim_trace_enabled() {
@@ -980,7 +1060,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     .or_else(|| bl.inv_x_body.clone());
                 if let Some(body) = inv_body {
                     let forward_fn = m_fun_block(bl.clone(), psc.clone());
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_fn, x, w])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_fn, x, w])
                 } else {
                     rbqn_core::error::throw("Block has no dyadic inverse header (𝕊⁼𝕨:)")
                 }
@@ -998,7 +1078,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     let modifier_val = make_md1_block_val(&bl, &psc);
                     let forward_derived = m_md1d(modifier_val, operand);
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, operand])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_derived, x, w, modifier_val, operand])
                 } else {
                     rbqn_core::error::throw("Modifier block has no dyadic inverse header")
                 }
@@ -1014,7 +1094,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 if let Some(body) = inv_body {
                     let modifier_val = make_md2_block_val(&bl, &psc);
                     let forward_derived = m_md2d(modifier_val, f_operand, g_operand);
-                    crate::vm::exec_block_with_args(&bl, body, psc, &[forward_derived, x, w, modifier_val, f_operand, g_operand])
+                    crate::vm::exec_block_with_args(&bl, &body, psc, &[forward_derived, x, w, modifier_val, f_operand, g_operand])
                 } else {
                     rbqn_core::error::throw("2-modifier block has no dyadic inverse header")
                 }
@@ -1067,7 +1147,7 @@ fn str_to_b(s: &str) -> B {
 /// Reconstruct a Md1Block B value from the block and its parent scope.
 /// Used when rebuilding the modifier value for 𝔽 binding in InvMd1Block dispatch.
 #[inline]
-fn make_md1_block_val(bl: &Arc<Block>, psc: &Arc<Scope>) -> B {
+fn make_md1_block_val(bl: &Arc<Block>, psc: &std::rc::Rc<Scope>) -> B {
     let tmp_id = store_derived(Derived {
         kind: DerivedKind::Md1Block,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -1079,7 +1159,7 @@ fn make_md1_block_val(bl: &Arc<Block>, psc: &Arc<Scope>) -> B {
 /// Reconstruct a Md2Block B value from the block and its parent scope.
 /// Used when rebuilding the modifier value for 𝔽 binding in InvMd2Block dispatch.
 #[inline]
-fn make_md2_block_val(bl: &Arc<Block>, psc: &Arc<Scope>) -> B {
+fn make_md2_block_val(bl: &Arc<Block>, psc: &std::rc::Rc<Scope>) -> B {
     let tmp_id = store_derived(Derived {
         kind: DerivedKind::Md2Block,
         f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
@@ -1108,7 +1188,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
     let x_arr = crate::vm::get_arr(x);
     match idx {
         0 => { // •Type
-            call_prim(rbqn_prim::sysfn::type_fn(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::sysfn::type_fn(x, x_arr.as_deref()))
         }
         1 => { // •Decompose
             dispatch_sys_decompose_c1(x)
@@ -1120,7 +1200,7 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             dispatch_sys_primind_c1(x)
         }
         7 => { // •Fill / •FillFn
-            call_prim(rbqn_prim::sysfn::fill_fn(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::sysfn::fill_fn(x, x_arr.as_deref()))
         }
         8 => { // setInvReg: stores x (a BQN function) as the inverse-reg resolver,
                // returns nativeInvReg (sys_idx=10)
@@ -1160,10 +1240,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             m_lazy_inv_swap(x)
         }
         22 => { // •_groupLen
-            call_prim(rbqn_prim::group::group_len(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::group::group_len(x, x_arr.as_deref()))
         }
         23 => { // •_groupOrd
-            call_prim(rbqn_prim::group::group_ord(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::group::group_ord(x, x_arr.as_deref()))
         }
         // NOTE: •ReBQN (alias for •BQN for now)
         31 => {
@@ -1326,20 +1406,20 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             native_repr_c1(x)
         }
         201 => { // Internal: /⁼ (inverse of indices)
-            call_prim(rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::slash::indices_inverse_c1(x, x_arr.as_deref()))
         }
         // NOTE: Internal inverse functions registered in native_inverse_reg
         202 => { // ⋆⁼ = ln(x) — natural logarithm
-            call_prim(rbqn_prim::arith_monad::log_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::arith_monad::log_c1(x, x_arr.as_deref()))
         }
         203 => { // √⁼ = x^2 — square
-            call_prim(rbqn_prim::arith_monad::square_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::arith_monad::square_c1(x, x_arr.as_deref()))
         }
         204 => { // +˜⁼ = x÷2 — halve
-            call_prim(rbqn_prim::arith_monad::halve_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::arith_monad::halve_c1(x, x_arr.as_deref()))
         }
         205 => { // ⍉⁼ = inverse transpose (rank≤2: same as ⍉; rank>2: move first axis to last)
-            call_prim(rbqn_prim::structural::transpose_inv_c1(x, x_arr.as_ref()))
+            call_prim(rbqn_prim::structural::transpose_inv_c1(x, x_arr.as_deref()))
         }
         206 => { // <⁼ = unbox: extract content from rank-0 array
             if let Some(ref arr) = x_arr {
@@ -1543,10 +1623,10 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             c2(inv_fn, w, x)
         }
         22 => { // •_groupLen dyadic: w is desired length, x is indices
-            dispatch_sys_group_len_c2(w, x, x_arr.as_ref())
+            dispatch_sys_group_len_c2(w, x, x_arr.as_deref())
         }
         23 => { // •_groupOrd dyadic: w is lengths, x is indices
-            dispatch_sys_group_ord_c2(w, w_arr.as_ref(), x, x_arr.as_ref())
+            dispatch_sys_group_ord_c2(w, w_arr.as_deref(), x, x_arr.as_deref())
         }
         // NOTE: •file.Lines dyadic — write array of strings to file
         50 => file_lines_c2(w, x),
@@ -1564,7 +1644,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
             B::SENTINEL
         }
         201 => { // Internal: w /⁼ x (dyadic inverse of indices)
-            call_prim(rbqn_prim::slash::indices_inverse_c2(w, w_arr.as_ref(), x, x_arr.as_ref()))
+            call_prim(rbqn_prim::slash::indices_inverse_c2(w, w_arr.as_deref(), x, x_arr.as_deref()))
         }
         202 => { // Dyadic ⋆⁼: w⋆⁼x = log_w(x) = ln(x)/ln(w) — apply to each element pair
             // For numeric scalar args:
@@ -1657,12 +1737,12 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         145 => sh_exec_c2(w, x),
         // NOTE: w(+˜)⁼x = x - w  (dyadic: +˜ swaps: w +˜ y = y+w, inverse = y = x - w)
         204 => {
-            call_prim(rbqn_prim::arith_dyad::sub_c2(x, x_arr.as_ref(), w, w_arr.as_ref()))
+            call_prim(rbqn_prim::arith_dyad::sub_c2(x, x_arr.as_deref(), w, w_arr.as_deref()))
         }
         // NOTE: w√⁼x = x^w (dyadic sqrt-inverse = power with args swapped)
         // √⁼ monadic is x^2 (sys 203 c1); dyadic is x raised to the power w.
         203 => {
-            call_prim(rbqn_prim::arith_dyad::pow_c2(x, x_arr.as_ref(), w, w_arr.as_ref()))
+            call_prim(rbqn_prim::arith_dyad::pow_c2(x, x_arr.as_deref(), w, w_arr.as_deref()))
         }
         205 => { // w⍉⁼x = inverse-permutation(w)⍉x
             // For a bijective permutation p, inv_perm[j] = i where p[i] = j.
@@ -1698,7 +1778,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                             let inv_arr = rbqn_core::array::BqnArr::new_vec_i32(inv_perm);
                             let inv_b = crate::vm::tag_arr(inv_arr);
                             let inv_b_arr = crate::vm::get_arr(inv_b);
-                            return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref()));
+                            return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_deref(), x, x_arr.as_deref()));
                         }
                     }
             // Partial permutation (len(w) < rank(x)): extend to full permutation, then invert.
@@ -1742,7 +1822,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
                     let inv_arr = rbqn_core::array::BqnArr::new_vec_i32(inv_perm);
                     let inv_b = crate::vm::tag_arr(inv_arr);
                     let inv_b_arr = crate::vm::get_arr(inv_b);
-                    return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_ref(), x, x_arr.as_ref()));
+                    return call_prim(rbqn_prim::structural::reorder_c2(inv_b, inv_b_arr.as_deref(), x, x_arr.as_deref()));
                 }
             }
             rbqn_core::error::throw("⍉⁼: cannot compute inverse for given permutation")
@@ -2195,7 +2275,7 @@ fn make_file_namespace() -> B {
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
 
     // Build scope with all system function values (order must match exp_gids)
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -2650,9 +2730,95 @@ fn b_to_string(x: B) -> String {
     String::new()
 }
 
+/// Native fast path for •Fmt / •Repr / implicit print on numeric scalars and
+/// rank-1 numeric vectors whose values are all integers with |v| < 1e15.
+/// Returns None (caller falls through to the BQN formatter) for anything else.
+/// Output matches the self-hosted formatter: Fmt `⟨ 1 2 3 ⟩`, Repr `1‿2‿3`
+/// (`⟨x⟩` for length 1, `⟨⟩` for empty), `¯` for the minus sign.
+pub fn fast_fmt_ints(x: B, repr: bool) -> Option<String> {
+    use rbqn_core::array::ArrData;
+    use std::fmt::Write;
+    const LIM: f64 = 1e15;
+    #[inline]
+    fn push(s: &mut String, v: i64) {
+        if v < 0 {
+            s.push('¯');
+        }
+        let _ = write!(s, "{}", v.unsigned_abs());
+    }
+    if x.is_num() {
+        let v = x.o2f();
+        if !(v.abs() < LIM) || v.fract() != 0.0 {
+            return None;
+        }
+        let mut s = String::new();
+        push(&mut s, v as i64);
+        return Some(s);
+    }
+    if !x.is_arr() {
+        return None;
+    }
+    let arr = crate::vm::get_arr(x)?;
+    if arr.shape.len() != 1 {
+        return None;
+    }
+    let n = arr.shape[0];
+    if n == 0 {
+        return match arr.data {
+            ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) | ArrData::F64(_) => {
+                Some("⟨⟩".to_string())
+            }
+            _ => None,
+        };
+    }
+    let mut s = String::with_capacity(n * 8 + 8);
+    let one = n == 1;
+    let (open, sep, close) = if repr {
+        (if one { "⟨" } else { "" }, "‿", if one { "⟩" } else { "" })
+    } else {
+        ("⟨ ", " ", " ⟩")
+    };
+    s.push_str(open);
+    macro_rules! each {
+        ($v:expr, $conv:expr) => {{
+            for (i, &e) in $v.iter().take(n).enumerate() {
+                if i > 0 {
+                    s.push_str(sep);
+                }
+                push(&mut s, $conv(e));
+            }
+        }};
+    }
+    match &arr.data {
+        ArrData::Bit(v) => {
+            for i in 0..n {
+                if i > 0 {
+                    s.push_str(sep);
+                }
+                s.push(if (v[i / 64] >> (i % 64)) & 1 == 1 { '1' } else { '0' });
+            }
+        }
+        ArrData::I8(v) => each!(v, |e: i8| e as i64),
+        ArrData::I16(v) => each!(v, |e: i16| e as i64),
+        ArrData::I32(v) => each!(v, |e: i32| e as i64),
+        ArrData::F64(v) => {
+            if !v.iter().take(n).all(|e| e.abs() < LIM && e.fract() == 0.0) {
+                return None;
+            }
+            each!(v, |e: f64| e as i64)
+        }
+        _ => return None,
+    }
+    s.push_str(close);
+    Some(s)
+}
+
 /// Format a B value for •Show/•Fmt — tries the bootstrap formatter first,
 /// falls back to the basic debug format.
 fn format_b_for_show(x: B) -> String {
+    if let Some(s) = fast_fmt_ints(x, false) {
+        return s;
+    }
     // Try to use the bootstrap formatter (rt.formatter.0) if available
     let fmt_fn = {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -2673,6 +2839,9 @@ fn format_b_for_show(x: B) -> String {
 
 /// Format a B value for •Repr — quoted strings for strings, numbers as-is, etc.
 fn format_b_repr(x: B) -> String {
+    if let Some(s) = fast_fmt_ints(x, true) {
+        return s;
+    }
     // Try to use the bootstrap repr function (rt.formatter.1) if available
     let repr_fn = {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -2761,7 +2930,7 @@ fn dispatch_sys_bqn_eval(src: &str) -> B {
 
     let body = block.bodies[0].clone();
     let var_am = body.var_am;
-    let root_scope = Arc::new(crate::scope::Scope::new(body.clone(), None, var_am, &[]));
+    let root_scope = std::rc::Rc::new(crate::scope::Scope::new(body.clone(), None, var_am, &[]));
     crate::block::eval_fun_block(block, root_scope)
 }
 
@@ -2822,7 +2991,7 @@ fn make_math_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3121,7 +3290,7 @@ fn make_rand_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3238,7 +3407,7 @@ fn make_platform_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3344,7 +3513,7 @@ fn make_bit_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3395,7 +3564,7 @@ fn make_term_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3441,7 +3610,7 @@ fn make_ns_namespace() -> B {
 
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
@@ -3475,7 +3644,7 @@ fn ns_values_c1(x: B) -> B {
         rbqn_core::error::throw("•ns.Values: 𝕩 must be a namespace");
     }
     let ns = crate::namespace::get_ns(x);
-    let vars = ns.sc.vars.lock().unwrap_or_else(|e| e.into_inner());
+    let vars = ns.sc.vars.borrow_mut();
     let n = ns.desc.exp_gids.len();
     let values: Vec<B> = (0..n).map(|i| {
         if i < vars.len() { vars[i] } else { B::SENTINEL }
@@ -3593,7 +3762,7 @@ fn make_hashmap_instance(x: B) -> B {
     // Simplest MVP: use sys_fn stubs that throw "not yet implemented" for mutating ops,
     // and make Count return 0 for now. Since the test suite doesn't test HashMap,
     // just having it be a valid namespace is sufficient.
-    let sc = Arc::new(crate::scope::Scope::new(
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,

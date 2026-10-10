@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use rbqn_core::B;
 
@@ -9,40 +8,191 @@ use crate::namespace::get_ns;
 #[derive(Debug)]
 pub struct ScopeExt {
     pub var_am: u16,
-    pub vars: Mutex<Vec<B>>,
+    pub vars: std::cell::RefCell<Vec<B>>,
+}
+
+/// Scope variable storage: up to INLINE_VARS slots live inside the Scope
+/// itself (one allocation per call instead of two); larger scopes use a Vec.
+#[derive(Debug, Clone)]
+pub enum Vars {
+    Inline([B; INLINE_VARS], u8),
+    Heap(Vec<B>),
+}
+
+pub const INLINE_VARS: usize = 8;
+
+impl Vars {
+    #[inline]
+    pub fn new(var_am: usize, init: &[B]) -> Vars {
+        let init = &init[..init.len().min(var_am)];
+        if var_am <= INLINE_VARS {
+            let mut a = [B::NO_VAR; INLINE_VARS];
+            a[..init.len()].copy_from_slice(init);
+            Vars::Inline(a, var_am as u8)
+        } else {
+            let mut v = Vec::with_capacity(var_am);
+            v.extend_from_slice(init);
+            v.resize(var_am, B::NO_VAR);
+            Vars::Heap(v)
+        }
+    }
+}
+
+impl Vars {
+    /// Reinitialise in place: copy `init`, fill the remaining slots with NO_VAR.
+    #[inline]
+    pub fn reset(&mut self, var_am: usize, init: &[B]) {
+        let init = &init[..init.len().min(var_am)];
+        match self {
+            Vars::Inline(a, n) if var_am <= INLINE_VARS => {
+                // Fixed-size fill instead of a variable-length memcpy call;
+                // slots past var_am are invisible through Deref.
+                for (i, v) in a.iter_mut().enumerate() {
+                    *v = if i < init.len() { init[i] } else { B::NO_VAR };
+                }
+                *n = var_am as u8;
+            }
+            _ => *self = Vars::new(var_am, init),
+        }
+    }
+}
+
+impl std::ops::Deref for Vars {
+    type Target = [B];
+    #[inline]
+    fn deref(&self) -> &[B] {
+        match self {
+            Vars::Inline(a, n) => &a[..*n as usize],
+            Vars::Heap(v) => v,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Vars {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [B] {
+        match self {
+            Vars::Inline(a, n) => &mut a[..*n as usize],
+            Vars::Heap(v) => v,
+        }
+    }
+}
+
+/// Non-owning handle to a scope in the active chain (`current_sc` and its `psc`
+/// parents). Valid while the owning `Rc` chain is alive; `eval_bc` holds
+/// `current_sc` for the whole lifetime of the `pscs` vector that contains these.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct ScRef(*const Scope);
+
+impl ScRef {
+    #[inline(always)]
+    pub fn new(rc: &std::rc::Rc<Scope>) -> ScRef { ScRef(std::rc::Rc::as_ptr(rc)) }
+    /// Take a new strong reference (for closures that capture this scope).
+    #[inline]
+    pub fn to_rc(self) -> std::rc::Rc<Scope> {
+        // SAFETY: the pointer came from a live Rc (see type docs).
+        unsafe {
+            std::rc::Rc::increment_strong_count(self.0);
+            std::rc::Rc::from_raw(self.0)
+        }
+    }
+}
+
+impl std::ops::Deref for ScRef {
+    type Target = Scope;
+    #[inline(always)]
+    fn deref(&self) -> &Scope { unsafe { &*self.0 } }
+}
+
+/// Per-thread interpreter state, kept in one thread-local so a block call
+/// pays for the TLS lookup once per phase instead of once per field.
+/// ManuallyDrop: no destructor registration (never torn down; leaks at exit).
+pub struct Tls {
+    /// Current block-evaluation nesting depth.
+    pub depth: std::cell::Cell<u32>,
+    /// Recycled uniquely-owned scopes.
+    /// Only touched inside `new_rc_in`/`recycle_in`, which never re-enter while holding it.
+    pub scopes: std::cell::UnsafeCell<Vec<std::rc::Rc<Scope>>>,
+    /// Recycled (operand stack, scope-chain) vector pairs. Only touched by
+    /// `Frame::enter`/`Frame::drop`, which never re-enter while holding it.
+    pub frames: std::cell::UnsafeCell<Vec<(Vec<B>, Vec<ScRef>)>>,
+}
+
+std::thread_local! {
+    pub static TLS: std::mem::ManuallyDrop<Tls> = const {
+        std::mem::ManuallyDrop::new(Tls {
+            depth: std::cell::Cell::new(0),
+            scopes: std::cell::UnsafeCell::new(Vec::new()),
+            frames: std::cell::UnsafeCell::new(Vec::new()),
+        })
+    };
 }
 
 #[derive(Debug)]
 pub struct Scope {
-    pub psc: Option<Arc<Scope>>,
+    pub psc: Option<std::rc::Rc<Scope>>,
     pub body: Arc<Body>,
     pub var_am: u16,
     pub ext: Option<ScopeExt>,
-    pub vars: Mutex<Vec<B>>,
+    pub vars: std::cell::RefCell<Vars>,
 }
 
 impl Scope {
-    pub fn new(body: Arc<Body>, psc: Option<Arc<Scope>>, var_am: u16, init_vars: &[B]) -> Self {
-        let mut vars = Vec::with_capacity(var_am as usize);
-        vars.extend_from_slice(init_vars);
-        vars.resize(var_am as usize, B::NO_VAR);
+    pub fn new(body: Arc<Body>, psc: Option<std::rc::Rc<Scope>>, var_am: u16, init_vars: &[B]) -> Self {
+        let vars = Vars::new(var_am as usize, init_vars);
         Scope {
             psc,
             body,
             var_am,
             ext: None,
-            vars: Mutex::new(vars),
+            vars: std::cell::RefCell::new(vars),
+        }
+    }
+
+    /// Build an `Rc<Scope>`, reusing a recycled allocation when one is available.
+    #[inline]
+    pub fn new_rc_in(t: &Tls, body: &Arc<Body>, psc: std::rc::Rc<Scope>, var_am: u16, init_vars: &[B]) -> std::rc::Rc<Scope> {
+        // SAFETY: single-threaded; nothing re-enters while the pool is borrowed.
+        let recycled = unsafe { (*t.scopes.get()).pop() };
+        if let Some(mut rc) = recycled
+            && let Some(s) = std::rc::Rc::get_mut(&mut rc)
+        {
+            s.psc = Some(psc);
+            if !Arc::ptr_eq(&s.body, body) {
+                s.body = body.clone();
+            }
+            s.var_am = var_am;
+            s.vars.get_mut().reset(var_am as usize, init_vars);
+            return rc;
+        }
+        std::rc::Rc::new(Scope::new(body.clone(), Some(psc), var_am, init_vars))
+    }
+
+    /// Return a scope to the free list if nothing else holds it (no closure,
+    /// namespace or pscs entry captured it).
+    #[inline]
+    pub fn recycle_in(t: &Tls, mut rc: std::rc::Rc<Scope>) {
+        if let Some(s) = std::rc::Rc::get_mut(&mut rc) {
+            let parent = s.psc.take();
+            s.ext = None;
+            // SAFETY: single-threaded; nothing re-enters while borrowed.
+            let f = unsafe { &mut *t.scopes.get() };
+            if f.len() < 64 {
+                f.push(rc);
+            }
+            drop(parent);
         }
     }
 
     /// Read a variable at the given position.
     pub fn var_get(&self, pos: usize) -> B {
-        self.vars.lock().unwrap_or_else(|e| e.into_inner())[pos]
+        self.vars.borrow_mut()[pos]
     }
 
     /// Write a variable at the given position.
     pub fn var_set(&self, pos: usize, val: B) {
-        self.vars.lock().unwrap_or_else(|e| e.into_inner())[pos] = val;
+        self.vars.borrow_mut()[pos] = val;
     }
 }
 
@@ -72,7 +222,7 @@ fn v_tag_error(x: B, write: bool) -> ! {
     rbqn_core::error::throw("Unexpected v_tagError argument");
 }
 
-pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
+pub fn v_get(pscs: &[ScRef], s: B, chk: bool) -> B {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -87,7 +237,7 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            let r = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
+            let r = ext.vars.borrow_mut()[p];
             if chk && v_check_bad_read(r) {
                 v_tag_error(r, false);
             }
@@ -111,7 +261,7 @@ pub fn v_get(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
     }
 }
 
-pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
+pub fn v_set(pscs: &[ScRef], s: B, x: B, upd: bool, chk: bool) {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -153,12 +303,12 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
             if upd {
-                let prev = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
+                let prev = ext.vars.borrow_mut()[p];
                 if chk && v_check_bad_write(prev) {
                     v_tag_error(prev, true);
                 }
             }
-            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = x;
+            ext.vars.borrow_mut()[p] = x;
         } else {
             rbqn_core::error::throw("v_set: no scope extension for EXT ref");
         }
@@ -256,7 +406,7 @@ pub fn v_set(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
 
 /// Merge-destructuring: split x along its first axis and assign to each target in s.
 /// This implements CBQN's v_merge for `[a⋄b]←val` syntax (ARMM targets).
-fn v_merge(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
+fn v_merge(pscs: &[ScRef], s: B, x: B, upd: bool, chk: bool) {
     let s_arr = rbqn_core::get_arr(s)
         .unwrap_or_else(|| rbqn_core::error::throw("v_merge: invalid merge target"));
     let s_len = s_arr.ia();
@@ -319,7 +469,7 @@ fn v_merge(pscs: &[Arc<Scope>], s: B, x: B, upd: bool, chk: bool) {
     }
 }
 
-pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
+pub fn v_seth(pscs: &[ScRef], s: B, x: B) -> bool {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -330,7 +480,7 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = x;
+            ext.vars.borrow_mut()[p] = x;
             true
         } else {
             false
@@ -441,7 +591,7 @@ pub fn v_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
 }
 
 /// Merge-destructuring for header match (v_seth variant).
-fn v_merge_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
+fn v_merge_seth(pscs: &[ScRef], s: B, x: B) -> bool {
     let s_arr = match rbqn_core::get_arr(s) {
         Some(a) => a,
         None => return false,
@@ -500,7 +650,7 @@ fn v_merge_seth(pscs: &[Arc<Scope>], s: B, x: B) -> bool {
     true
 }
 
-pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
+pub fn v_get_move(pscs: &[ScRef], s: B, chk: bool) -> B {
     if s.is_var() {
         let d = s.v_depth() as usize;
         let p = s.v_pos() as usize;
@@ -516,11 +666,11 @@ pub fn v_get_move(pscs: &[Arc<Scope>], s: B, chk: bool) -> B {
         let p = s.v_pos() as usize;
         let sc = &pscs[d];
         if let Some(ref ext) = sc.ext {
-            let r = ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p];
+            let r = ext.vars.borrow_mut()[p];
             if chk && v_check_bad_read(r) {
                 v_tag_error(r, false);
             }
-            ext.vars.lock().unwrap_or_else(|e| e.into_inner())[p] = B::OPT_OUT;
+            ext.vars.borrow_mut()[p] = B::OPT_OUT;
             r
         } else {
             rbqn_core::error::throw("v_get_move: no scope extension for EXT ref");

@@ -253,7 +253,27 @@ impl BqnArr {
 /// the elements were produced by arr.get(i) (which promotes stored types to B).
 pub fn typed_arr_from_b_vec(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
     if !elems.is_empty() {
-        if elems.iter().all(|b| b.is_f64()) {
+        // One pass decides "all numbers" and "all i32-exact" (squeeze_num's test);
+        // integer results go straight to i32 and skip the F64 round trip.
+        let mut all_f64 = true;
+        let mut all_int = true;
+        for b in &elems {
+            if !b.is_f64() {
+                all_f64 = false;
+                break;
+            }
+            let v = b.o2f();
+            all_int &= v == (v as i32) as f64;
+        }
+        if all_f64 && all_int {
+            let vals: Vec<i32> = elems.iter().map(|b| b.o2f() as i32).collect();
+            return BqnArr {
+                shape,
+                data: squeeze_i32(vals),
+                fill: fill.or(Some(B::m_f64(0.0))),
+            };
+        }
+        if all_f64 {
             let vals: Vec<f64> = elems.iter().map(|b| b.o2f()).collect();
             let arr = BqnArr {
                 shape,
@@ -338,5 +358,28 @@ pub fn squeeze_num(arr: BqnArr) -> BqnArr {
         shape: arr.shape,
         data,
         fill: arr.fill,
+    }
+}
+
+/// Narrow an i32 vector to the smallest type `squeeze_num` would pick
+/// (Bit, I8, I16, I32) with one min/max pass and no F64 round trip.
+pub fn squeeze_i32(vals: Vec<i32>) -> ArrData {
+    let (mut lo, mut hi) = (0i32, 0i32);
+    for &v in &vals {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    if lo >= 0 && hi <= 1 {
+        let mut words = vec![0u64; vals.len().div_ceil(64)];
+        for (i, &v) in vals.iter().enumerate() {
+            words[i / 64] |= (v as u64) << (i % 64);
+        }
+        ArrData::Bit(words)
+    } else if lo >= i8::MIN as i32 && hi <= i8::MAX as i32 {
+        ArrData::I8(vals.iter().map(|&v| v as i8).collect())
+    } else if lo >= i16::MIN as i32 && hi <= i16::MAX as i32 {
+        ArrData::I16(vals.iter().map(|&v| v as i16).collect())
+    } else {
+        ArrData::I32(vals)
     }
 }

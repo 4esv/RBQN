@@ -10,7 +10,8 @@ use crate::derive::{c1, c2};
 
 // NOTE: GPU fold hook — reduces large numeric arrays on GPU
 // Returns Some(B) if GPU handled the fold, None for CPU fallback
-type GpuFoldFn = fn(f: B, arr: &BqnArr) -> Option<B>;
+// Takes the raw `x` so a pending device value is reduced without a readback.
+type GpuFoldFn = fn(f: B, x: B) -> Option<B>;
 static GPU_FOLD_HOOK: OnceLock<GpuFoldFn> = OnceLock::new();
 
 pub fn register_gpu_fold(f: GpuFoldFn) {
@@ -19,7 +20,7 @@ pub fn register_gpu_fold(f: GpuFoldFn) {
 
 // NOTE: GPU scan hook — prefix-sums large numeric arrays on GPU
 // Returns Some(B) if GPU handled the scan, None for CPU fallback
-type GpuScanFn = fn(f: B, arr: &BqnArr) -> Option<B>;
+type GpuScanFn = fn(f: B, x: B) -> Option<B>;
 static GPU_SCAN_HOOK: OnceLock<GpuScanFn> = OnceLock::new();
 
 pub fn register_gpu_scan(f: GpuScanFn) {
@@ -254,7 +255,7 @@ fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
         return results_to_arr(results, lead_shape);
     }
     // All arrays with same cell shape → merge into higher-rank
-    let arrs: Vec<BqnArr> = results.iter()
+    let arrs: Vec<std::sync::Arc<BqnArr>> = results.iter()
         .filter_map(|b| crate::vm::get_arr(*b))
         .collect();
     if arrs.len() == results.len() && !arrs.is_empty() {
@@ -278,7 +279,7 @@ fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
     crate::vm::tag_arr(out)
 }
 
-fn arr_of(x: B) -> BqnArr {
+fn arr_of(x: B) -> std::sync::Arc<BqnArr> {
     crate::vm::get_arr(x)
         .unwrap_or_else(|| rbqn_core::error::throw("Expected array argument"))
 }
@@ -378,6 +379,31 @@ fn each_c1(f: B, x: B) -> B {
     }
     let n = arr.ia();
     let mut results = Vec::with_capacity(n);
+    // Resolve a block operand once instead of per element (same call c1 makes for FunBlock).
+    if f.is_fun() {
+        let d = crate::derive::get_derived((f.0 & 0xFFFFFFFFFFFF) >> 3);
+        if d.kind == crate::derive::DerivedKind::FunBlock {
+            let bl = d.bl.as_ref().unwrap();
+            let psc = d.sc.as_ref().unwrap();
+            let body = &bl.bodies[0];
+            let mut call = |elem: B| {
+                results.push(crate::vm::exec_block_with_args(
+                    bl, body, psc.clone(), &[f, elem, B::SENTINEL],
+                ));
+            };
+            // Read elements straight from the typed buffer: BqnArr::get recomputes
+            // the shape product and re-matches the element type per element.
+            match &arr.data {
+                ArrData::I8(v) => v.iter().for_each(|&e| call(B::m_i32(e as i32))),
+                ArrData::I16(v) => v.iter().for_each(|&e| call(B::m_i32(e as i32))),
+                ArrData::I32(v) => v.iter().for_each(|&e| call(B::m_i32(e))),
+                ArrData::F64(v) => v.iter().for_each(|&e| call(B::m_f64(e))),
+                ArrData::Boxed(v) => v.iter().for_each(|&e| call(e)),
+                _ => (0..n).for_each(|i| call(get_elem(&arr, i))),
+            }
+            return results_to_arr(results, arr.shape.clone());
+        }
+    }
     for i in 0..n {
         let elem = get_elem(&arr, i);
         let result = c1(f, elem);
@@ -535,6 +561,9 @@ fn table_c2(f: B, w: B, x: B) -> B {
             // array ⌜ array → original behavior
             let warr = arr_of(w);
             let xarr = arr_of(x);
+            if let Some(r) = crate::typed::table(f, &warr, &xarr) {
+                return crate::vm::tag_arr(r);
+            }
             let wn = warr.ia();
             let xn = xarr.ia();
             let mut results = Vec::with_capacity(wn * xn);
@@ -588,6 +617,12 @@ fn fold_identity(f: B) -> Option<B> {
 }
 
 fn fold_c1(f: B, x: B) -> B {
+    // GPU dispatch for large rank-1 numeric arrays with supported ops (before forcing x)
+    if x.is_arr()
+        && let Some(hook) = GPU_FOLD_HOOK.get()
+            && let Some(result) = hook(f, x) {
+                return result;
+            }
     let arr = arr_of(x);
     if arr.rank() == 0 {
         rbqn_core::error::throw("´: 𝕩 must have rank ≥ 1");
@@ -598,12 +633,9 @@ fn fold_c1(f: B, x: B) -> B {
             rbqn_core::error::throw("´: empty array with no identity")
         );
     }
-    // GPU dispatch for large rank-1 numeric arrays with supported ops
-    if arr.rank() == 1
-        && let Some(hook) = GPU_FOLD_HOOK.get()
-            && let Some(result) = hook(f, &arr) {
-                return result;
-            }
+    if let Some(r) = crate::typed::fold(f, &arr, None) {
+        return r;
+    }
     let mut acc = get_elem(&arr, n - 1);
     for i in (0..n - 1).rev() {
         acc = c2(f, get_elem(&arr, i), acc);
@@ -613,6 +645,10 @@ fn fold_c1(f: B, x: B) -> B {
 
 fn fold_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
+    if w.is_f64()
+        && let Some(r) = crate::typed::fold(f, &arr, Some(w.o2f())) {
+            return r;
+        }
     let n = arr.ia();
     let mut acc = w;
     for i in (0..n).rev() {
@@ -730,6 +766,11 @@ fn scan_c1(f: B, x: B) -> B {
     if x.is_atom() {
         rbqn_core::error::throw("`: 𝕩 must be an array");
     }
+    // GPU dispatch for large rank-1 numeric arrays (before forcing x)
+    if let Some(hook) = GPU_SCAN_HOOK.get()
+        && let Some(result) = hook(f, x) {
+            return result;
+        }
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
@@ -744,11 +785,9 @@ fn scan_c1(f: B, x: B) -> B {
         });
     }
     if rank == 1 {
-        // GPU dispatch for large rank-1 numeric arrays with supported ops
-        if let Some(hook) = GPU_SCAN_HOOK.get()
-            && let Some(result) = hook(f, &arr) {
-                return result;
-            }
+        if let Some(r) = crate::typed::scan(f, &arr) {
+            return crate::vm::tag_arr(r);
+        }
         // Rank-1: scan over individual elements
         let n = arr.ia();
         let mut results = Vec::with_capacity(n);
@@ -789,7 +828,7 @@ fn scan_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
-        return crate::vm::tag_arr(arr.clone());
+        return crate::vm::tag_arr((*arr).clone());
     }
     let lead = arr.shape[0];
     if rank == 1 {
@@ -847,7 +886,7 @@ pub fn scan_inv_c1(f: B, x: B) -> B {
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
-        return crate::vm::tag_arr(arr.clone());
+        return crate::vm::tag_arr((*arr).clone());
     }
     let lead = arr.shape[0];
     if lead == 0 {
@@ -896,7 +935,7 @@ pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
-        return crate::vm::tag_arr(arr.clone());
+        return crate::vm::tag_arr((*arr).clone());
     }
     let lead = arr.shape[0];
     let f_inv = crate::derive::inv_reg(f);
@@ -1665,7 +1704,7 @@ fn pick_from(w: B, x: B) -> B {
     let c2_fn = pick_prim.c2.unwrap();
     let wa = crate::vm::get_arr(w);
     let xa = crate::vm::get_arr(x);
-    let result = c2_fn(w, wa.as_ref(), x, xa.as_ref())
+    let result = c2_fn(w, wa.as_deref(), x, xa.as_deref())
         .unwrap_or_else(|e| rbqn_core::error::throw(format!("◶: pick failed: {}", e)));
     match result {
         rbqn_prim::PrimResult::Scalar(b) => b,
