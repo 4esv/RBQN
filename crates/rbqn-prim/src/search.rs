@@ -413,6 +413,24 @@ pub fn deduplicate_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             let len = result.len();
             return Ok(PrimResult::Array(typed_arr_from_b_vec(result, vec![len], arr.fill)));
         }
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("⍷𝕩: 𝕩 must have rank ≥ 1".into()));
+    }
+    if arr.rank() > 1 {
+        // Keep the first occurrence of each major cell.
+        let lead = arr.shape[0];
+        let cell_size: usize = arr.shape[1..].iter().product();
+        let mut result = Vec::new();
+        let mut kept = 0;
+        for i in 0..lead {
+            if (0..i).any(|j| cells_equal(arr, i, j, cell_size)) { continue; }
+            for k in 0..cell_size { result.push(arr.get(i * cell_size + k)?); }
+            kept += 1;
+        }
+        let mut shape = arr.shape.clone();
+        shape[0] = kept;
+        return Ok(PrimResult::Array(typed_arr_from_b_vec(result, shape, arr.fill)));
+    }
     let ia = arr.ia();
     let mut result = Vec::new();
     for i in 0..ia {
