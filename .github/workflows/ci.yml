@@ -30,6 +30,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Smoke
+        # NOTE: RBQN_GPU_DEBUG=1 un-suppresses panic output so a silent exit 1 is visible.
+        env:
+          RBQN_GPU_DEBUG: "1"
+          RUST_BACKTRACE: "1"
+        run: test "$(target/release/rbqn -p '1+1')" = 2
+
       - name: Checkout BQN (pinned)
         uses: actions/checkout@v4
         with:
@@ -42,8 +49,9 @@ jobs:
           BQN_TEST_DIR: ${{ github.workspace }}/_deps/BQN/test
         run: |
           ./test_suite.sh
-          # NOTE: test_suite.sh exits 0 on failures in default mode; gate on the saved total.
-          grep -qx '# total_fail: 0' .test-results/baseline-latest.txt
+          # NOTE: test_suite.sh exits 0 on failures in default mode and leaves crashes
+          # out of total_fail; gate on every saved file row being PASS.
+          ! grep -Ev '^(#.*)?$' .test-results/baseline-latest.txt | grep -v ' PASS|'
 
       - name: Cache CBQN
         id: cbqn-cache
