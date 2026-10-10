@@ -198,3 +198,26 @@ fn sys_exit_after_value() {
     let (_, _, code) = run_eval("•Exit 42");
     assert_eq!(code, 42, "•Exit 42 should exit with code 42");
 }
+
+// ============================================================
+// Error wording matches CBQN for messages scripts match on (#7)
+// ============================================================
+
+#[test]
+fn test_error_wording_matches_cbqn() {
+    let cases = [
+        ("{𝕊𝕩}1", "Error: Stack overflow"),
+        ("(↕3)+↕4", "Error: Mapping: Expected equal shape prefix (⟨3⟩ ≡ ≢𝕨, ⟨4⟩ ≡ ≢𝕩)"),
+        ("(2‿3⥊0)+3‿2⥊0", "Error: Mapping: Expected equal shape prefix (2‿3 ≡ ≢𝕨, 3‿2 ≡ ≢𝕩)"),
+        ("!0", "Error: Assertion error"),
+        ("\"msg\"!0", "Error: msg"),
+        ("1÷'a'", "Error: 𝕨÷𝕩: Unexpected argument types"),
+        ("•Show 1 {", "Error: Unmatched bracket"),
+    ];
+    for (expr, want) in cases {
+        let out = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-e", expr]).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{expr} should fail");
+        assert_eq!(stderr.lines().next().unwrap_or(""), want, "wording for {expr}");
+    }
+}

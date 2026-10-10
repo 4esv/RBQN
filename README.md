@@ -24,7 +24,8 @@ A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array langu
 - `•file.Open` not implemented
 - Error messages are often unhelpful
 - No namespace support beyond the built-in ones
-- Known divergences from CBQN: rank>1 fold returns a value instead of erroring, `⌊`/`⌈` with NaN follow Rust `min`/`max`, large floats print with all digits instead of `1e308`, error message wording differs
+- Known divergences from CBQN: rank>1 fold returns a value instead of erroring, `⌊`/`⌈` with NaN follow Rust `min`/`max`, large floats print with all digits instead of `1e308`
+- Error messages: the parts scripts match on follow CBQN (no `Domain error:`-style kind prefix, `Stack overflow`, `Mapping: Expected equal shape prefix (…)` for arithmetic, `Assertion error` / the `!` message, compiler messages without position). Accepted divergence: per-primitive wording (e.g. `⊑` out-of-bounds, `↕`, `⌽`, `>`, `⊏` messages), values shown in Rust notation (`[1, 2]` instead of `⟨1, 2⟩`), and no source position or caret under the error
 - Deeper recursion than CBQN is allowed (limit 20000 block levels; native recursion on deeply nested arrays is not guarded)
 
 ## Performance

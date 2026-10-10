@@ -1,4 +1,5 @@
 use rbqn_core::*;
+use rbqn_core::error::fmt_shape;
 use crate::dispatch::PrimResult;
 
 fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
@@ -221,8 +222,8 @@ fn cmp_pervasive(
                 Ok(PrimResult::Array(out))
             } else {
                 Err(BqnError::Shape(format!(
-                    "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                    wa_arr.shape, xa_arr.shape
+                    "𝕨{name}𝕩: Expected equal shape prefix ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+                    fmt_shape(&wa_arr.shape), fmt_shape(&xa_arr.shape)
                 )))
             }
         }

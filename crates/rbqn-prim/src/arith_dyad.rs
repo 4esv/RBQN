@@ -1,5 +1,6 @@
 use std::sync::OnceLock;
 use rbqn_core::*;
+use rbqn_core::error::fmt_shape;
 use crate::dispatch::PrimResult;
 
 // NOTE: GPU dispatch hook — set by rbqn crate at startup via register_gpu_arith.
@@ -156,8 +157,8 @@ fn pervasive_boxed_arr_arr<F: Fn(f64, f64) -> f64 + Copy>(
 ) -> Result<PrimResult> {
     if wa_arr.shape != xa_arr.shape {
         return Err(BqnError::Shape(format!(
-            "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-            wa_arr.shape, xa_arr.shape
+            "Mapping: Expected equal shape prefix ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+                    fmt_shape(&wa_arr.shape), fmt_shape(&xa_arr.shape)
         )));
     }
     let n = wa_arr.ia();
@@ -297,8 +298,8 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
                     return Ok(PrimResult::Array(array::squeeze_num(out)));
                 } else {
                     return Err(BqnError::Shape(format!(
-                        "𝕨{name}𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                        wa_arr.shape, xa_arr.shape
+                        "Mapping: Expected equal shape prefix ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+                    fmt_shape(&wa_arr.shape), fmt_shape(&xa_arr.shape)
                     )));
                 }
             }
@@ -598,9 +599,8 @@ fn pervasive_char_add(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>, w_is
                 Ok(PrimResult::Array(out))
             } else {
                 Err(BqnError::Shape(format!(
-                    "𝕨+𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                    if w_is_char { &ca_arr.shape } else { &na_arr.shape },
-                    if w_is_char { &na_arr.shape } else { &ca_arr.shape },
+                    "Mapping: Expected equal shape prefix ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+                    fmt_shape(if w_is_char { &ca_arr.shape } else { &na_arr.shape }), fmt_shape(if w_is_char { &na_arr.shape } else { &ca_arr.shape })
                 )))
             }
         }
@@ -686,8 +686,8 @@ fn pervasive_char_sub_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) 
                 Ok(PrimResult::Array(out))
             } else {
                 Err(BqnError::Shape(format!(
-                    "𝕨-𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                    wa_arr.shape, xa_arr.shape
+                    "Mapping: Expected equal shape prefix ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+                    fmt_shape(&wa_arr.shape), fmt_shape(&xa_arr.shape)
                 )))
             }
         }
@@ -744,8 +744,8 @@ fn pervasive_char_sub_char(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>)
                 Ok(PrimResult::Array(array::squeeze_num(out)))
             } else {
                 Err(BqnError::Shape(format!(
-                    "𝕨-𝕩: Expected equal shape prefix ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                    wa_arr.shape, xa_arr.shape
+                    "Mapping: Expected equal shape prefix ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+                    fmt_shape(&wa_arr.shape), fmt_shape(&xa_arr.shape)
                 )))
             }
         }
