@@ -8,6 +8,7 @@ fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
 
 /// Recursive helper for pervasive comparison on a single B value pair.
 fn cmp_pervasive_b(w: B, x: B, scalar_fn: fn(B, B) -> i32, name: &str) -> Result<B> {
+    rbqn_core::stack::guard();
     let wa = get_arr(w);
     let xa = get_arr(x);
     match (wa, xa) {

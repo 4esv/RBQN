@@ -60,6 +60,7 @@ pub fn register_derived_equal_fn(f: impl Fn(B, B, u32) -> bool + 'static) {
 
 /// Deep structural equality (BQN ≡). Compares arrays recursively.
 pub fn deep_equal(w: B, x: B) -> bool {
+    crate::stack::guard();
     if w.is_f64() && x.is_f64() {
         return w.o2f() == x.o2f();
     }
@@ -158,6 +159,7 @@ pub fn compare(w: B, x: B) -> i32 {
 /// Atoms are promoted to rank-0 arrays (enclosed). If an enclosed atom matches
 /// an array, the atom is considered smaller.
 fn compare_values(w: B, x: B) -> i32 {
+    crate::stack::guard();
     let w_is_atom = !w.is_arr();
     let x_is_atom = !x.is_arr();
 

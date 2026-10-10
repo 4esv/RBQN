@@ -64,6 +64,7 @@ fn negate_int(arr: &BqnArr) -> Option<ArrData> {
 // NOTE: Recursive helper for pervasive monadic application on a single B value.
 // Handles scalars, flat numeric arrays, and nested Boxed arrays.
 fn pervasive_monad_b(x: B, scalar_fn: fn(f64) -> f64, name: &str) -> Result<B> {
+    rbqn_core::stack::guard();
     if x.is_f64() {
         return Ok(B::m_f64(scalar_fn(x.o2f())));
     }

@@ -7,6 +7,7 @@ pub mod fill;
 pub mod compare;
 pub mod format;
 pub mod error;
+pub mod stack;
 
 pub use value::B;
 pub use value::{tagu64, TAG_TAG, FUN_TAG, ARR_TAG, MD1_TAG, MD2_TAG, NSP_TAG, VAR_TAG, EXT_TAG, ALIAS_TAG};

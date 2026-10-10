@@ -91,6 +91,7 @@ fn strides_from_shape(shape: &[usize]) -> Vec<usize> {
 // For arrays: same shape, each element replaced by its prototype.
 // This is used when filling padding cells in structural operations.
 pub fn prototype_of(b: B) -> B {
+    rbqn_core::stack::guard();
     if b.is_f64() {
         return B::m_f64(0.0);
     }
@@ -109,21 +110,14 @@ fn prototype_of_arr(arr: &BqnArr) -> B {
         ArrData::Boxed(elems) => {
             // Recursively compute prototype of each element
             let proto_elems: Vec<B> = elems.iter().map(|&e| prototype_of(e)).collect();
-            let mut out = BqnArr {
+            // NOTE: reuse the first element's prototype; recomputing it doubled the
+            // work per nesting level (2^depth on a nested singleton).
+            let fill = if arr.ia() > 0 { proto_elems.first().copied() } else { None };
+            tag_arr(BqnArr {
                 shape: arr.shape.clone(),
                 data: ArrData::Boxed(proto_elems),
-                fill: None,
-            };
-            out.fill = if arr.ia() > 0 {
-                if let Ok(first) = arr.get(0) {
-                    Some(prototype_of(first))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            tag_arr(out)
+                fill,
+            })
         }
         ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) => {
             // Char array: prototype is spaces with same shape
@@ -197,6 +191,7 @@ pub fn shape_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ≡ monad: depth
 pub fn depth_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     fn compute_depth_b(x: B) -> i32 {
+        rbqn_core::stack::guard();
         // Scalar atom (number or char) has depth 0
         if x.is_f64() || x.is_c32() { return 0; }
         // Array (including boxed scalar)
