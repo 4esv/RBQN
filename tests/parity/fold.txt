@@ -1,0 +1,4 @@
+# Fold requires a list; rank>1 must error (issue #4)
+{+´𝕩}⎊"err" 2‿3⥊↕6
+{+´𝕩}⎊"err" 1‿1‿1⥊5
++´ ↕6
