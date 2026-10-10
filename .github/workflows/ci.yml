@@ -30,6 +30,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: DEBUG panic site
+        continue-on-error: true
+        run: |
+          rustc --version
+          lldb --batch -o 'breakpoint set -n rust_panic' -o run -o 'bt 40' -- target/release/rbqn -p '1+1'
+
       - name: Smoke
         # NOTE: RBQN_GPU_DEBUG=1 un-suppresses panic output so a silent exit 1 is visible.
         env:
