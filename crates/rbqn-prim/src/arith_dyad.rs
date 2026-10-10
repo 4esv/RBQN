@@ -347,6 +347,18 @@ fn char_num_class(v: B, va: Option<&BqnArr>) -> char {
 }
 
 /// Scalar number-number fast path for primitive index `op` (0..=17: `+-×÷⋆√⌊⌈|¬∧∨<>≠=≤≥`).
+/// ⌊ on f64: like f64::min but NaN in either argument gives NaN (CBQN parity).
+#[inline(always)]
+pub fn nan_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() { f64::NAN } else { a.min(b) }
+}
+
+/// ⌈ on f64: like f64::max but NaN in either argument gives NaN (CBQN parity).
+#[inline(always)]
+pub fn nan_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() { f64::NAN } else { a.max(b) }
+}
+
 /// Mirrors the `w.is_f64() && x.is_f64()` branch of each `*_c2` below and the scalar
 /// comparison functions in compare.rs; comparisons return 0.0/1.0.
 #[inline(always)]
@@ -358,8 +370,8 @@ pub fn scalar_dyad(op: u8, w: f64, x: f64) -> f64 {
         3 => w / (x + 0.0),
         4 => (w + 0.0).powf(x),
         5 => (x + 0.0).powf(1.0 / (0.0 + w)),
-        6 => w.min(x),
-        7 => w.max(x),
+        6 => nan_min(w, x),
+        7 => nan_max(w, x),
         8 => pfmod(x, w),
         9 => 1.0 + w - x,
         10 => w * x,
@@ -798,17 +810,17 @@ pub fn root_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
 // ⌊ dyad: minimum
 pub fn floor_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if w.is_f64() && x.is_f64() {
-        return Ok(PrimResult::Scalar(B::m_f64(w.o2f().min(x.o2f()))));
+        return Ok(PrimResult::Scalar(B::m_f64(nan_min(w.o2f(), x.o2f()))));
     }
-    pervasive_dyad(w, wa, x, xa, f64::min, "⌊")
+    pervasive_dyad(w, wa, x, xa, nan_min, "⌊")
 }
 
 // ⌈ dyad: maximum
 pub fn ceil_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if w.is_f64() && x.is_f64() {
-        return Ok(PrimResult::Scalar(B::m_f64(w.o2f().max(x.o2f()))));
+        return Ok(PrimResult::Scalar(B::m_f64(nan_max(w.o2f(), x.o2f()))));
     }
-    pervasive_dyad(w, wa, x, xa, f64::max, "⌈")
+    pervasive_dyad(w, wa, x, xa, nan_max, "⌈")
 }
 
 // | dyad: modulus
