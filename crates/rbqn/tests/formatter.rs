@@ -140,3 +140,21 @@ fn fallback_bootstrap_no_crash() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// --- Number formatting (issue #6) ---
+
+#[test]
+fn fmt_large_float_exponent() {
+    assert_output("1e308", "1e308");
+    assert_output("1e15", "1e15");
+    assert_output("999999999999999", "999999999999999");
+    assert_output("2⋆60", "1.152921504606847e18");
+    assert_output("¯1e300", "¯1e300");
+}
+
+#[test]
+fn fmt_small_float_exponent() {
+    assert_output("1e¯5", "1e¯5");
+    assert_output("0.0001", "0.0001");
+    assert_output("¯1.2345e¯5", "¯1.2345e¯5");
+}

@@ -464,26 +464,7 @@ fn format_b(val: B) -> String {
 
 /// Format a number using BQN conventions: ¯ prefix for negatives, no trailing zeros.
 fn format_number(f: f64) -> String {
-    if f.is_nan() {
-        return "NaN".to_string();
-    }
-    if f.is_infinite() {
-        return if f > 0.0 { "∞".to_string() } else { "¯∞".to_string() };
-    }
-    let neg = f < 0.0;
-    let abs = f.abs();
-    let formatted = if abs == abs.floor() && abs < 1e15 {
-        format!("{}", abs as i64)
-    } else {
-        // Use Rust's default float formatting, then trim trailing zeros after decimal
-        let s = format!("{}", abs);
-        s
-    };
-    if neg {
-        format!("¯{}", formatted)
-    } else {
-        formatted
-    }
+    rbqn_vm::derive::fmt_f64(f)
 }
 
 fn format_arr(arr: &BqnArr) -> String {
