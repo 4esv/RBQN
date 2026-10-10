@@ -86,9 +86,9 @@ fn grade_small<T: Copy, const K: usize>(vals: &[T], idx: impl Fn(T) -> usize, as
     {
         let ch: [&[T]; C] = std::array::from_fn(|c| &vals[c * q..(c + 1) * q]);
         for j in 0..q {
-            for c in 0..C {
-                // SAFETY: j < q = ch[c].len(); idx & (K-1) < K = cnt.len().
-                unsafe { cnt.get_unchecked_mut(idx(*ch[c].get_unchecked(j)) & (K - 1))[c] += 1; }
+            for (c, s) in ch.iter().enumerate() {
+                // SAFETY: j < q = s.len(); idx & (K-1) < K = cnt.len().
+                unsafe { cnt.get_unchecked_mut(idx(*s.get_unchecked(j)) & (K - 1))[c] += 1; }
             }
         }
         for &x in &vals[C * q..] { cnt[idx(x) & (K - 1)][C - 1] += 1; }
@@ -202,9 +202,9 @@ fn sort_ints<T: Copy + Ord>(v: &mut [T], key: impl Fn(T) -> i64, from: impl Fn(i
             pos += c;
         };
         if ascending {
-            for b in 0..range { let c = cnt[b]; if c > 0 { emit(b, c, v); } }
+            for (b, &c) in cnt[..range].iter().enumerate() { if c > 0 { emit(b, c, v); } }
         } else {
-            for b in (0..range).rev() { let c = cnt[b]; if c > 0 { emit(b, c, v); } }
+            for (b, &c) in cnt[..range].iter().enumerate().rev() { if c > 0 { emit(b, c, v); } }
         }
     } else if ascending {
         v.sort_unstable();
@@ -218,14 +218,14 @@ fn sort_ints<T: Copy + Ord>(v: &mut [T], key: impl Fn(T) -> i64, from: impl Fn(i
 /// `idx` maps order-preservingly into 0..K and `val` inverts it.
 fn sort_small<T: Copy, const K: usize>(v: &[T], idx: impl Fn(T) -> usize, val: impl Fn(usize) -> T, ascending: bool) -> Vec<T> {
     let mut cnt = vec![[0usize; 4]; K];
-    let mut ch = v.chunks_exact(4);
-    for w in &mut ch {
-        for c in 0..4 {
+    let (ch, rest) = v.as_chunks::<4>();
+    for w in ch {
+        for (c, &x) in w.iter().enumerate() {
             // SAFETY: idx & (K-1) < K = cnt.len().
-            unsafe { cnt.get_unchecked_mut(idx(w[c]) & (K - 1))[c] += 1; }
+            unsafe { cnt.get_unchecked_mut(idx(x) & (K - 1))[c] += 1; }
         }
     }
-    for &x in ch.remainder() { cnt[idx(x) & (K - 1)][0] += 1; }
+    for &x in rest { cnt[idx(x) & (K - 1)][0] += 1; }
     let mut out = Vec::with_capacity(v.len());
     let mut emit = |b: usize| {
         let c: usize = cnt[b].iter().sum();

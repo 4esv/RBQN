@@ -499,14 +499,11 @@ pub fn v_seth(pscs: &[ScRef], s: B, x: B) -> bool {
         if x.is_nsp() {
             let ns = get_ns(x);
             match ns.get_by_gid(gid) {
-                Some(field_val) => {
-                    if d < pscs.len() {
-                        pscs[d].var_set(p, field_val);
-                        true
-                    } else {
-                        false
-                    }
+                Some(field_val) if d < pscs.len() => {
+                    pscs[d].var_set(p, field_val);
+                    true
                 }
+                Some(_) => false,
                 None => false, // field not found → header doesn't match
             }
         } else {

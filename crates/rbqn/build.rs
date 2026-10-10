@@ -29,10 +29,10 @@ fn main() {
 
     // Dev profile: also watch BQN_SRC for source changes
     let profile = env::var("PROFILE").unwrap_or_default();
-    if profile != "release" {
-        if let Ok(bqn_src) = env::var("BQN_SRC") {
-            println!("cargo:rerun-if-changed={bqn_src}");
-        }
+    if profile != "release"
+        && let Ok(bqn_src) = env::var("BQN_SRC")
+    {
+        println!("cargo:rerun-if-changed={bqn_src}");
     }
     println!("cargo:rerun-if-env-changed=BQN_SRC");
 }

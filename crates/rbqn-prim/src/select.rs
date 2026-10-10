@@ -184,10 +184,10 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
             return Ok(PrimResult::Array(out));
         }
         // Multi-dimensional: return the selected cell
-        if arr.el_type() != ElType::B {
-            if let Some(data) = gather_cells(&arr.data, &[idx], cell_size) {
-                return Ok(PrimResult::Array(BqnArr { shape: cell_shape.to_vec(), data, fill: typed_fill(arr) }));
-            }
+        if arr.el_type() != ElType::B
+            && let Some(data) = gather_cells(&arr.data, &[idx], cell_size)
+        {
+            return Ok(PrimResult::Array(BqnArr { shape: cell_shape.to_vec(), data, fill: typed_fill(arr) }));
         }
         let mut result = Vec::with_capacity(cell_size);
         for j in 0..cell_size {
@@ -424,14 +424,14 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 
     // Fast path: typed integer 𝕨, typed 𝕩, non-empty result.
     let real_cell: usize = cell_shape.iter().product();
-    if warr.ia() > 0 && arr.rank() >= 1 && arr.el_type() != ElType::B {
-        if let Some(r) = resolve_typed_indices(warr, first_dim) {
-            let idx = r?;
-            if let Some(data) = gather_cells(&arr.data, &idx, real_cell) {
-                let mut out_shape = warr.shape.clone();
-                out_shape.extend_from_slice(cell_shape);
-                return Ok(PrimResult::Array(BqnArr { shape: out_shape, data, fill: typed_fill(arr) }));
-            }
+    if warr.ia() > 0 && arr.rank() >= 1 && arr.el_type() != ElType::B
+        && let Some(r) = resolve_typed_indices(warr, first_dim)
+    {
+        let idx = r?;
+        if let Some(data) = gather_cells(&arr.data, &idx, real_cell) {
+            let mut out_shape = warr.shape.clone();
+            out_shape.extend_from_slice(cell_shape);
+            return Ok(PrimResult::Array(BqnArr { shape: out_shape, data, fill: typed_fill(arr) }));
         }
     }
 

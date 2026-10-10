@@ -74,7 +74,7 @@ const EXACT: i64 = 1 << 53;
 fn bit_count(v: &[u64], n: usize) -> i64 {
     let full = n / 64;
     let mut c: i64 = v[..full].iter().map(|w| w.count_ones() as i64).sum();
-    if n % 64 != 0 {
+    if !n.is_multiple_of(64) {
         c += (v[full] & ((1u64 << (n % 64)) - 1)).count_ones() as i64;
     }
     c

@@ -53,6 +53,7 @@ fn small_buf(device: &wgpu::Device) -> wgpu::Buffer {
 /// Core: sorts `input` (any 4-byte kind) as u32 after `load_mask`, undoing it
 /// with `store_mask` on the final key store. `grade` carries the original
 /// index; `want_keys` false skips storing keys on the last pass.
+#[allow(clippy::too_many_arguments)]
 fn sort_impl(
     device: &Arc<wgpu::Device>,
     queue: &wgpu::Queue,

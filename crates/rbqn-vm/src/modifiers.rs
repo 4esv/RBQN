@@ -2334,7 +2334,7 @@ fn bit_arr_to_bytes(arr: &rbqn_core::array::BqnArr, width: usize) -> Vec<u8> {
     match width {
         1 => {
             let n = arr.ia();
-            let byte_count = (n + 7) / 8;
+            let byte_count = n.div_ceil(8);
             let mut bytes = vec![0u8; byte_count];
             for i in 0..n {
                 if arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e)).o2f() != 0.0 {
@@ -2367,7 +2367,7 @@ fn bit_arr_to_bytes(arr: &rbqn_core::array::BqnArr, width: usize) -> Vec<u8> {
             }
             bytes
         }
-        _ => rbqn_core::error::throw(&format!("•bit: unsupported width {}", width)),
+        _ => rbqn_core::error::throw(format!("•bit: unsupported width {}", width)),
     }
 }
 
@@ -2386,21 +2386,21 @@ fn bit_bytes_to_arr(bytes: &[u8], width: usize, total_bits: usize) -> B {
             crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
         }
         16 => {
-            let elems: Vec<f64> = bytes.chunks_exact(2).take(elem_count)
+            let elems: Vec<f64> = bytes.as_chunks::<2>().0.iter().take(elem_count)
                 .map(|c| i16::from_le_bytes([c[0], c[1]]) as f64).collect();
             crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
         }
         32 => {
-            let elems: Vec<f64> = bytes.chunks_exact(4).take(elem_count)
+            let elems: Vec<f64> = bytes.as_chunks::<4>().0.iter().take(elem_count)
                 .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64).collect();
             crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
         }
         64 => {
-            let elems: Vec<f64> = bytes.chunks_exact(8).take(elem_count)
+            let elems: Vec<f64> = bytes.as_chunks::<8>().0.iter().take(elem_count)
                 .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])).collect();
             crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(elems))
         }
-        _ => rbqn_core::error::throw(&format!("•bit: unsupported result width {}", width)),
+        _ => rbqn_core::error::throw(format!("•bit: unsupported result width {}", width)),
     }
 }
 
@@ -2417,7 +2417,7 @@ fn bit_read_signed(bytes: &[u8], offset: usize, ow: usize) -> i64 {
             bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3],
             bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7],
         ]),
-        _ => rbqn_core::error::throw(&format!("•bit: unsupported width {}", ow)),
+        _ => rbqn_core::error::throw(format!("•bit: unsupported width {}", ow)),
     }
 }
 
@@ -2435,7 +2435,7 @@ fn bit_write_signed(bytes: &mut [u8], offset: usize, ow: usize, val: i64) {
         16 => bytes[offset..offset + 2].copy_from_slice(&(val as i16).to_le_bytes()),
         32 => bytes[offset..offset + 4].copy_from_slice(&(val as i32).to_le_bytes()),
         64 => bytes[offset..offset + 8].copy_from_slice(&val.to_le_bytes()),
-        _ => rbqn_core::error::throw(&format!("•bit: unsupported width {}", ow)),
+        _ => rbqn_core::error::throw(format!("•bit: unsupported width {}", ow)),
     }
 }
 

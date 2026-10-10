@@ -158,8 +158,8 @@ mod tests {
     fn grid_covers_all_groups_within_cap() {
         for groups in [0u32, 1, 255, 65535, 65536, 131070, 390625, 1 << 22] {
             let (x, y) = workgroup_grid(groups);
-            assert!(x >= 1 && x <= MAX_WORKGROUPS_PER_DIM, "x={x} for {groups}");
-            assert!(y >= 1 && y <= MAX_WORKGROUPS_PER_DIM, "y={y} for {groups}");
+            assert!((1..=MAX_WORKGROUPS_PER_DIM).contains(&x), "x={x} for {groups}");
+            assert!((1..=MAX_WORKGROUPS_PER_DIM).contains(&y), "y={y} for {groups}");
             let covered = x as u64 * y as u64;
             assert!(covered >= groups as u64, "{groups} groups, grid {x}x{y}");
             // Never a whole spare row: y is the minimum that covers.
