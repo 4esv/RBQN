@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # NOTE: Pins match the tree the suite and parity corpus were validated against.
+  BQN_REV: f5706ec1aea51178ec905e896252b582556d7dc0
+  CBQN_REV: f4257c14be5cbf1446ab2d0862af2391166d850b
+
+jobs:
+  build-test:
+    # NOTE: macOS for Metal, so the GPU paths run under wgpu.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Checkout BQN (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: mlochbaum/BQN
+          ref: ${{ env.BQN_REV }}
+          path: _deps/BQN
+
+      - name: Test suite
+        env:
+          BQN_TEST_DIR: ${{ github.workspace }}/_deps/BQN/test
+        run: |
+          ./test_suite.sh
+          # NOTE: test_suite.sh exits 0 on failures in default mode; gate on the saved total.
+          grep -qx '# total_fail: 0' .test-results/baseline-latest.txt
+
+      - name: Cache CBQN
+        id: cbqn-cache
+        uses: actions/cache@v4
+        with:
+          path: _deps/CBQN/BQN
+          key: cbqn-${{ runner.os }}-${{ runner.arch }}-${{ env.CBQN_REV }}
+
+      - name: Build CBQN (pinned)
+        if: steps.cbqn-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/dzaima/CBQN.git _deps/CBQN-src
+          git -C _deps/CBQN-src checkout "$CBQN_REV"
+          make -C _deps/CBQN-src -j"$(sysctl -n hw.ncpu)"
+          mkdir -p _deps/CBQN
+          cp _deps/CBQN-src/BQN _deps/CBQN/BQN
+
+      - name: Parity vs CBQN
+        env:
+          CBQN_BIN: ${{ github.workspace }}/_deps/CBQN/BQN
+        run: ./test_parity.sh
+
+      - name: Bench summary
+        if: always() && steps.cbqn-cache.outcome != 'skipped'
+        run: |
+          brew install hyperfine
+          {
+            echo "## bench/compare.sh (CBQN ${CBQN_REV:0:7})"
+            echo
+            HYPERFINE="$(command -v hyperfine)" bench/compare.sh target/release/rbqn "$GITHUB_WORKSPACE/_deps/CBQN/BQN"
+          } >> "$GITHUB_STEP_SUMMARY"
