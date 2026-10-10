@@ -4,6 +4,7 @@
 //! the boxing and dispatch.
 
 use rbqn_core::{ArrData, BqnArr, B};
+use rbqn_prim::arith_dyad::{nan_max, nan_min};
 
 // Runtime primitive indices (see rbqn_prim::get_runtime).
 const ADD: usize = 0;
@@ -213,8 +214,8 @@ pub fn fold(f: B, arr: &BqnArr, init: Option<f64>) -> Option<B> {
     let r = match idx {
         ADD => fold_with(arr, init, |a, b| a + b),
         MUL | AND => fold_with(arr, init, |a, b| a * b),
-        MIN => fold_with(arr, init, f64::min),
-        MAX => fold_with(arr, init, f64::max),
+        MIN => fold_with(arr, init, nan_min),
+        MAX => fold_with(arr, init, nan_max),
         OR => fold_with(arr, init, |a, b| a + b - a * b),
         _ => None,
     }?;
@@ -254,8 +255,8 @@ pub fn scan(f: B, arr: &BqnArr) -> Option<BqnArr> {
     let r = match idx {
         ADD => scan_with(arr, |a, b| a + b),
         MUL | AND => scan_with(arr, |a, b| a * b),
-        MIN => scan_with(arr, f64::min),
-        MAX => scan_with(arr, f64::max),
+        MIN => scan_with(arr, nan_min),
+        MAX => scan_with(arr, nan_max),
         OR => scan_with(arr, |a, b| a + b - a * b),
         _ => None,
     }?;
@@ -314,8 +315,8 @@ pub fn table(f: B, warr: &BqnArr, xarr: &BqnArr) -> Option<BqnArr> {
         1 => table_with(&w, &x, |a, b| a - b),
         2 => table_with(&w, &x, |a, b| a * b),
         3 => table_with(&w, &x, |a, b| a / (b + 0.0)),
-        6 => table_with(&w, &x, f64::min),
-        7 => table_with(&w, &x, f64::max),
+        6 => table_with(&w, &x, nan_min),
+        7 => table_with(&w, &x, nan_max),
         _ => table_with(&w, &x, |a, b| pfmod(b, a)),
     };
     let mut out = rbqn_core::array::squeeze_num(BqnArr::new_vec_f64(r));
