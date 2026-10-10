@@ -39,6 +39,7 @@ pub fn set_rt_under(f: B) {
 
 /// Get the BQN runtime's Under function, if available.
 fn get_rt_under() -> Option<B> {
+    crate::derive::ensure_rt1();
     *RT_UNDER.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -54,6 +55,7 @@ pub fn set_rt_depth(f: B) {
 
 /// Get the BQN runtime's Depth function, if available.
 fn get_rt_depth() -> Option<B> {
+    crate::derive::ensure_rt1();
     *RT_DEPTH.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -1229,6 +1231,14 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
                         crate::derive::DerivedKind::NativeFn { prim_idx: 36 } => {
                             return Some(structural_select_under(f, k, x));
                         }
+                        // F⌾(mask⊸/) x — boolean-mask replicate-under on a list
+                        crate::derive::DerivedKind::NativeFn { prim_idx: 33 } => {
+                            return mask_replicate_under(f, k, x);
+                        }
+                        // F⌾(i⊸⊑) x — numeric index into a list
+                        crate::derive::DerivedKind::NativeFn { prim_idx: 37 } => {
+                            return index_pick_under(f, k, x);
+                        }
                         _ => {}
                     }
                 }
@@ -1348,6 +1358,65 @@ fn try_structural_under(f: B, g: B, x: B) -> Option<B> {
 
 /// Structural select-under: F⌾(indices⊸⊏) x
 /// Applies F to the elements at the given indices, leaving others unchanged.
+/// F⌾(i⊸⊑) x for an integer i (negative counts from the end) and a list x:
+/// replace x's element i with F of it. Other shapes return None.
+fn index_pick_under(f: B, i_b: B, x: B) -> Option<B> {
+    if !i_b.is_f64() { return None; }
+    let xa = crate::vm::get_arr(x)?;
+    let n = xa.ia() as f64;
+    let i = i_b.o2f();
+    if xa.shape.len() != 1 || i.fract() != 0.0 || i < -n || i >= n {
+        return None;
+    }
+    let i = if i < 0.0 { i + n } else { i } as usize;
+    let modified = c1(f, xa.get(i).ok()?);
+    let mut elems = Vec::with_capacity(xa.ia());
+    for j in 0..xa.ia() {
+        elems.push(if j == i { modified } else { xa.get(j).ok()? });
+    }
+    let out = rbqn_core::array::typed_arr_from_b_vec(elems, xa.shape.clone(), xa.fill);
+    Some(crate::vm::tag_arr(out))
+}
+
+/// F⌾(mask⊸/) x for a boolean list mask and a list x of the same length: apply F
+/// to mask/x and write its cells back where mask is 1. Other shapes return None
+/// and go to the runtime's Under.
+fn mask_replicate_under(f: B, mask_b: B, x: B) -> Option<B> {
+    let ma = crate::vm::get_arr(mask_b)?;
+    let xa = crate::vm::get_arr(x)?;
+    if ma.shape.len() != 1 || xa.shape.len() != 1 || ma.ia() != xa.ia() {
+        return None;
+    }
+    let mut mask = Vec::with_capacity(ma.ia());
+    for i in 0..ma.ia() {
+        let m = ma.get(i).ok()?;
+        if !m.is_f64() { return None; }
+        match m.o2f() {
+            0.0 => mask.push(false),
+            1.0 => mask.push(true),
+            _ => return None,
+        }
+    }
+    let selected = c2(crate::derive::m_native_fn(33), mask_b, x); // mask/x
+    let modified = c1(f, selected);
+    let n = mask.iter().filter(|&&m| m).count();
+    let mod_arr = crate::vm::get_arr(modified)
+        .filter(|a| a.shape.len() == 1 && a.ia() == n)
+        .unwrap_or_else(|| rbqn_core::error::throw("⌾: 𝔽 must return an array with the same shape as its input"));
+    let mut j = 0;
+    let mut elems = Vec::with_capacity(xa.ia());
+    for (i, &m) in mask.iter().enumerate() {
+        if m {
+            elems.push(mod_arr.get(j).ok()?);
+            j += 1;
+        } else {
+            elems.push(xa.get(i).ok()?);
+        }
+    }
+    let out = rbqn_core::array::typed_arr_from_b_vec(elems, xa.shape.clone(), xa.fill);
+    Some(crate::vm::tag_arr(out))
+}
+
 fn structural_select_under(f: B, indices_b: B, x: B) -> B {
     if !x.is_arr() {
         rbqn_core::error::throw("⌾(⊸⊏): 𝕩 must be an array");
@@ -1667,12 +1736,16 @@ fn under_c1(f: B, g: B, x: B) -> B {
 // CBQN transforms this to: (G(w)⊸F)⌾G x — binds G(w) as left arg of F,
 // then does monadic Under.
 fn under_c2(f: B, g: B, w: B, x: B) -> B {
-    // If the BQN runtime's Under is available, use CBQN's approach:
-    // Build f2 = (G(w))⊸F, then call monadic under: f2⌾G x
+    // CBQN's approach: build f2 = (G(w))⊸F, then call monadic under: f2⌾G x.
+    // Native structural patterns first, as in under_c1: the compiler's own
+    // k⊸/ and k⊸⊏ cases then never force runtime1 (#20).
+    let gw = c1(g, w);
+    let before_md2 = crate::derive::m_native_md2(55); // ⊸ (Before)
+    let f2 = crate::derive::m_md2d(before_md2, gw, f);
+    if let Some(result) = try_structural_under(f2, g, x) {
+        return result;
+    }
     if let Some(rt_under) = get_rt_under() {
-        let gw = c1(g, w);
-        let before_md2 = crate::derive::m_native_md2(55); // ⊸ (Before)
-        let f2 = crate::derive::m_md2d(before_md2, gw, f);
         let under_fn = crate::derive::m_md2d(rt_under, f2, g);
         return c1(under_fn, x);
     }
@@ -1680,7 +1753,6 @@ fn under_c2(f: B, g: B, w: B, x: B) -> B {
     // Fallback: basic computational under (pre-runtime1)
     let gx = c1(g, x);
     let comp_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let gw = c1(g, w);
         let fgx = c2(f, gw, gx);
         let g_inv = crate::derive::inv_reg(g);
         c1(g_inv, fgx)

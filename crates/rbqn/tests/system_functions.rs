@@ -251,3 +251,30 @@ fn test_native_recursion_guarded() {
     let expr = "a←0 ⋄ {𝕊: a↩⟨a⟩}¨↕5000000 ⋄ b←1 ⋄ {𝕊: b↩⟨b⟩}¨↕5000000 ⋄ •Show a≡b";
     assert_eq!(eval_bin(expr), ("Error: Stack overflow".into(), false));
 }
+
+// ============================================================
+// runtime1 runs on first use of ⁼/⌾/⚇, not at startup (#20)
+// ============================================================
+
+#[test]
+fn test_runtime1_deferred() {
+    let run = |expr: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_rbqn"))
+            .args(["-p", expr])
+            .env("RBQN_TIMING", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let ran = String::from_utf8_lossy(&out.stderr).contains("runtime1 (deferred)");
+        (stdout, ran)
+    };
+    // The compiler's own ⌾ uses (k⊸/, k⊸⊏, i⊸⊑) stay native.
+    assert_eq!(run("{a‿b←𝕩 ⋄ a+b×2}¨⟨1‿2,3‿4⟩"), ("⟨ 5 11 ⟩".to_string(), false));
+    assert_eq!(run("⌽⌾(1‿0‿1‿1⊸/) 1‿2‿3‿4"), ("⟨ 4 2 3 1 ⟩".to_string(), false));
+    assert_eq!(run("1‿0‿1 +⌾(1‿0‿1⊸/) 10‿20‿30"), ("⟨ 11 20 31 ⟩".to_string(), false));
+    assert_eq!(run("-⌾(2⊸⊑) 1‿2‿3"), ("⟨ 1 2 ¯3 ⟩".to_string(), false));
+    // Paths that need runtime1 still get it.
+    assert_eq!(run("3 +⁼ 10"), ("7".to_string(), true));
+    assert_eq!(run("(3⊸↑)⌾⌽ ↕6"), ("⟨ 3 4 5 ⟩".to_string(), false));
+    assert_eq!(run("⌽⚇1 ⟨1‿2,3‿4⟩"), ("⟨ ⟨ 2 1 ⟩ ⟨ 4 3 ⟩ ⟩".to_string(), true));
+}

@@ -171,6 +171,26 @@ static INV_REG_FN: std::sync::LazyLock<Mutex<Option<B>>> =
 static INV_SWAP_FN: std::sync::LazyLock<Mutex<Option<B>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
+// NOTE: runtime1 (setInv tables, BQN ⌾ and ⚇) is built on first use rather than at
+// startup (#20). The host registers the builder; ensure_rt1 runs it once per thread,
+// since its values live in this thread's DERIVED_STORE.
+static RT1_INIT: OnceLock<fn()> = OnceLock::new();
+std::thread_local! {
+    static RT1_STARTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn register_rt1_init(f: fn()) {
+    let _ = RT1_INIT.set(f);
+}
+
+/// Run the registered runtime1 builder if this thread has not run it yet.
+pub fn ensure_rt1() {
+    if !RT1_STARTED.with(|s| s.replace(true))
+        && let Some(f) = RT1_INIT.get() {
+            f();
+        }
+}
+
 /// Store the BQN inverse lookup function (called from setInvReg system fn).
 pub fn set_inv_reg_fn(f: B) {
     *INV_REG_FN.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
@@ -282,6 +302,7 @@ pub fn inv_reg(func: B) -> B {
     }
 
     // Fall through to BQN runtime resolver
+    ensure_rt1();
     let reg_fn = INV_REG_FN.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(||
         rbqn_core::error::throw("⁼: inverse system not initialized (setInv not called)")
     );
@@ -325,6 +346,7 @@ pub fn inv_swap(func: B) -> B {
             }
         }
     }
+    ensure_rt1();
     let swap_fn = INV_SWAP_FN.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or_else(||
         rbqn_core::error::throw("⁼: inverse system not initialized (setInv not called)")
     );
@@ -1033,6 +1055,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
                 // Fall through to the BQN runtime's inverse resolver which handles
                 // dyadic inverses properly (e.g., w+⁼x = x-w, w-⁼x = x+w, etc.).
                 let orig = d.f;
+                ensure_rt1();
                 let reg_fn = INV_REG_FN.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(runtime_inv) = *reg_fn {
                     drop(reg_fn);
