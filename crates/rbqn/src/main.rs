@@ -72,10 +72,11 @@ fn interp_main(mut t: std::time::Instant) {
         // VM-level lookahead — the BQN evaluator calls c2 one call at a time with no lookahead).
         rbqn_prim::arith_dyad::register_gpu_fused(gpu_runtime::gpu_fused_arith);
 
-        // NOTE: Register GPU matmul and softmax hooks into rbqn-vm::derive.
-        // These enable •math.MatMul and •math.Softmax to dispatch to GPU when available.
+        // NOTE: Register the GPU matmul hook into rbqn-vm::derive (•math.MatMul).
+        // •math.Softmax stays on the CPU: the f32 kernel cannot reproduce the f64
+        // result (1‿2‿3 gave 0.09003058075904846 for 0.09003057317038046, and ↕100
+        // underflowed to 0), see tests/gpu/corpus.txt.
         rbqn_vm::derive::register_gpu_matmul(gpu_runtime::gpu_matmul);
-        rbqn_vm::derive::register_gpu_softmax(gpu_runtime::gpu_softmax);
 
         // NOTE: Register GPU fold/scan hooks into rbqn-vm modifiers.
         // These enable +´ and +` to dispatch to GPU for large arrays.
