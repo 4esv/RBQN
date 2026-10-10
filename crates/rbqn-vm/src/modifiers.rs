@@ -687,7 +687,7 @@ fn insert_join_identity(f: B, cell_shape: &[usize], arr: &BqnArr) -> Option<B> {
 
 fn insert_c1(f: B, x: B) -> B {
     let arr = arr_of(x);
-    if arr.rank() != 1 {
+    if arr.rank() == 0 {
         rbqn_core::error::throw("˝: 𝕩 must have rank ≥ 1");
     }
     if arr.rank() == 1 {
