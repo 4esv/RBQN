@@ -386,20 +386,17 @@ fn each_c1(f: B, x: B) -> B {
             let bl = d.bl.as_ref().unwrap();
             let psc = d.sc.as_ref().unwrap();
             let body = &bl.bodies[0];
-            let mut call = |elem: B| {
-                results.push(crate::vm::exec_block_with_args(
-                    bl, body, psc.clone(), &[f, elem, B::SENTINEL],
-                ));
-            };
+            let r = &mut results;
+            use crate::vm::exec_block_each as each;
             // Read elements straight from the typed buffer: BqnArr::get recomputes
             // the shape product and re-matches the element type per element.
             match &arr.data {
-                ArrData::I8(v) => v.iter().for_each(|&e| call(B::m_i32(e as i32))),
-                ArrData::I16(v) => v.iter().for_each(|&e| call(B::m_i32(e as i32))),
-                ArrData::I32(v) => v.iter().for_each(|&e| call(B::m_i32(e))),
-                ArrData::F64(v) => v.iter().for_each(|&e| call(B::m_f64(e))),
-                ArrData::Boxed(v) => v.iter().for_each(|&e| call(e)),
-                _ => (0..n).for_each(|i| call(get_elem(&arr, i))),
+                ArrData::I8(v) => each(bl, body, psc, f, v.iter().map(|&e| B::m_i32(e as i32)), r),
+                ArrData::I16(v) => each(bl, body, psc, f, v.iter().map(|&e| B::m_i32(e as i32)), r),
+                ArrData::I32(v) => each(bl, body, psc, f, v.iter().map(|&e| B::m_i32(e)), r),
+                ArrData::F64(v) => each(bl, body, psc, f, v.iter().map(|&e| B::m_f64(e)), r),
+                ArrData::Boxed(v) => each(bl, body, psc, f, v.iter().copied(), r),
+                _ => each(bl, body, psc, f, (0..n).map(|i| get_elem(&arr, i)), r),
             }
             return results_to_arr(results, arr.shape.clone());
         }

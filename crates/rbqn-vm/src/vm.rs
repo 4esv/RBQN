@@ -546,8 +546,37 @@ pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
 #[inline]
 fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     let mut frame = Frame::enter(t, body.max_stack as usize, body.max_psc as usize);
+    run_bc(t, &mut frame, body, sc, bl)
+}
+
+/// Call block `bl` (body `body`, parent `psc`) once per element, as `F x` with
+/// `𝕊 = f`, appending results to `out`. One TLS lookup, frame and depth bump
+/// serve the whole loop instead of one per element.
+#[inline(never)]
+pub fn exec_block_each(
+    bl: &Block,
+    body: &Arc<Body>,
+    psc: &std::rc::Rc<Scope>,
+    f: B,
+    elems: impl Iterator<Item = B>,
+    out: &mut Vec<B>,
+) {
+    let var_am = body.var_am.max(3);
+    TLS.with(|t| {
+        let mut frame = Frame::enter(t, body.max_stack as usize, body.max_psc as usize);
+        for x in elems {
+            let sc = Scope::new_rc_in(t, body, psc.clone(), var_am, &[f, x, B::SENTINEL]);
+            out.push(run_bc(t, &mut frame, body, sc, bl));
+        }
+    })
+}
+
+/// The interpreter loop proper, on a frame owned by the caller.
+#[inline(always)]
+fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     let stack = &mut frame.stack;
     let pscs = &mut frame.pscs;
+    stack.clear();
     let bc: &[i32] = &bl.bc;
     let mut pc = body.bc_offset;
     let mut current_sc = sc;
