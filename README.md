@@ -67,6 +67,8 @@ cargo install rbqn
 
 No external dependencies required. The BQN compiler and runtime are embedded as bytecode.
 
+An optional profile-guided build (`bench/pgo.sh`, two steps, not available via `cargo install`) is up to 16% faster on interpreter-bound code; see `bench/pgo.md`.
+
 ## Architecture
 
 ~24K lines of Rust across five crates:
