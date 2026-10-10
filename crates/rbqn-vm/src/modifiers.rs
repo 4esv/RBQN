@@ -2015,15 +2015,20 @@ fn depthf_c2(f: B, w: B, x: B) -> B {
     if w_arr && x_arr {
         let warr = arr_of(w);
         let xarr = arr_of(x);
-        if warr.shape != xarr.shape {
-            rbqn_core::error::throw("⚇: 𝕨 and 𝕩 shapes don't match");
+        // Leading-axis agreement: each element of the lower-rank side pairs with
+        // one major cell of the other.
+        let (short, long) = if warr.rank() <= xarr.rank() { (&warr, &xarr) } else { (&xarr, &warr) };
+        if long.shape[..short.rank() as usize] != short.shape[..] {
+            rbqn_core::error::throw("⚇: Expected equal shape prefix");
         }
-        let n = warr.ia();
+        let n = long.ia();
+        let rep = (n / short.ia().max(1)).max(1);
+        let (w_rep, x_rep) = if warr.rank() <= xarr.rank() { (rep, 1) } else { (1, rep) };
         let mut results = Vec::with_capacity(n);
         for i in 0..n {
-            results.push(depthf_c2(f, get_elem(&warr, i), get_elem(&xarr, i)));
+            results.push(depthf_c2(f, get_elem(&warr, i / w_rep), get_elem(&xarr, i / x_rep)));
         }
-        return results_to_arr(results, warr.shape.clone());
+        return results_to_arr(results, long.shape.clone());
     }
     if w_arr {
         let warr = arr_of(w);

@@ -1,0 +1,14 @@
+# GPU scan/reduce overflow guards (f66f878, ca7cf8a): partial sums and products
+# past i32 must not wrap. Large enough to reach the GPU under RBQN_GPU=force.
++´+`↕1e7
++´+`1e7⥊1
+¯1⊑+`↕1e7
+¯1⊑+`3e6⥊1000
++´3e6⥊1000
++´1e6⥊2147483647
++´↕1e7
+×´1e6⥊1‿¯1
+×´2e6⥊1‿1‿2
+×´1e6⥊0‿3
+⌈´+`3e6⥊1000
+⌊´-`3e6⥊1000

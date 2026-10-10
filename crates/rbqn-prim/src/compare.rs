@@ -35,9 +35,10 @@ fn cmp_pervasive_b(w: B, x: B, scalar_fn: fn(B, B) -> i32, name: &str) -> Result
         }
         (Some(wa_arr), Some(xa_arr)) => {
             if wa_arr.shape != xa_arr.shape {
-                return Err(BqnError::Shape(format!(
-                    "𝕨{name}𝕩: shape mismatch ({:?} vs {:?})", wa_arr.shape, xa_arr.shape
-                )));
+                return match cmp_pervasive_boxed(&wa_arr, &xa_arr, scalar_fn, name)? {
+                    PrimResult::Array(a) => Ok(tag_arr(a)),
+                    PrimResult::Scalar(b) => Ok(b),
+                };
             }
             let n = wa_arr.ia();
             let mut results = Vec::with_capacity(n);
@@ -92,9 +93,10 @@ fn cmp_pervasive_boxed(
         if is_shape_prefix(&wa_arr.shape, &xa_arr.shape) {
             let w_ia = wa_arr.ia().max(1);
             let n = xa_arr.ia();
+            let rep = (n / w_ia).max(1);
             let mut results: Vec<B> = Vec::with_capacity(n);
             for i in 0..n {
-                let wv = wa_arr.get(i % w_ia)?;
+                let wv = wa_arr.get(i / rep)?;
                 let xv = xa_arr.get(i)?;
                 results.push(cmp_pervasive_b(wv, xv, scalar_fn, name)?);
             }
@@ -105,10 +107,11 @@ fn cmp_pervasive_boxed(
         if is_shape_prefix(&xa_arr.shape, &wa_arr.shape) {
             let x_ia = xa_arr.ia().max(1);
             let n = wa_arr.ia();
+            let rep = (n / x_ia).max(1);
             let mut results: Vec<B> = Vec::with_capacity(n);
             for i in 0..n {
                 let wv = wa_arr.get(i)?;
-                let xv = xa_arr.get(i % x_ia)?;
+                let xv = xa_arr.get(i / rep)?;
                 results.push(cmp_pervasive_b(wv, xv, scalar_fn, name)?);
             }
             let result_fill = results.first().copied().map(crate::structural::prototype_of);
@@ -192,9 +195,10 @@ fn cmp_pervasive(
                 // 𝕨 shorter, broadcast across leading axes of 𝕩
                 let w_ia = wa_arr.ia().max(1);
                 let x_ia = xa_arr.ia();
+                let rep = (x_ia / w_ia).max(1);
                 let mut result = Vec::with_capacity(x_ia);
                 for i in 0..x_ia {
-                    let wv = wa_arr.get(i % w_ia)?;
+                    let wv = wa_arr.get(i / rep)?;
                     let xv = xa_arr.get(i)?;
                     result.push(scalar_fn(wv, xv));
                 }
@@ -205,10 +209,11 @@ fn cmp_pervasive(
                 // 𝕩 shorter, broadcast across leading axes of 𝕨
                 let w_ia = wa_arr.ia();
                 let x_ia = xa_arr.ia().max(1);
+                let rep = (w_ia / x_ia).max(1);
                 let mut result = Vec::with_capacity(w_ia);
                 for i in 0..w_ia {
                     let wv = wa_arr.get(i)?;
-                    let xv = xa_arr.get(i % x_ia)?;
+                    let xv = xa_arr.get(i / rep)?;
                     result.push(scalar_fn(wv, xv));
                 }
                 let mut out = BqnArr::new_vec_i32(result);
