@@ -221,3 +221,33 @@ fn test_error_wording_matches_cbqn() {
         assert_eq!(stderr.lines().next().unwrap_or(""), want, "wording for {expr}");
     }
 }
+
+// ============================================================
+// Recursion limits (#8)
+// ============================================================
+
+/// First line of output (•Show and errors both go to stderr) and success.
+fn eval_bin(expr: &str) -> (String, bool) {
+    let out = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-e", expr]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    (text.lines().next().unwrap_or("").to_string(), out.status.success())
+}
+
+#[test]
+fn test_block_depth_matches_cbqn() {
+    // CBQN f4257c1 overflows above 4094 for both shapes.
+    for (expr, want) in [("•Show {𝕊⍟(𝕩<4094) 𝕩+1} 0", "4095"), ("•Show {𝕩<4094 ? 𝕊 𝕩+1 ; 𝕩} 0", "4094")] {
+        assert_eq!(eval_bin(expr), (want.into(), true), "{expr}");
+    }
+    for expr in ["•Show {𝕊⍟(𝕩<4095) 𝕩+1} 0", "•Show {𝕊⍟(𝕩<19000) 𝕩+1} 0"] {
+        assert_eq!(eval_bin(expr), ("Error: Stack overflow".into(), false), "{expr}");
+    }
+}
+
+#[test]
+fn test_native_recursion_guarded() {
+    // Nesting deep enough to exhaust the 512 MB interpreter stack in native code
+    // (no block on the recursion path): must raise, not abort the process.
+    let expr = "a←0 ⋄ {𝕊: a↩⟨a⟩}¨↕5000000 ⋄ b←1 ⋄ {𝕊: b↩⟨b⟩}¨↕5000000 ⋄ •Show a≡b";
+    assert_eq!(eval_bin(expr), ("Error: Stack overflow".into(), false));
+}

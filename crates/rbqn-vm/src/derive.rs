@@ -2579,6 +2579,7 @@ fn sys_hash_c1(x: B) -> B {
     use std::hash::{Hash, Hasher};
 
     fn hash_b(b: B) -> u64 {
+        rbqn_core::stack::guard();
         let mut h = DefaultHasher::new();
         b.0.hash(&mut h);
         if b.is_arr()
@@ -2621,6 +2622,7 @@ fn sys_cmp_c2(w: B, x: B) -> B {
 /// Total order comparison for BQN values.
 /// Type order: number(0) < character(1) < array(2) < function(3) < md1(4) < md2(5) < namespace(6)
 fn total_order_cmp(a: B, b: B) -> i32 {
+    rbqn_core::stack::guard();
     let type_a = bqn_type_ord(a);
     let type_b = bqn_type_ord(b);
     if type_a != type_b {
@@ -3789,6 +3791,7 @@ fn make_hashmap_instance(x: B) -> B {
 
 /// Simple hash for B values — used by HashMap
 fn hash_b(x: B) -> u64 {
+    rbqn_core::stack::guard();
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     x.0.hash(&mut hasher);

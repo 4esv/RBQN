@@ -629,6 +629,7 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
 /// - idx is rank-0 boxed: unwrap and apply inner to x (this accesses enclosed x)
 /// - idx is rank-1+ boxed: iterate elements, each picks from x, result is array
 fn pick_elem(idx: B, x: B) -> Result<B> {
+    rbqn_core::stack::guard();
     if idx.is_f64() {
         // Scalar: pick from rank-1 (or first axis of higher-rank)
         if x.is_atom() {

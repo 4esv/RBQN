@@ -26,7 +26,7 @@ A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array langu
 - No namespace support beyond the built-in ones
 - Known divergences from CBQN: rank>1 fold returns a value instead of erroring, `⌊`/`⌈` with NaN follow Rust `min`/`max`, large floats print with all digits instead of `1e308`
 - Error messages: the parts scripts match on follow CBQN (no `Domain error:`-style kind prefix, `Stack overflow`, `Mapping: Expected equal shape prefix (…)` for arithmetic, `Assertion error` / the `!` message, compiler messages without position). Accepted divergence: per-primitive wording (e.g. `⊑` out-of-bounds, `↕`, `⌽`, `>`, `⊏` messages), values shown in Rust notation (`[1, 2]` instead of `⟨1, 2⟩`), and no source position or caret under the error
-- Deeper recursion than CBQN is allowed (limit 20000 block levels; native recursion on deeply nested arrays is not guarded)
+- Recursion depth: 4096 nested block evaluations, as CBQN (`{𝕊⍟(𝕩<4094) 𝕩+1} 0` is the deepest that succeeds in both). Accepted divergence: CBQN halves the limit when the recursion goes through `¨`, RBQN does not. Native recursion on deeply nested arrays (comparison, hashing, sorting, arithmetic) raises `Stack overflow` before the 512 MB interpreter stack runs out, where CBQN can segfault
 
 ## Performance
 

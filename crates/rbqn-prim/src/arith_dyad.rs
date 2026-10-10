@@ -203,6 +203,7 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
     scalar_fn: F,
     name: &str,
 ) -> Result<PrimResult> {
+    rbqn_core::stack::guard();
     match (wa, xa) {
         // scalar-scalar (or scalar-box: pervasion enters boxes)
         (None, None) => {

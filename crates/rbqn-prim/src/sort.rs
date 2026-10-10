@@ -24,6 +24,7 @@ pub fn register_gpu_sort(f: GpuSortFn) {
 /// Recursively check if a B value contains any non-data (function/modifier) values.
 /// Returns true if the value or any nested array element is a function/modifier.
 fn contains_non_data(v: B) -> bool {
+    rbqn_core::stack::guard();
     if v.is_f64() || v.is_c32() { return false; }
     if v.is_fun() || v.is_md1() || v.is_md2() { return true; }
     if v.is_arr()
