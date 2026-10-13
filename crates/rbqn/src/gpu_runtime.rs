@@ -1386,65 +1386,66 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
         let max_int = |v: &[f64]| v.iter().try_fold(0.0f64, |m, &e| (e.fract() == 0.0).then(|| m.max(e.abs())));
         if max_int(&w_f64)? * max_int(&x_f64)? * k as f64 >= 16_777_216.0 { return None; }
 
-        let device = &gpu.ctx.device;
-        let queue = &gpu.ctx.queue;
-
-        // Convert to f32 for GPU kernel (matmul kernel only supports f32)
-        let w_f32: Vec<f32> = w_f64.iter().map(|&v| v as f32).collect();
-        let x_f32: Vec<f32> = x_f64.iter().map(|&v| v as f32).collect();
-
-        let a_buf = upload_f32(device, queue, &w_f32);
-        let b_buf = upload_f32(device, queue, &x_f32);
-        let out_buf = GpuBuffer::storage(device, ElementKind::F32, m * n);
-
-        {
-            let mut cache = gpu.cache.lock().ok()?;
-            rbqn_gpu::kernels::matmul::matmul(
-                device,
-                queue,
-                &mut cache,
-                &a_buf,
-                &b_buf,
-                &out_buf,
-                m as u32,
-                n as u32,
-                k as u32,
-            );
-        }
-
-        let result_f32 = pollster::block_on(download_f32(device, queue, &out_buf));
-        let result_f64: Vec<f64> = result_f32.iter().map(|&v| v as f64).collect();
-
         let out = BqnArr {
             shape: vec![m, n],
-            data: ArrData::F64(result_f64),
+            data: ArrData::F64(matmul_f32(gpu, &w_f64, &x_f64, m, k, n)?),
             fill: Some(B::m_f64(0.0)),
         };
-
-        if debug_enabled() {
-            eprintln!("[gpu] matmul {}x{}x{} (f32)", m, k, n);
-        }
-
         Some(rbqn_vm::vm::tag_arr(out))
     })
 }
 
-/// GPU-accelerated softmax: •math.Softmax x → probability distribution.
-/// Returns None when GPU unavailable or data is invalid (CPU fallback).
-/// NOTE: Not registered (f32 result differs from the CPU's f64, see main.rs).
-#[allow(dead_code)]
-pub fn gpu_softmax(x: B) -> Option<B> {
+/// w (M×K) •gpu.MatMul x (K×N) on the f32 kernel, with no threshold or
+/// exactness gate. None when no device. Registered as GPU_F32_MATMUL_HOOK.
+pub fn gpu_f32_matmul(w: &[f64], x: &[f64], m: usize, k: usize, n: usize) -> Option<Vec<f64>> {
+    guarded("matmul", || matmul_f32(get()?, w, x, m, k, n))
+}
+
+/// Run the f32 matmul kernel; inputs are rounded to f32, the result widened back.
+fn matmul_f32(gpu: &GpuRuntime, w: &[f64], x: &[f64], m: usize, k: usize, n: usize) -> Option<Vec<f64>> {
+    let device = &gpu.ctx.device;
+    let queue = &gpu.ctx.queue;
+
+    // Convert to f32 for GPU kernel (matmul kernel only supports f32)
+    let w_f32: Vec<f32> = w.iter().map(|&v| v as f32).collect();
+    let x_f32: Vec<f32> = x.iter().map(|&v| v as f32).collect();
+
+    let a_buf = upload_f32(device, queue, &w_f32);
+    let b_buf = upload_f32(device, queue, &x_f32);
+    let out_buf = GpuBuffer::storage(device, ElementKind::F32, m * n);
+
+    {
+        let mut cache = gpu.cache.lock().ok()?;
+        rbqn_gpu::kernels::matmul::matmul(
+            device,
+            queue,
+            &mut cache,
+            &a_buf,
+            &b_buf,
+            &out_buf,
+            m as u32,
+            n as u32,
+            k as u32,
+        );
+    }
+
+    let result_f32 = pollster::block_on(download_f32(device, queue, &out_buf));
+
+    if debug_enabled() {
+        eprintln!("[gpu] matmul {}x{}x{} (f32)", m, k, n);
+    }
+
+    Some(result_f32.iter().map(|&v| v as f64).collect())
+}
+
+/// •gpu.Softmax of one row on the f32 kernel, with no threshold. None when no
+/// device. Registered as GPU_F32_SOFTMAX_HOOK (•math.Softmax stays on the CPU,
+/// see main.rs).
+pub fn gpu_f32_softmax(x: &[f64]) -> Option<Vec<f64>> {
     guarded("softmax", || {
-        let xa = rbqn_vm::vm::get_arr(x)?;
-        if xa.rank() != 1 { return None; }
-        let n = xa.ia();
-
-        // NOTE: Dispatch threshold — softmax GPU overhead only pays off for larger arrays.
-        if gpu_mode() != GpuMode::Force && n < 256 { return None; }
         let gpu = get()?;
-
-        let x_f64: Vec<f64> = arr_to_f64(&xa)?;
-        let x_f32: Vec<f32> = x_f64.iter().map(|&v| v as f32).collect();
+        let n = x.len();
+        let x_f32: Vec<f32> = x.iter().map(|&v| v as f32).collect();
 
         let device = &gpu.ctx.device;
         let queue = &gpu.ctx.queue;
@@ -1458,20 +1459,18 @@ pub fn gpu_softmax(x: B) -> Option<B> {
         }
 
         let result_f32 = pollster::block_on(download_f32(device, queue, &out_buf));
-        let result_f64: Vec<f64> = result_f32.iter().map(|&v| v as f64).collect();
-
-        let out = BqnArr {
-            shape: vec![n],
-            data: ArrData::F64(result_f64),
-            fill: Some(B::m_f64(0.0)),
-        };
 
         if debug_enabled() {
             eprintln!("[gpu] softmax {} elements (f32)", n);
         }
 
-        Some(rbqn_vm::vm::tag_arr(out))
+        Some(result_f32.iter().map(|&v| v as f64).collect())
     })
+}
+
+/// •gpu.Available: whether a device exists (waits for device creation).
+pub fn gpu_available() -> bool {
+    get().is_some()
 }
 
 /// Extract f64 values from a BqnArr. Returns None for char/boxed arrays.
