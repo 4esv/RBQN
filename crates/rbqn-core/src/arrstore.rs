@@ -108,6 +108,9 @@ pub fn get_arr(b: B) -> Option<Arc<BqnArr>> {
     if b.0 & 2 == 0 {
         return None;
     }
+    if let Some(r) = peek_resident(b) {
+        return Some(download_resident(id, &r));
+    }
     // NOTE: materialize outside any borrow: it runs GPU code.
     let dv = PENDING.with(|p| p.borrow().get(&id).cloned())?;
     let arr = Arc::new(dv.materialize());
@@ -155,10 +158,53 @@ pub fn peek_device(b: B) -> Option<Arc<dyn DeviceValue>> {
     PENDING.with(|p| p.borrow().get(&id).cloned())
 }
 
+// Device-resident arrays (•gpu.Tensor and •gpu results): a BqnArr holding
+// ArrData::Gpu, tagged like a pending device value (payload bit 1). The entry
+// stays after the first download, so GPU consumers keep using the buffer while
+// host consumers read the copy cached in ARR_STORE.
+std::thread_local! {
+    static RESIDENT: std::cell::RefCell<IdMap<Arc<BqnArr>>> = std::cell::RefCell::new(IdMap::default());
+}
+static RESIDENT_DOWNLOAD_HOOK: OnceLock<fn(&BqnArr) -> BqnArr> = OnceLock::new();
+
+/// Set by the GPU runtime: read a resident array back into host data.
+pub fn register_resident_download(f: fn(&BqnArr) -> BqnArr) {
+    let _ = RESIDENT_DOWNLOAD_HOOK.set(f);
+}
+
+/// Register a resident array (`arr.data` is `ArrData::Gpu`).
+pub fn tag_resident(arr: BqnArr) -> B {
+    debug_assert!(matches!(arr.data, crate::array::ArrData::Gpu(_)));
+    let id = ARR_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    RESIDENT.with(|r| r.borrow_mut().insert(id, Arc::new(arr)));
+    tagu64((id << 3) | 2, ARR_TAG)
+}
+
+/// The resident array behind `b` (data still `ArrData::Gpu`), without downloading.
+pub fn peek_resident(b: B) -> Option<Arc<BqnArr>> {
+    if !is_device_tagged(b) {
+        return None;
+    }
+    let id = (b.0 & 0xFFFFFFFFFFFF) >> 3;
+    RESIDENT.with(|r| r.borrow().get(&id).cloned())
+}
+
+/// First host touch of a resident value: one download, cached under the same id.
+fn download_resident(id: u64, r: &BqnArr) -> Arc<BqnArr> {
+    let f = RESIDENT_DOWNLOAD_HOOK.get().expect("resident array without a GPU runtime");
+    // NOTE: download outside any borrow: it runs GPU code.
+    let arr = Arc::new(f(r));
+    ARR_STORE.with(|s| s.borrow_mut().insert(id, arr.clone()));
+    arr
+}
+
 /// Shape of an array value without forcing a pending device value.
 pub fn arr_shape(b: B) -> Option<Vec<usize>> {
     if let Some(d) = peek_device(b) {
         return Some(d.shape().to_vec());
+    }
+    if let Some(r) = peek_resident(b) {
+        return Some(r.shape.clone());
     }
     get_arr(b).map(|a| a.shape.clone())
 }

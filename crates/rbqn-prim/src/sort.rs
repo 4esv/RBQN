@@ -180,7 +180,7 @@ fn fast_grade(arr: &BqnArr, ascending: bool) -> Option<Vec<i32>> {
             if v.iter().any(|x| x.is_nan()) { return None; }
             grade_u64(&v.iter().map(|&x| f64_key(x)).collect::<Vec<_>>(), ascending)
         }
-        ArrData::Boxed(_) => return None,
+        ArrData::Boxed(_) | ArrData::Gpu(_) => return None,
     })
 }
 
@@ -260,7 +260,7 @@ fn fast_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
             if ascending { v.sort_by_key(|&x| f64_key(x)); } else { v.sort_by_key(|&x| std::cmp::Reverse(f64_key(x))); }
             ArrData::F64(v)
         }
-        ArrData::Boxed(_) => return None,
+        ArrData::Boxed(_) | ArrData::Gpu(_) => return None,
     };
     Some(BqnArr { shape: arr.shape.clone(), data, fill: arr.fill })
 }

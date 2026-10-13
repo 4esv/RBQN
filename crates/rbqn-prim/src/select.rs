@@ -139,7 +139,7 @@ fn gather_cells(data: &ArrData, idx: &[usize], cell: usize) -> Option<ArrData> {
             }
             ArrData::Bit(out)
         }
-        ArrData::Boxed(_) => return None,
+        ArrData::Boxed(_) | ArrData::Gpu(_) => return None,
     })
 }
 

@@ -353,6 +353,7 @@ fn extract_cell(arr: &BqnArr, cell_idx: usize, cell_size: usize, cell_shape: &[u
         ArrData::C16(v) => ArrData::C16(v[start..start + cell_size].to_vec()),
         ArrData::C32(v) => ArrData::C32(v[start..start + cell_size].to_vec()),
         ArrData::Boxed(v) => ArrData::Boxed(v[start..start + cell_size].to_vec()),
+        ArrData::Gpu(_) => unreachable!("get_arr downloads resident data"),
     };
     BqnArr {
         shape: cell_shape.to_vec(),

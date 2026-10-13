@@ -23,6 +23,29 @@ pub enum ArrData {
     C16(Vec<u16>),
     C32(Vec<u32>),
     Boxed(Vec<B>),
+    /// Device-resident data (`•gpu.Tensor`). Lives only in the resident table:
+    /// `get_arr` downloads it first, so primitives never see this variant.
+    Gpu(GpuData),
+}
+
+/// Element type of a device-resident buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuDType {
+    F32,
+    I32,
+}
+
+/// A device buffer, opaque to core (the GPU runtime downcasts it).
+#[derive(Clone)]
+pub struct GpuData {
+    pub buf: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    pub dtype: GpuDType,
+}
+
+impl std::fmt::Debug for GpuData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GpuData({:?})", self.dtype)
+    }
 }
 
 impl ArrData {
@@ -37,6 +60,10 @@ impl ArrData {
             ArrData::C16(_) => ElType::C16,
             ArrData::C32(_) => ElType::C32,
             ArrData::Boxed(_) => ElType::B,
+            ArrData::Gpu(g) => match g.dtype {
+                GpuDType::F32 => ElType::F64,
+                GpuDType::I32 => ElType::I32,
+            },
         }
     }
 
@@ -55,6 +82,7 @@ impl ArrData {
             ArrData::C16(v) => v.len(),
             ArrData::C32(v) => v.len(),
             ArrData::Boxed(v) => v.len(),
+            ArrData::Gpu(_) => 0,
         }
     }
 
@@ -94,6 +122,7 @@ impl BqnArr {
             ArrData::C16(v) => B::m_c32(v[i] as u32),
             ArrData::C32(v) => B::m_c32(v[i]),
             ArrData::Boxed(v) => v[i],
+            ArrData::Gpu(_) => return Err(BqnError::Domain("device-resident data read without download".into())),
         })
     }
 

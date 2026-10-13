@@ -85,17 +85,22 @@ pub fn register_gpu_matmul(f: GpuMatMulFn) { let _ = GPU_MATMUL_HOOK.set(f); }
 pub fn register_gpu_softmax(f: GpuSoftmaxFn) { let _ = GPU_SOFTMAX_HOOK.set(f); }
 
 // NOTE: •gpu namespace hooks: the f32 kernels run unconditionally (no size
-// threshold, no exactness gate). None means no device; •gpu then errors.
-type GpuF32MatMulFn = fn(w: &[f64], x: &[f64], m: usize, k: usize, n: usize) -> Option<Vec<f64>>;
-type GpuF32SoftmaxFn = fn(x: &[f64]) -> Option<Vec<f64>>;
+// threshold, no exactness gate). Arguments are resident or validated numeric
+// host arrays; results are resident (issue #14). None means no device; •gpu
+// then errors.
+type GpuF32MatMulFn = fn(w: B, x: B, m: usize, k: usize, n: usize) -> Option<B>;
+type GpuF32SoftmaxFn = fn(x: B) -> Option<B>;
+type GpuTensorFn = fn(x: B) -> Option<B>;
 type GpuAvailableFn = fn() -> bool;
 
 static GPU_F32_MATMUL_HOOK: OnceLock<GpuF32MatMulFn> = OnceLock::new();
 static GPU_F32_SOFTMAX_HOOK: OnceLock<GpuF32SoftmaxFn> = OnceLock::new();
+static GPU_TENSOR_HOOK: OnceLock<GpuTensorFn> = OnceLock::new();
 static GPU_AVAILABLE_HOOK: OnceLock<GpuAvailableFn> = OnceLock::new();
 
 pub fn register_gpu_f32_matmul(f: GpuF32MatMulFn) { let _ = GPU_F32_MATMUL_HOOK.set(f); }
 pub fn register_gpu_f32_softmax(f: GpuF32SoftmaxFn) { let _ = GPU_F32_SOFTMAX_HOOK.set(f); }
+pub fn register_gpu_tensor(f: GpuTensorFn) { let _ = GPU_TENSOR_HOOK.set(f); }
 pub fn register_gpu_available(f: GpuAvailableFn) { let _ = GPU_AVAILABLE_HOOK.set(f); }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -801,12 +806,14 @@ pub fn c1(f: B, x: B) -> B {
                 let c1_fn = prim.c1.unwrap_or_else(|| {
                     rbqn_core::error::throw(format!("primitive '{}' has no monadic form", prim.glyph))
                 });
-                // Shape-only monads on a pending device value: answer from the
-                // host-side shape with a data-less stand-in, no readback.
+                // Shape-only monads on a pending or resident device value: answer
+                // from the host-side shape with a data-less stand-in, no readback.
                 if matches!(prim.glyph, "≠" | "≢" | "=")
-                    && let Some(d) = rbqn_core::peek_device(x)
+                    && let Some((shape, fill)) = rbqn_core::peek_device(x)
+                        .map(|d| (d.shape().to_vec(), d.fill()))
+                        .or_else(|| rbqn_core::peek_resident(x).map(|r| (r.shape.clone(), r.fill)))
                 {
-                    let stand_in = rbqn_core::BqnArr { shape: d.shape().to_vec(), data: rbqn_core::ArrData::Boxed(vec![]), fill: d.fill() };
+                    let stand_in = rbqn_core::BqnArr { shape, data: rbqn_core::ArrData::Boxed(vec![]), fill };
                     return match c1_fn(x, Some(&stand_in)) {
                         Ok(r) => prim_result_to_b(r),
                         Err(e) => rbqn_core::error::throw_bqn(e),
@@ -1222,6 +1229,14 @@ pub fn prim_to_b(idx: usize) -> B {
 ///   8=setInvReg, 9=setInvSwap, 10=nativeInvReg, 11=nativeInvSwap,
 ///   22=GroupLen, 23=GroupOrd
 fn dispatch_sys_c1(idx: u32, x: B) -> B {
+    // NOTE: •gpu functions take resident arguments; dispatch them before the
+    // get_arr below, which would download one.
+    match idx {
+        1117 => return gpu_softmax_c1(x),
+        1119 => return gpu_tensor_c1(x),
+        1124 => return gpu_fetch_c1(x),
+        _ => {}
+    }
     let x_arr = crate::vm::get_arr(x);
     match idx {
         0 => { // •Type
@@ -1494,9 +1509,8 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
                 }
             math_softmax_cpu(x)
         }
-        // NOTE: •gpu sys functions — range 1116-1118
+        // NOTE: •gpu sys functions — range 1116-1119, 1124 (1117, 1119, 1124 dispatch above)
         1116 => rbqn_core::error::throw("•gpu.MatMul requires left argument (w •gpu.MatMul x)"),
-        1117 => gpu_softmax_c1(x),
         1118 => B::m_f64(if GPU_AVAILABLE_HOOK.get().is_some_and(|f| f()) { 1.0 } else { 0.0 }),
         // NOTE: •rand sys functions — range 1120-1123
         1121 => rand_range_c1(x),
@@ -1644,6 +1658,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
 
 /// Dispatch system function c2.
 fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
+    // NOTE: before get_arr, which would download a resident argument.
+    if idx == 1116 {
+        return gpu_matmul_c2(w, x);
+    }
     let w_arr = crate::vm::get_arr(w);
     let x_arr = crate::vm::get_arr(x);
     match idx {
@@ -1771,9 +1789,10 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         }
         // NOTE: •math.Softmax — dyadic: not standard, throw error
         1115 => rbqn_core::error::throw("•math.Softmax takes one argument (•math.Softmax x)"),
-        1116 => gpu_matmul_c2(w, x),
         1117 => rbqn_core::error::throw("•gpu.Softmax takes one argument (•gpu.Softmax x)"),
         1118 => rbqn_core::error::throw("•gpu.Available takes one argument (•gpu.Available @)"),
+        1119 => rbqn_core::error::throw("•gpu.Tensor takes one argument (•gpu.Tensor x)"),
+        1124 => rbqn_core::error::throw("•gpu.Fetch takes one argument (•gpu.Fetch x)"),
         // NOTE: rand dyadic: shape •rand.Range n
         1121 => rand_range_c2(w, x),
         1123 => rand_subset_c2(w, x),
@@ -3307,7 +3326,7 @@ fn make_gpu_namespace() -> B {
 
     use crate::namespace::{str2gid, NSDesc, NS};
 
-    let gids = vec![str2gid("matmul"), str2gid("softmax"), str2gid("available")];
+    let gids = vec![str2gid("matmul"), str2gid("softmax"), str2gid("available"), str2gid("tensor"), str2gid("fetch")];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
 
@@ -3317,7 +3336,7 @@ fn make_gpu_namespace() -> B {
         body,
         None,
         var_am_u16,
-        &[m_sys_fn(1116), m_sys_fn(1117), m_sys_fn(1118)],
+        &[m_sys_fn(1116), m_sys_fn(1117), m_sys_fn(1118), m_sys_fn(1119), m_sys_fn(1124)],
     ));
 
     let ns_b = crate::namespace::store_ns(NS { desc, sc });
@@ -3326,42 +3345,80 @@ fn make_gpu_namespace() -> B {
 }
 
 fn gpu_unavailable(name: &str) -> ! {
+    let exact = match name {
+        "•gpu.MatMul" | "•gpu.Softmax" => format!("; •math.{} is the exact CPU path", &name["•gpu.".len()..]),
+        _ => String::new(),
+    };
     rbqn_core::error::throw(format!(
-        "{name}: no GPU available (CPU-only build, --no-gpu, RBQN_GPU=off, or no adapter); •math.{} is the exact CPU path",
-        &name["•gpu.".len()..]
+        "{name}: no GPU available (CPU-only build, --no-gpu, RBQN_GPU=off, or no adapter){exact}"
     ))
 }
 
-/// w •gpu.MatMul x: f32 matrix multiply on the GPU.
+/// Shape of a •gpu argument: a resident value's own shape (no download), or a
+/// host array's after checking it is numeric. `what` prefixes errors; `kind`
+/// names the expected array in the error for an atom.
+fn gpu_arg_shape(b: B, what: &str, kind: &str) -> Vec<usize> {
+    if let Some(r) = rbqn_core::peek_resident(b) {
+        return r.shape.clone();
+    }
+    let arr = crate::vm::get_arr(b).unwrap_or_else(|| rbqn_core::error::throw(format!("{what} must be a {kind} array")));
+    use rbqn_core::array::ArrData;
+    if arr.ia() != 0 && !matches!(arr.data, ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) | ArrData::F64(_)) {
+        rbqn_core::error::throw(format!("{what} must be numeric"));
+    }
+    arr.shape.clone()
+}
+
+/// w •gpu.MatMul x: f32 matrix multiply on the GPU; the result stays resident.
 fn gpu_matmul_c2(w: B, x: B) -> B {
-    let (w_vals, x_vals, m, k, n) = matmul_args(w, x, "•gpu.MatMul");
+    let (ws, xs) = (gpu_arg_shape(w, "•gpu.MatMul: left argument", "rank-2"), gpu_arg_shape(x, "•gpu.MatMul: right argument", "rank-2"));
+    if ws.len() != 2 { rbqn_core::error::throw("•gpu.MatMul: left argument must be rank-2"); }
+    if xs.len() != 2 { rbqn_core::error::throw("•gpu.MatMul: right argument must be rank-2"); }
+    let (m, k, kx, n) = (ws[0], ws[1], xs[0], xs[1]);
+    if k != kx {
+        rbqn_core::error::throw(format!("•gpu.MatMul: inner dimensions must match: {}≠{}", k, kx));
+    }
     let hook = GPU_F32_MATMUL_HOOK.get().unwrap_or_else(|| gpu_unavailable("•gpu.MatMul"));
-    // NOTE: wgpu rejects zero-size bindings; an empty product is all zeros.
+    // NOTE: wgpu rejects zero-size bindings; an empty product is all zeros (host).
     if m * k * n == 0 {
         return f64_arr(vec![m, n], vec![0.0; m * n]);
     }
-    let out = hook(&w_vals, &x_vals, m, k, n).unwrap_or_else(|| gpu_unavailable("•gpu.MatMul"));
-    f64_arr(vec![m, n], out)
+    hook(w, x, m, k, n).unwrap_or_else(|| gpu_unavailable("•gpu.MatMul"))
 }
 
-/// •gpu.Softmax x: f32 softmax of a rank-1 array, or of each row of a rank-2 array.
+/// •gpu.Softmax x: f32 softmax of a rank-1 array, or of each row of a rank-2
+/// array; the result stays resident.
 fn gpu_softmax_c1(x: B) -> B {
-    let arr = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw("•gpu.Softmax: argument must be a numeric array"));
-    if arr.rank() != 1 && arr.rank() != 2 {
+    let shape = gpu_arg_shape(x, "•gpu.Softmax: argument", "numeric");
+    if shape.len() != 1 && shape.len() != 2 {
         rbqn_core::error::throw("•gpu.Softmax: argument must be rank-1 or rank-2");
     }
-    let shape = arr.shape.to_vec();
     let hook = GPU_F32_SOFTMAX_HOOK.get().unwrap_or_else(|| gpu_unavailable("•gpu.Softmax"));
-    if arr.ia() == 0 {
+    if shape.iter().product::<usize>() == 0 {
         return f64_arr(shape, Vec::new());
     }
-    let vals = num_arr_f64(&arr, "•gpu.Softmax: argument");
-    let row = *shape.last().unwrap();
-    let mut out = Vec::with_capacity(vals.len());
-    for r in vals.chunks(row) {
-        out.extend(hook(r).unwrap_or_else(|| gpu_unavailable("•gpu.Softmax")));
+    hook(x).unwrap_or_else(|| gpu_unavailable("•gpu.Softmax"))
+}
+
+/// •gpu.Tensor x: upload a numeric array once; the result is resident. A
+/// resident argument is returned as is; an empty one stays on the host
+/// (wgpu has no zero-size buffers).
+fn gpu_tensor_c1(x: B) -> B {
+    let shape = gpu_arg_shape(x, "•gpu.Tensor: argument", "numeric");
+    let hook = GPU_TENSOR_HOOK.get().unwrap_or_else(|| gpu_unavailable("•gpu.Tensor"));
+    if rbqn_core::peek_resident(x).is_some() || shape.iter().product::<usize>() == 0 {
+        return x;
     }
-    f64_arr(shape, out)
+    hook(x).unwrap_or_else(|| gpu_unavailable("•gpu.Tensor"))
+}
+
+/// •gpu.Fetch x: download a resident value (once; later touches read the
+/// cached host copy). Any other value is returned unchanged.
+fn gpu_fetch_c1(x: B) -> B {
+    if rbqn_core::peek_resident(x).is_some() {
+        crate::vm::get_arr(x);
+    }
+    x
 }
 
 // =============================================================================
