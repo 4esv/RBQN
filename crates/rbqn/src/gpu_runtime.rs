@@ -520,7 +520,7 @@ impl GpuArr {
             let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
             rbqn_gpu::expr::run(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &e, n, &out, None)
         };
-        log_fused(&r, n, self.wide, "map");
+        log_fused(&r, n, if self.wide { "i64" } else { "i32" }, "map");
         *self.state.borrow_mut() = State::Buf(out.clone());
         out
     }
@@ -590,6 +590,10 @@ fn tree_work(e: &Rc<Expr>, n: usize, out: ElementKind) -> Work {
                 go(l, seen, w, srcs);
                 go(r, seen, w, srcs);
             }
+            Expr::Un(_, a) => {
+                w.ops += 1;
+                go(a, seen, w, srcs);
+            }
             Expr::Iota => w.leaves += 1,
             Expr::Scalar(_) => {}
             Expr::Leaf(b) => {
@@ -627,11 +631,11 @@ fn i64_to_data(v: Vec<i64>) -> ArrData {
 }
 
 /// `[gpu] fused: <ops>` under RBQN_GPU_DEBUG; the WGSL once per new tree shape at level 2.
-fn log_fused(r: &rbqn_gpu::expr::FusedRun, n: usize, wide: bool, mode: &str) {
+fn log_fused(r: &rbqn_gpu::expr::FusedRun, n: usize, ty: &str, mode: &str) {
     if !debug_enabled() {
         return;
     }
-    eprintln!("[gpu] fused {mode}: {} {n} elements ({})", r.desc, if wide { "i64" } else { "i32" });
+    eprintln!("[gpu] fused {mode}: {} {n} elements ({ty})", r.desc);
     if let Some(src) = &r.new_source
         && std::env::var("RBQN_GPU_DEBUG").as_deref() == Ok("2")
     {
@@ -925,6 +929,9 @@ fn lazy_node(
 /// when < 2^53, else None (CPU). `÷` is never taken (non-integer results).
 /// Registered as GPU_ARITH_HOOK in rbqn-prim at startup.
 pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
+    if peek_resident(w).is_some() || peek_resident(x).is_some() {
+        return resident_arith(op, w, x);
+    }
     if gpu_mode() == GpuMode::Off || !gpu_possible() { return None; }
     if !w.is_arr() { return gpu_arith_scalar(op, w.o2f(), true, x); }
     if !x.is_arr() { return gpu_arith_scalar(op, x.o2f(), false, w); }
@@ -1131,6 +1138,9 @@ fn prim_idx_of(f: B) -> Option<usize> {
 /// result is read back immediately), never a pending value.
 /// Returns None for unsupported ops or if GPU dispatch is unavailable.
 pub fn gpu_fold(f: B, x: B) -> Option<B> {
+    if let Some(r) = resident_fold(f, x) {
+        return Some(r);
+    }
     if gpu_mode() == GpuMode::Off { return None; }
     guarded("fold", || gpu_fold_inner(f, x))
 }
@@ -1232,7 +1242,7 @@ fn fused_fold(gpu: &GpuRuntime, g: &GpuArr, op: &str, n: usize, rb: f64) -> Opti
     let result_buf = {
         let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
         let r = rbqn_gpu::expr::run(dev, q, &mut cache, &e, n, &out, Some((op, acc)));
-        log_fused(&r, n, g.wide, &format!("reduce_{op}"));
+        log_fused(&r, n, if g.wide { "i64" } else { "i32" }, &format!("reduce_{op}"));
         let parts = r.partials?;
         if acc_wide {
             rbqn_gpu::kernels::reduce_i64::reduce_i64(dev, q, &mut cache, op, &parts)
@@ -1512,9 +1522,13 @@ fn tag_resident_buf(buf: GpuBuffer, dtype: GpuDType, shape: Vec<usize>) -> B {
     tag_resident(BqnArr { shape, data, fill: Some(B::m_f64(0.0)) })
 }
 
-/// The buffer and dtype of a resident array.
+/// The buffer and dtype of a resident array; a lazy one is evaluated first
+/// (one fused kernel, cached).
 fn resident_parts(r: &BqnArr) -> Option<(Arc<GpuBuffer>, GpuDType)> {
     let ArrData::Gpu(g) = &r.data else { return None };
+    if let Some(l) = g.buf.downcast_ref::<LazyRef>() {
+        return Some((materialize_lazy(l.0, r.shape.iter().product())?, g.dtype));
+    }
     Some((g.buf.clone().downcast::<GpuBuffer>().ok()?, g.dtype))
 }
 
@@ -1586,6 +1600,172 @@ pub fn resident_download(r: &BqnArr) -> BqnArr {
         eprintln!("[gpu] download {} ({})", shape_str(&r.shape), dtype_str(dtype));
     }
     BqnArr { shape: r.shape.clone(), data, fill: r.fill }
+}
+
+// =============================================================================
+// Resident elementwise fusion (issue #15)
+// =============================================================================
+
+// NOTE: Arithmetic on a resident value builds an f32 tree instead of
+// downloading. The new resident value's GpuData.buf is a LazyRef into
+// RESIDENT_TREES. The tree runs as one kernel when a consumer needs a buffer
+// (Fetch, MatMul, Softmax, any host touch), and the buffer then replaces it;
+// a fold over a list runs it fused into the reduce kernel without storing it.
+
+/// GpuData.buf of a lazy resident value: an id into RESIDENT_TREES.
+struct LazyRef(u64);
+
+std::thread_local! {
+    static RESIDENT_TREES: RefCell<rbqn_core::IdMap<State>> = RefCell::new(rbqn_core::IdMap::default());
+    static NEXT_TREE: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Evaluate lazy resident tree `id` over n elements into an f32 buffer.
+fn materialize_lazy(id: u64, n: usize) -> Option<Arc<GpuBuffer>> {
+    let e = match RESIDENT_TREES.with(|t| t.borrow().get(&id).map(|s| match s {
+        State::Buf(b) => Err(b.clone()),
+        State::Lazy(e) => Ok(e.clone()),
+    }))? {
+        Err(b) => return Some(b),
+        Ok(e) => e,
+    };
+    let gpu = get()?;
+    let out = Arc::new(GpuBuffer::storage(&gpu.ctx.device, ElementKind::F32, n));
+    let r = {
+        let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+        rbqn_gpu::expr::run(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &e, n, &out, None)
+    };
+    log_fused(&r, n, "f32", "map");
+    RESIDENT_TREES.with(|t| t.borrow_mut().insert(id, State::Buf(out.clone())));
+    Some(out)
+}
+
+/// The unevaluated tree of a lazy resident value.
+fn resident_tree(r: &BqnArr) -> Option<Rc<Expr>> {
+    let ArrData::Gpu(g) = &r.data else { return None };
+    let id = g.buf.downcast_ref::<LazyRef>()?.0;
+    RESIDENT_TREES.with(|t| match t.borrow().get(&id)? {
+        State::Lazy(e) => Some(e.clone()),
+        State::Buf(_) => None,
+    })
+}
+
+/// A resident operand as a tree node (its tree, or its buffer as a leaf) and its shape.
+fn resident_node(b: B) -> Option<(Rc<Expr>, Vec<usize>)> {
+    let r = peek_resident(b)?;
+    if let Some(e) = resident_tree(&r) {
+        return Some((e, r.shape.clone()));
+    }
+    Some((Rc::new(Expr::Leaf(resident_parts(&r)?.0)), r.shape.clone()))
+}
+
+/// Register `e` as a new lazy f32 resident value. A tree over the node or
+/// binding budget is evaluated now (one kernel) and the value holds the buffer.
+fn tag_lazy(e: Rc<Expr>, shape: Vec<usize>) -> Option<B> {
+    let id = NEXT_TREE.with(|c| {
+        c.set(c.get() + 1);
+        c.get()
+    });
+    RESIDENT_TREES.with(|t| t.borrow_mut().insert(id, State::Lazy(e.clone())));
+    if over_limit(&e) {
+        materialize_lazy(id, shape.iter().product())?;
+    }
+    let data = ArrData::Gpu(GpuData { buf: Arc::new(LazyRef(id)), dtype: GpuDType::F32 });
+    Some(tag_resident(BqnArr { shape, data, fill: Some(B::m_f64(0.0)) }))
+}
+
+fn f32_scalar(b: B) -> Rc<Expr> {
+    Rc::new(Expr::Scalar((b.o2f() as f32).to_bits() as i32))
+}
+
+/// `w op x` where w or x is resident: a lazy f32 node when the other operand
+/// is a resident value of the same shape or a number. None otherwise (the
+/// caller downloads, as before). Operand trees over the budget are evaluated
+/// first, so the new tree starts from their buffers.
+fn resident_arith(op: &str, w: B, x: B) -> Option<B> {
+    let eop = rbqn_gpu::expr::Op::from_name(op)?;
+    let build = || -> Option<(Rc<Expr>, Vec<usize>)> {
+        Some(match (resident_node(w), resident_node(x)) {
+            (Some((we, ws)), Some((xe, xs))) if ws == xs => (Rc::new(Expr::Bin(eop, we, xe)), ws),
+            (Some((we, ws)), None) if x.is_num() => (Rc::new(Expr::Bin(eop, we, f32_scalar(x))), ws),
+            (None, Some((xe, xs))) if w.is_num() => (Rc::new(Expr::Bin(eop, f32_scalar(w), xe)), xs),
+            _ => return None,
+        })
+    };
+    guarded("resident_arith", || {
+        let (mut e, shape) = build()?;
+        if over_limit(&e) {
+            for b in [w, x] {
+                if let Some(r) = peek_resident(b) {
+                    resident_parts(&r)?;
+                }
+            }
+            e = build()?.0;
+        }
+        if debug_enabled() {
+            eprintln!("[gpu] lazy {op} (f32, resident)");
+        }
+        tag_lazy(e, shape)
+    })
+}
+
+/// Monadic `- ÷ ⌊ ⌈ |` on a resident value: a lazy f32 node. None when `x`
+/// is not resident. Registered as GPU_RESIDENT_MONAD_HOOK.
+pub fn gpu_resident_monad(glyph: &str, x: B) -> Option<B> {
+    use rbqn_gpu::expr::UOp;
+    let op = match glyph {
+        "-" => UOp::Neg,
+        "÷" => UOp::Recip,
+        "⌊" => UOp::Floor,
+        "⌈" => UOp::Ceil,
+        "|" => UOp::Abs,
+        _ => return None,
+    };
+    guarded("resident_monad", || {
+        let (e, shape) = resident_node(x)?;
+        if debug_enabled() {
+            eprintln!("[gpu] lazy {} (f32, resident)", op.name());
+        }
+        tag_lazy(Rc::new(Expr::Un(op, e)), shape)
+    })
+}
+
+/// `+´ ×´ ⌊´ ⌈´` over a lazy resident list: the tree runs fused into the
+/// reduce kernel (not stored); the per-workgroup f32 partials are combined
+/// on the host in f64. None for anything else (a plain resident list
+/// downloads, as before).
+fn resident_fold(f: B, x: B) -> Option<B> {
+    let r = peek_resident(x)?;
+    let e = resident_tree(&r)?;
+    if r.shape.len() != 1 {
+        return None;
+    }
+    let op = match prim_idx_of(f)? {
+        0 => "add",
+        2 => "mul",
+        6 => "min",
+        7 => "max",
+        _ => return None,
+    };
+    let n = r.shape[0];
+    guarded("resident_fold", || {
+        let gpu = get()?;
+        let (dev, q) = (&gpu.ctx.device, &gpu.ctx.queue);
+        let run = {
+            let mut cache = gpu.cache.lock().unwrap_or_else(|e| e.into_inner());
+            rbqn_gpu::expr::run_with(dev, q, &mut cache, &e, n, ElementKind::F32, None, Some((op, ElementKind::F32)))
+        };
+        log_fused(&run, n, "f32", &format!("reduce_{op}"));
+        let parts = pollster::block_on(download_f32(dev, q, run.partials.as_ref()?));
+        let parts = parts.iter().map(|&v| v as f64);
+        let v = match op {
+            "add" => parts.sum(),
+            "mul" => parts.product(),
+            "min" => parts.fold(f64::INFINITY, f64::min),
+            _ => parts.fold(f64::NEG_INFINITY, f64::max),
+        };
+        Some(B::m_f64(v))
+    })
 }
 
 /// •gpu.Available: whether a device exists (waits for device creation).

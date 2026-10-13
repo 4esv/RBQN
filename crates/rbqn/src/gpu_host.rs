@@ -125,6 +125,7 @@ pub fn compile(e: &Rc<Expr>, dev: &mut dyn FnMut(&Arc<GpuBuffer>) -> Source) -> 
                     self.ins.push(Ins::Load(k, si));
                     R::Slot(k)
                 }
+                Expr::Un(..) => unreachable!("f32-only op in an integer tree"),
                 Expr::Bin(op, l, r) => {
                     let (a, b) = (self.go(l), self.go(r));
                     let k = self.slot();
@@ -171,6 +172,7 @@ fn ap<T: Num>(op: Op, a: T, b: T) -> T {
         Op::Mul => a.mul(b),
         Op::Min => a.min(b),
         Op::Max => a.max(b),
+        Op::Div | Op::Mod => unreachable!("f32-only op in an integer tree"),
     }
 }
 
@@ -192,6 +194,7 @@ fn bin<T: Num>(op: Op, a: Option<&[T]>, ca: T, b: Option<&[T]>, cb: T, out: &mut
         Op::Mul => lanes!(Op::Mul),
         Op::Min => lanes!(Op::Min),
         Op::Max => lanes!(Op::Max),
+        Op::Div | Op::Mod => unreachable!("f32-only op in an integer tree"),
     }
 }
 

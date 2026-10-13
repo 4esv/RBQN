@@ -103,6 +103,12 @@ pub fn register_gpu_f32_softmax(f: GpuF32SoftmaxFn) { let _ = GPU_F32_SOFTMAX_HO
 pub fn register_gpu_tensor(f: GpuTensorFn) { let _ = GPU_TENSOR_HOOK.set(f); }
 pub fn register_gpu_available(f: GpuAvailableFn) { let _ = GPU_AVAILABLE_HOOK.set(f); }
 
+// NOTE: monadic `- ÷ ⌊ ⌈ |` on a resident value builds a lazy fused node
+// instead of downloading (issue #15). Called only when x is resident.
+type GpuResidentMonadFn = fn(glyph: &str, x: B) -> Option<B>;
+static GPU_RESIDENT_MONAD_HOOK: OnceLock<GpuResidentMonadFn> = OnceLock::new();
+pub fn register_gpu_resident_monad(f: GpuResidentMonadFn) { let _ = GPU_RESIDENT_MONAD_HOOK.set(f); }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedKind {
     Fork,
@@ -818,6 +824,12 @@ pub fn c1(f: B, x: B) -> B {
                         Ok(r) => prim_result_to_b(r),
                         Err(e) => rbqn_core::error::throw_bqn(e),
                     };
+                }
+                if matches!(prim.glyph, "-" | "÷" | "⌊" | "⌈" | "|")
+                    && rbqn_core::peek_resident(x).is_some()
+                    && let Some(r) = GPU_RESIDENT_MONAD_HOOK.get().and_then(|h| h(prim.glyph, x))
+                {
+                    return r;
                 }
                 let x_arr = crate::vm::get_arr(x);
                 crate::vm_trace!(
