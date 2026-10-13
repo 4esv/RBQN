@@ -3,6 +3,8 @@
 //! (`--no-default-features`) errors clearly and reports •gpu.Available 0.
 //! Resident arrays (issue #14): •gpu.Tensor / •gpu.Fetch, transfers counted
 //! from the RBQN_GPU_DEBUG log.
+//! Resident fusion (issue #15): arithmetic on a resident value stays lazy
+//! and runs as one kernel (`[gpu] fused …` in the log) when consumed.
 
 use std::process::Command;
 
@@ -158,6 +160,103 @@ fn show_prints_downloaded_array() {
     assert_eq!(run("•Fmt •gpu.Tensor 2‿3⥊↕6").0, run("•Fmt 2‿3⥊↕6").0);
 }
 
+/// Max relative error of `vals` (a BQN list) against `host`, from one run.
+#[cfg(feature = "gpu")]
+fn rel_err(setup: &str, gpu: &str, host: &str) -> f64 {
+    let e = format!("{setup} ⋄ h←{host} ⋄ ⌈´⥊(|h-{gpu})÷1⌈|h");
+    let (out, err) = run(&e);
+    out.replace('¯', "-").parse().unwrap_or_else(|_| panic!("{e}: {out} {err}"))
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn fused_reduce_is_one_kernel() {
+    if !gpu_ok() {
+        return;
+    }
+    // 10^6 elements: ~1000 workgroup partials, combined on the host.
+    let (out, log) = run_debug("x←↕1000000 ⋄ +´ 1+2×•gpu.Tensor x");
+    assert_eq!(count(&log, "fused reduce_add: add(S0,mul(S1,L0)) 1000000 elements (f32)"), 1, "{log}");
+    assert_eq!(count(&log, "fused"), 1, "{log}");
+    assert_eq!(count(&log, "upload"), 1, "{log}");
+    assert_eq!(count(&log, "download"), 0, "{log}");
+    let v: f64 = out.parse().unwrap_or_else(|_| panic!("{out} {log}"));
+    let exact = 1e12;
+    assert!(((v - exact) / exact).abs() < 1e-5, "{v}");
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn fused_fetch_is_one_kernel() {
+    if !gpu_ok() {
+        return;
+    }
+    let (_, log) = run_debug("t←•gpu.Tensor 0.5×↕1000 ⋄ •gpu.Fetch (2×t)+1");
+    assert_eq!(count(&log, "fused map: add(mul(S0,L0),S1) 1000 elements (f32)"), 1, "{log}");
+    assert_eq!(count(&log, "fused"), 1, "{log}");
+    assert_eq!(count(&log, "upload"), 1, "{log}");
+    assert_eq!(count(&log, "download"), 1, "{log}");
+    let r = rel_err("x←0.5×↕1000 ⋄ t←•gpu.Tensor x", "•gpu.Fetch (2×t)+1", "(2×x)+1");
+    assert!(r < 1e-6, "{r}");
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn fused_ops_match_host() {
+    if !gpu_ok() {
+        return;
+    }
+    // Values are exact in f32 and never 0, so ÷ stays finite.
+    let setup = "x←0.125+¯50+0.25×↕400 ⋄ y←⌽x ⋄ t←•gpu.Tensor x ⋄ u←•gpu.Tensor y";
+    for f in [
+        "{(𝕩+3)-𝕨×2}", "{𝕨÷𝕩}", "{3÷𝕩×𝕨}", "{𝕩⌊𝕨}", "{𝕩⌈2}", "{1.5|𝕩}", "{𝕨|𝕩}",
+        "{-𝕩}", "{÷𝕩}", "{⌊𝕩×0.5}", "{⌈𝕩}", "{|𝕩-𝕨}", "{(|𝕩)⌈-𝕨÷4}",
+    ] {
+        let (_, log) = run_debug(&format!("{setup} ⋄ •gpu.Fetch u {f} t"));
+        assert_eq!(count(&log, "fused map"), 1, "{f}: {log}");
+        assert_eq!(count(&log, "download"), 1, "{f}: {log}");
+        let r = rel_err(setup, &format!("•gpu.Fetch u {f} t"), &format!("y {f} x"));
+        assert!(r < 1e-6, "{f}: {r}");
+    }
+    for f in ["+´", "×´", "⌈´", "⌊´"] {
+        let (_, log) = run_debug(&format!("{setup} ⋄ {f} 1.01⌊÷|t"));
+        assert_eq!(count(&log, "fused reduce"), 1, "{f}: {log}");
+        assert_eq!(count(&log, "download"), 0, "{f}: {log}");
+        let r = rel_err(setup, &format!("{f} 1.01⌊÷|t"), &format!("{f} 1.01⌊÷|x"));
+        assert!(r < 1e-5, "{f}: {r}");
+    }
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn fused_chain_feeds_matmul() {
+    if !gpu_ok() {
+        return;
+    }
+    let (out, log) = run_debug("m←•gpu.Tensor 4‿4⥊1 ⋄ +´⥊ •gpu.Fetch m •gpu.MatMul 1+m");
+    assert_eq!(out, "128", "{log}");
+    assert_eq!(count(&log, "fused map"), 1, "{log}");
+    assert_eq!(count(&log, "upload"), 1, "{log}");
+    assert_eq!(count(&log, "download"), 1, "{log}");
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn other_touches_download() {
+    if !gpu_ok() {
+        return;
+    }
+    // A host array operand, a rank-2 fold and an evaluated chain download as before.
+    let (out, log) = run_debug("x←↕10 ⋄ t←•gpu.Tensor x ⋄ (+´t+x)≡+´2×x");
+    assert_eq!(out, "1", "{log}");
+    assert_eq!((count(&log, "fused"), count(&log, "download")), (0, 1), "{log}");
+    let (_, log) = run_debug("+´ 2×•gpu.Tensor 2‿3⥊1");
+    assert!(log.contains("must be a list"), "{log}");
+    let (out, log) = run_debug("a←2×•gpu.Tensor ↕4 ⋄ ⟨•gpu.Fetch a, +´a⟩");
+    assert_eq!(out, "⟨ ⟨ 0 2 4 6 ⟩ 12 ⟩", "{log}");
+    assert_eq!((count(&log, "fused"), count(&log, "download")), (1, 1), "{log}");
+}
+
 #[cfg(not(feature = "gpu"))]
 #[test]
 fn cpu_only_build_errors() {
@@ -166,6 +265,7 @@ fn cpu_only_build_errors() {
         ("(2‿2⥊0.1) •gpu.MatMul 2‿2⥊3", "•gpu.MatMul"),
         ("•gpu.Softmax 1‿2‿3", "•gpu.Softmax"),
         ("•gpu.Tensor 1‿2‿3", "•gpu.Tensor"),
+        ("+´ 1+2×•gpu.Tensor 1‿2‿3", "•gpu.Tensor"),
     ] {
         let (out, err) = run(e);
         let msg = format!("{out}{err}");

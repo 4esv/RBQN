@@ -13,7 +13,7 @@ pub fn register_gpu_arith(f: GpuArithFn) {
     let _ = GPU_ARITH_HOOK.set(f);
 }
 
-/// GPU arithmetic for `+ - × ⌊ ⌈` (array-array or number-array), called by the VM before it forces
+/// GPU arithmetic for `+ - × ÷ ⌊ ⌈ |` (array-array or number-array), called by the VM before it forces
 /// the operands with `get_arr`. None means take the CPU path.
 #[inline]
 pub fn try_gpu_arith(glyph: &str, w: B, x: B) -> Option<B> {
@@ -67,6 +67,8 @@ fn gpu_op_name(name: &str) -> Option<&'static str> {
         "÷" => Some("div"),
         "⌊" => Some("min"),
         "⌈" => Some("max"),
+        // NOTE: resident (•gpu) values only; the automatic path declines it.
+        "|" => Some("mod"),
         _ => None,
     }
 }

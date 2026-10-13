@@ -5,6 +5,10 @@
 //! binds `a` once. Scalars are slots in a small storage buffer (`sc[1..]`,
 //! `sc[0]` is n), never literals: `1+2×3+4×a` and `5+6×7+8×a` produce the same
 //! source and share a pipeline. Pipelines are cached by the generated source.
+//!
+//! An f32 tree (output F32, issue #15: resident `•gpu` values) may also use
+//! `Div`, `Mod` and `Un`; its scalar slots hold f32 bits. Integer trees never
+//! contain those.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -29,6 +33,10 @@ pub enum Op {
     Mul,
     Min,
     Max,
+    /// f32 trees only.
+    Div,
+    /// BQN `𝕨|𝕩` (left operand is the modulus); f32 trees only.
+    Mod,
 }
 
 impl Op {
@@ -39,6 +47,8 @@ impl Op {
             "mul" => Op::Mul,
             "min" => Op::Min,
             "max" => Op::Max,
+            "div" => Op::Div,
+            "mod" => Op::Mod,
             _ => return None,
         })
     }
@@ -49,6 +59,8 @@ impl Op {
             Op::Mul => "mul",
             Op::Min => "min",
             Op::Max => "max",
+            Op::Div => "div",
+            Op::Mod => "mod",
         }
     }
     fn wgsl(self, a: &str, b: &str) -> String {
@@ -58,6 +70,8 @@ impl Op {
             Op::Mul => format!("{a} * {b}"),
             Op::Min => format!("min({a}, {b})"),
             Op::Max => format!("max({a}, {b})"),
+            Op::Div => format!("{a} / {b}"),
+            Op::Mod => format!("bqn_mod({a}, {b})"),
         }
     }
     pub fn apply_i64(self, a: i64, b: i64) -> i64 {
@@ -67,6 +81,38 @@ impl Op {
             Op::Mul => a.wrapping_mul(b),
             Op::Min => a.min(b),
             Op::Max => a.max(b),
+            Op::Div | Op::Mod => unreachable!("rbqn-gpu: f32-only op {} in an integer tree", self.name()),
+        }
+    }
+}
+
+/// Monadic arithmetic; f32 trees only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UOp {
+    Neg,
+    Abs,
+    Floor,
+    Ceil,
+    Recip,
+}
+
+impl UOp {
+    pub fn name(self) -> &'static str {
+        match self {
+            UOp::Neg => "neg",
+            UOp::Abs => "abs",
+            UOp::Floor => "floor",
+            UOp::Ceil => "ceil",
+            UOp::Recip => "recip",
+        }
+    }
+    fn wgsl(self, a: &str) -> String {
+        match self {
+            UOp::Neg => format!("-({a})"),
+            UOp::Abs => format!("abs({a})"),
+            UOp::Floor => format!("floor({a})"),
+            UOp::Ceil => format!("ceil({a})"),
+            UOp::Recip => format!("1.0 / {a}"),
         }
     }
 }
@@ -74,11 +120,13 @@ impl Op {
 pub enum Expr {
     /// A device buffer (I32 or I64), read at the element index.
     Leaf(Arc<GpuBuffer>),
-    /// An i32 scalar, bound through a storage slot.
+    /// An i32 scalar (f32 bits in an f32 tree), bound through a storage slot.
     Scalar(i32),
     /// The element index itself (`↕n` never uploaded).
     Iota,
     Bin(Op, Rc<Expr>, Rc<Expr>),
+    /// f32 trees only.
+    Un(UOp, Rc<Expr>),
     /// A host array not uploaded yet (opaque to this crate). The runtime
     /// replaces it with a `Leaf` before `run`, or evaluates the tree on the
     /// host without ever uploading it.
@@ -112,6 +160,7 @@ pub fn counts(e: &Rc<Expr>) -> (usize, usize) {
                 go(l, seen, leaves);
                 go(r, seen, leaves);
             }
+            Expr::Un(_, a) => go(a, seen, leaves),
             _ => {}
         }
     }
@@ -158,7 +207,8 @@ fn flatten(root: &Rc<Expr>, ty: &str) -> Flat {
                 Expr::Scalar(s) => {
                     self.scalars.push(*s);
                     let k = self.scalars.len();
-                    (format!("{ty}(sc[{k}])"), format!("S{}", k - 1))
+                    let v = if ty == "f32" { format!("bitcast<f32>(sc[{k}])") } else { format!("{ty}(sc[{k}])") };
+                    (v, format!("S{}", k - 1))
                 }
                 Expr::Iota => (format!("{ty}(i32(i))"), "iota".to_string()),
                 Expr::Host(_) => panic!("rbqn-gpu: host leaf reached codegen (resolve it first)"),
@@ -166,6 +216,10 @@ fn flatten(root: &Rc<Expr>, ty: &str) -> Flat {
                     let (lv, ld) = self.go(l);
                     let (rv, rd) = self.go(r);
                     (op.wgsl(&lv, &rv), format!("{}({ld},{rd})", op.name()))
+                }
+                Expr::Un(op, a) => {
+                    let (av, ad) = self.go(a);
+                    (op.wgsl(&av), format!("{}({ad})", op.name()))
                 }
             };
             let v = format!("t{}", self.k);
@@ -183,12 +237,17 @@ fn flatten(root: &Rc<Expr>, ty: &str) -> Flat {
 fn ty_name(k: ElementKind) -> &'static str {
     match k {
         ElementKind::I64 => "i64",
+        ElementKind::F32 => "f32",
         _ => "i32",
     }
 }
 
 fn identity(op: &str, acc: ElementKind) -> &'static str {
     match (op, acc) {
+        ("add", ElementKind::F32) => "0.0f",
+        ("mul", ElementKind::F32) => "1.0f",
+        ("min", ElementKind::F32) => "bitcast<f32>(0x7f800000u)",
+        ("max", ElementKind::F32) => "bitcast<f32>(0xff800000u)",
         ("add", ElementKind::I64) => "0li",
         ("mul", ElementKind::I64) => "1li",
         ("min", ElementKind::I64) => "9223372036854775807li",
@@ -201,7 +260,19 @@ fn identity(op: &str, acc: ElementKind) -> &'static str {
     }
 }
 
-fn generate(f: &Flat, ty: &str, reduce: Option<(&str, ElementKind)>) -> String {
+/// BQN `a|b` in f32. Division need not be correctly rounded (WGSL allows
+/// 2.5 ULP), so floor(b/a) can be off by one near a multiple; one correction
+/// step brings r into [0, a) (or (a, 0]). a = 0 gives NaN, like CBQN.
+const F32_MOD: &str = "fn bqn_mod(a: f32, b: f32) -> f32 {
+    var r = b - a * floor(b / a);
+    if (r != 0.0 && (r < 0.0) != (a < 0.0)) { r = r + a; }
+    if (abs(r) >= abs(a)) { r = r - a; }
+    return r;
+}
+";
+
+/// `store`: write each element to `out` (a reduce may skip it, and binds no `out`).
+fn generate(f: &Flat, ty: &str, reduce: Option<(&str, ElementKind)>, store: bool) -> String {
     let mut s = String::new();
     s.push_str("@group(0) @binding(0) var<storage, read> sc: array<i32>;\n");
     for (i, b) in f.leaves.iter().enumerate() {
@@ -212,13 +283,19 @@ fn generate(f: &Flat, ty: &str, reduce: Option<(&str, ElementKind)>) -> String {
         ));
     }
     let ob = f.leaves.len() + 1;
-    s.push_str(&format!("@group(0) @binding({ob}) var<storage, read_write> out: array<{ty}>;\n"));
+    if store {
+        s.push_str(&format!("@group(0) @binding({ob}) var<storage, read_write> out: array<{ty}>;\n"));
+    }
     if let Some((op, acc)) = reduce {
         let at = ty_name(acc);
-        s.push_str(&format!("@group(0) @binding({}) var<storage, read_write> part: array<{at}>;\n", ob + 1));
+        let pb = ob + store as usize;
+        s.push_str(&format!("@group(0) @binding({pb}) var<storage, read_write> part: array<{at}>;\n"));
         s.push_str(&format!("var<workgroup> sh: array<{at}, 256>;\n"));
         let comb = Op::from_name(op).unwrap().wgsl("a", "b");
         s.push_str(&format!("fn comb(a: {at}, b: {at}) -> {at} {{ return {comb}; }}\n"));
+    }
+    if ty == "f32" {
+        s.push_str(F32_MOD);
     }
     s.push_str(&format!("fn ev(i: u32) -> {ty} {{\n{}    return {};\n}}\n", f.body, f.result));
     s.push_str(
@@ -234,13 +311,14 @@ fn generate(f: &Flat, ty: &str, reduce: Option<(&str, ElementKind)>) -> String {
             s.push_str(&format!(
                 "    let stride = nwg.x * 256u;\n    var acc: {at} = {id};\n\
                  \x20   for (var i = wid.x * 256u + lid.x; i < n; i = i + stride) {{\n\
-                 \x20       let v = ev(i);\n        out[i] = v;\n        acc = comb(acc, {at}(v));\n    }}\n\
+                 \x20       let v = ev(i);\n{st}        acc = comb(acc, {at}(v));\n    }}\n\
                  \x20   sh[lid.x] = acc;\n    workgroupBarrier();\n\
                  \x20   for (var st = 128u; st > 0u; st = st >> 1u) {{\n\
                  \x20       if (lid.x < st) {{ sh[lid.x] = comb(sh[lid.x], sh[lid.x + st]); }}\n\
                  \x20       workgroupBarrier();\n    }}\n\
                  \x20   if (lid.x == 0u) {{ part[wid.x] = sh[0]; }}\n}}\n",
-                id = identity(op, acc)
+                id = identity(op, acc),
+                st = if store { "        out[i] = v;\n" } else { "" },
             ));
         }
     }
@@ -280,11 +358,30 @@ pub fn run(
     out: &GpuBuffer,
     reduce: Option<(&str, ElementKind)>,
 ) -> FusedRun {
+    run_with(device, queue, cache, root, n, out.element_type(), Some(out), reduce)
+}
+
+/// `run` with the tree's element type given; `out = None` (reduce only)
+/// evaluates the tree into the partials without storing it.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with(
+    device: &Arc<wgpu::Device>,
+    queue: &wgpu::Queue,
+    cache: &mut PipelineCache,
+    root: &Rc<Expr>,
+    n: usize,
+    kind: ElementKind,
+    out: Option<&GpuBuffer>,
+    reduce: Option<(&str, ElementKind)>,
+) -> FusedRun {
     assert!(n > 0 && n < i32::MAX as usize, "fused: bad length {n}");
-    assert_eq!(out.len(), n);
-    let ty = ty_name(out.element_type());
+    assert!(out.is_some() || reduce.is_some(), "fused: nothing to write");
+    if let Some(o) = out {
+        assert_eq!((o.len(), o.element_type()), (n, kind));
+    }
+    let ty = ty_name(kind);
     let f = flatten(root, ty);
-    let src = generate(&f, ty, reduce);
+    let src = generate(&f, ty, reduce, out.is_some());
     let (id, fresh) = shader_id(&src);
     let pipeline = cache.get_or_create(&PipelineKey::raw(id, "main"), &src);
 
@@ -312,10 +409,13 @@ pub fn run(
     for (i, b) in f.leaves.iter().enumerate() {
         entries.push(wgpu::BindGroupEntry { binding: i as u32 + 1, resource: b.inner().as_entire_binding() });
     }
-    let ob = f.leaves.len() as u32 + 1;
-    entries.push(wgpu::BindGroupEntry { binding: ob, resource: out.inner().as_entire_binding() });
+    let mut ob = f.leaves.len() as u32 + 1;
+    if let Some(o) = out {
+        entries.push(wgpu::BindGroupEntry { binding: ob, resource: o.inner().as_entire_binding() });
+        ob += 1;
+    }
     if let Some(p) = &partials {
-        entries.push(wgpu::BindGroupEntry { binding: ob + 1, resource: p.inner().as_entire_binding() });
+        entries.push(wgpu::BindGroupEntry { binding: ob, resource: p.inner().as_entire_binding() });
     }
     let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
@@ -335,6 +435,7 @@ pub fn eval_host(e: &Expr, i: usize, leaf: &dyn Fn(&Arc<GpuBuffer>) -> i64) -> i
         Expr::Scalar(s) => *s as i64,
         Expr::Iota => i as i64,
         Expr::Bin(op, l, r) => op.apply_i64(eval_host(l, i, leaf), eval_host(r, i, leaf)),
+        Expr::Un(op, _) => unreachable!("rbqn-gpu: f32-only op {} in an integer tree", op.name()),
         Expr::Host(_) => panic!("rbqn-gpu: eval_host on a host leaf"),
     }
 }
@@ -354,9 +455,23 @@ mod tests {
             Rc::new(Expr::Bin(Op::Add, Rc::new(Expr::Scalar(a)), Rc::new(Expr::Bin(Op::Mul, Rc::new(Expr::Scalar(b)), Rc::new(Expr::Iota)))))
         };
         let (f1, f2) = (flatten(&t(1, 2), "i32"), flatten(&t(5, 6), "i32"));
-        assert_eq!(generate(&f1, "i32", None), generate(&f2, "i32", None));
+        assert_eq!(generate(&f1, "i32", None, true), generate(&f2, "i32", None, true));
         assert_eq!(f1.scalars, vec![1, 2]);
         assert_eq!(f1.desc, "add(S0,mul(S1,iota))");
+    }
+
+    #[test]
+    fn f32_tree_codegen() {
+        let x = Rc::new(Expr::Iota);
+        let s = Rc::new(Expr::Scalar(2.5f32.to_bits() as i32));
+        let t = Rc::new(Expr::Un(UOp::Abs, Rc::new(Expr::Bin(Op::Mod, s, x))));
+        let f = flatten(&t, "f32");
+        assert_eq!(f.desc, "abs(mod(S0,iota))");
+        assert!(f.body.contains("bitcast<f32>(sc[1])"), "{}", f.body);
+        // A reduce that does not store binds no `out` and puts the partials at binding 1.
+        let src = generate(&f, "f32", Some(("add", ElementKind::F32)), false);
+        assert!(!src.contains("out") && src.contains("@binding(1) var<storage, read_write> part: array<f32>"), "{src}");
+        assert!(generate(&f, "f32", Some(("min", ElementKind::F32)), true).contains("out[i] = v;"));
     }
 
     #[test]

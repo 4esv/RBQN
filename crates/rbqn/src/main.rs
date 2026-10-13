@@ -87,6 +87,8 @@ fn interp_main(mut t: std::time::Instant) {
         // downloads a resident value on its first host touch.
         rbqn_vm::derive::register_gpu_tensor(gpu_runtime::gpu_tensor);
         rbqn_core::register_resident_download(gpu_runtime::resident_download);
+        // NOTE: Monadic arithmetic on a resident value stays lazy (issue #15).
+        rbqn_vm::derive::register_gpu_resident_monad(gpu_runtime::gpu_resident_monad);
 
         // NOTE: Register GPU fold/scan hooks into rbqn-vm modifiers.
         // These enable +´ and +` to dispatch to GPU for large arrays.
