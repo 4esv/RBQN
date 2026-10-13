@@ -78,6 +78,12 @@ fn interp_main(mut t: std::time::Instant) {
         // underflowed to 0), see tests/gpu/corpus.txt.
         rbqn_vm::derive::register_gpu_matmul(gpu_runtime::gpu_matmul);
 
+        // NOTE: •gpu namespace (issue #17): the same f32 kernels, ungated, for
+        // callers who ask for f32. A CPU-only build registers none, so •gpu errors.
+        rbqn_vm::derive::register_gpu_f32_matmul(gpu_runtime::gpu_f32_matmul);
+        rbqn_vm::derive::register_gpu_f32_softmax(gpu_runtime::gpu_f32_softmax);
+        rbqn_vm::derive::register_gpu_available(gpu_runtime::gpu_available);
+
         // NOTE: Register GPU fold/scan hooks into rbqn-vm modifiers.
         // These enable +´ and +` to dispatch to GPU for large arrays.
         rbqn_vm::modifiers::register_gpu_fold(gpu_runtime::gpu_fold);

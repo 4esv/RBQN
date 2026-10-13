@@ -10,6 +10,7 @@ A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array langu
 - **All primitives**: arithmetic, comparison, structural (`⥊↑↓↕⌽⍉`), search/sort (`⊐⊒∊⍋⍒`), modifiers (`˘¨⌜´˝`), combinators (`∘○⊸⟜⊘◶⍟`), etc.
 - **System values**: `•BQN`, `•Show`, `•Out`, `•Fmt`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•args`, `•Exit`
 - **`•math` namespace**: `Sin`, `Cos`, `Tan`, `ASin`, `ACos`, `ATan`, `Log`, `Cbrt`, `Hypot`, `Erf`, `Comb`, `MatMul`, `Softmax`, `Pi`
+- **`•gpu` namespace**: `MatMul`, `Softmax`, `Available`, explicit f32 kernels (see [`•gpu`](#gpu))
 - **`•file` namespace**: `Lines`, `Chars`, `Bytes`, `List`, `At`, `Name`, `Parent`, `Exists`, `Type`, `CreateDir`, `Remove`, `Rename`
 - **`•term` namespace**: `RawMode`, `CharB`, `CharN`, `Flush`, `OutRaw`, `ErrRaw`
 - **`•bit` namespace**: `_cast`, `_not`, `_neg`, and binary bit operations across widths
@@ -58,6 +59,24 @@ Options:
   --version  show version and bytecode source
   --help     show help
 ```
+
+## •gpu
+
+Explicit f32 GPU kernels, for code that accepts f32 rounding in exchange for speed. Nothing outside `•gpu` changes results: automatic GPU dispatch (arithmetic, folds, scans, sorts, `•math.MatMul`) runs integer (i32/i64) kernels only where the result is exact and falls back to the f64 CPU path otherwise; `tests/gpu/corpus.txt` checks it against the CPU.
+
+| function | does |
+|---|---|
+| `w •gpu.MatMul x` | rank-2 `w` (m×k) times rank-2 `x` (k×n), f32 kernel |
+| `•gpu.Softmax x` | softmax of a rank-1 `x`, or of each row of a rank-2 `x` (one dispatch per row), f32 kernel |
+| `•gpu.Available @` | 1 if a GPU device exists, else 0 |
+
+Contract:
+
+- Inputs are numeric arrays of any element type; every element is rounded to f32 before upload (values beyond f32 range become `∞`).
+- Results are ordinary f64 arrays holding the f32 values. They differ from `•math.MatMul` / `•math.Softmax` (exact f64, CPU) by rounding: `(2‿2⥊0.1) •gpu.MatMul 2‿2⥊3` gives `0.6000000238418579` where `•math.MatMul` gives `0.6000000000000001`.
+- No size threshold and no exactness gate: every call dispatches, so small inputs pay the transfer cost.
+- With no device (a CPU-only build via `--no-default-features`, `--no-gpu`, `RBQN_GPU=off`, or no adapter) `MatMul` and `Softmax` error with `no GPU available` and `Available` returns 0.
+- Data does not stay on the device between calls; residency is issue #14.
 
 ## Install
 

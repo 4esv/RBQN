@@ -84,6 +84,20 @@ static GPU_SOFTMAX_HOOK: OnceLock<GpuSoftmaxFn> = OnceLock::new();
 pub fn register_gpu_matmul(f: GpuMatMulFn) { let _ = GPU_MATMUL_HOOK.set(f); }
 pub fn register_gpu_softmax(f: GpuSoftmaxFn) { let _ = GPU_SOFTMAX_HOOK.set(f); }
 
+// NOTE: •gpu namespace hooks: the f32 kernels run unconditionally (no size
+// threshold, no exactness gate). None means no device; •gpu then errors.
+type GpuF32MatMulFn = fn(w: &[f64], x: &[f64], m: usize, k: usize, n: usize) -> Option<Vec<f64>>;
+type GpuF32SoftmaxFn = fn(x: &[f64]) -> Option<Vec<f64>>;
+type GpuAvailableFn = fn() -> bool;
+
+static GPU_F32_MATMUL_HOOK: OnceLock<GpuF32MatMulFn> = OnceLock::new();
+static GPU_F32_SOFTMAX_HOOK: OnceLock<GpuF32SoftmaxFn> = OnceLock::new();
+static GPU_AVAILABLE_HOOK: OnceLock<GpuAvailableFn> = OnceLock::new();
+
+pub fn register_gpu_f32_matmul(f: GpuF32MatMulFn) { let _ = GPU_F32_MATMUL_HOOK.set(f); }
+pub fn register_gpu_f32_softmax(f: GpuF32SoftmaxFn) { let _ = GPU_F32_SOFTMAX_HOOK.set(f); }
+pub fn register_gpu_available(f: GpuAvailableFn) { let _ = GPU_AVAILABLE_HOOK.set(f); }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DerivedKind {
     Fork,
@@ -1480,6 +1494,10 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
                 }
             math_softmax_cpu(x)
         }
+        // NOTE: •gpu sys functions — range 1116-1118
+        1116 => rbqn_core::error::throw("•gpu.MatMul requires left argument (w •gpu.MatMul x)"),
+        1117 => gpu_softmax_c1(x),
+        1118 => B::m_f64(if GPU_AVAILABLE_HOOK.get().is_some_and(|f| f()) { 1.0 } else { 0.0 }),
         // NOTE: •rand sys functions — range 1120-1123
         1121 => rand_range_c1(x),
         1122 => rand_deal_c1(x),
@@ -1753,6 +1771,9 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         }
         // NOTE: •math.Softmax — dyadic: not standard, throw error
         1115 => rbqn_core::error::throw("•math.Softmax takes one argument (•math.Softmax x)"),
+        1116 => gpu_matmul_c2(w, x),
+        1117 => rbqn_core::error::throw("•gpu.Softmax takes one argument (•gpu.Softmax x)"),
+        1118 => rbqn_core::error::throw("•gpu.Available takes one argument (•gpu.Available @)"),
         // NOTE: rand dyadic: shape •rand.Range n
         1121 => rand_range_c2(w, x),
         1123 => rand_subset_c2(w, x),
@@ -2196,6 +2217,8 @@ fn sys_name_to_b(name: &str) -> B {
         "file"      => make_file_namespace(),
         // NOTE: •math namespace (trig, log, special functions, constants)
         "math"      => make_math_namespace(),
+        // NOTE: •gpu namespace (explicit f32 kernels: MatMul, Softmax, Available)
+        "gpu"       => make_gpu_namespace(),
         // NOTE: •rand namespace (PRNG: Range, Deal, Subset)
         "rand"      => make_rand_namespace(),
         // NOTE: •MakeRand — creates a seeded PRNG (simplified: returns global •rand)
@@ -3191,6 +3214,45 @@ fn math_lcm_c2(w: B, x: B) -> B {
     B::m_f64((a.abs() / gcd * b.abs()) as f64)
 }
 
+/// Numeric array elements as f64; `what` names the argument in the error.
+fn num_arr_f64(arr: &rbqn_core::array::BqnArr, what: &str) -> Vec<f64> {
+    match &arr.data {
+        rbqn_core::array::ArrData::F64(v) => v.clone(),
+        rbqn_core::array::ArrData::I32(v) => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::I16(v) => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::I8(v)  => v.iter().map(|&x| x as f64).collect(),
+        rbqn_core::array::ArrData::Bit(v) => (0..arr.ia()).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect(),
+        _ => rbqn_core::error::throw(format!("{what} must be numeric")),
+    }
+}
+
+/// An f64 result array with fill 0.
+fn f64_arr(shape: Vec<usize>, vals: Vec<f64>) -> B {
+    crate::vm::tag_arr(rbqn_core::array::BqnArr {
+        shape,
+        data: rbqn_core::array::ArrData::F64(vals),
+        fill: Some(B::m_f64(0.0)),
+    })
+}
+
+/// Validated MatMul arguments: (w values, x values, m, k, n). `name` prefixes errors.
+fn matmul_args(w: B, x: B, name: &str) -> (Vec<f64>, Vec<f64>, usize, usize, usize) {
+    let wa = crate::vm::get_arr(w).unwrap_or_else(|| rbqn_core::error::throw(format!("{name}: left argument must be a rank-2 array")));
+    let xa = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw(format!("{name}: right argument must be a rank-2 array")));
+    if wa.rank() != 2 { rbqn_core::error::throw(format!("{name}: left argument must be rank-2")); }
+    if xa.rank() != 2 { rbqn_core::error::throw(format!("{name}: right argument must be rank-2")); }
+    let m = wa.shape[0];
+    let k = wa.shape[1];
+    let kx = xa.shape[0];
+    let n = xa.shape[1];
+    if k != kx {
+        rbqn_core::error::throw(format!("{name}: inner dimensions must match: {}≠{}", k, kx));
+    }
+    let w_vals = num_arr_f64(&wa, &format!("{name}: left argument"));
+    let x_vals = num_arr_f64(&xa, &format!("{name}: right argument"));
+    (w_vals, x_vals, m, k, n)
+}
+
 /// CPU fallback softmax: numerically stable via max subtraction.
 fn math_softmax_cpu(x: B) -> B {
     let arr = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw("•math.Softmax: argument must be a numeric array"));
@@ -3198,62 +3260,18 @@ fn math_softmax_cpu(x: B) -> B {
         rbqn_core::error::throw("•math.Softmax: argument must be rank-1");
     }
     let n = arr.ia();
-    let vals: Vec<f64> = match &arr.data {
-        rbqn_core::array::ArrData::F64(v) => v.clone(),
-        rbqn_core::array::ArrData::I32(v) => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::I16(v) => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::I8(v)  => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::Bit(v) => (0..n).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect(),
-        _ => rbqn_core::error::throw("•math.Softmax: argument must be numeric"),
-    };
+    let vals = num_arr_f64(&arr, "•math.Softmax: argument");
     // Numerical stability: subtract max before exp
     let max = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let exps: Vec<f64> = vals.iter().map(|&v| (v - max).exp()).collect();
     let sum: f64 = exps.iter().sum();
     let probs: Vec<f64> = exps.iter().map(|&e| e / sum).collect();
-    let result = rbqn_core::array::BqnArr {
-        shape: vec![n],
-        data: rbqn_core::array::ArrData::F64(probs),
-        fill: Some(B::m_f64(0.0)),
-    };
-    crate::vm::tag_arr(result)
+    f64_arr(vec![n], probs)
 }
 
 /// CPU fallback matmul: naive triple-loop for rank-2 arrays.
 fn math_matmul_cpu(w: B, x: B) -> B {
-    let wa = crate::vm::get_arr(w).unwrap_or_else(|| rbqn_core::error::throw("•math.MatMul: left argument must be a rank-2 array"));
-    let xa = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw("•math.MatMul: right argument must be a rank-2 array"));
-    if wa.rank() != 2 { rbqn_core::error::throw("•math.MatMul: left argument must be rank-2"); }
-    if xa.rank() != 2 { rbqn_core::error::throw("•math.MatMul: right argument must be rank-2"); }
-    let m = wa.shape[0];
-    let k = wa.shape[1];
-    let kx = xa.shape[0];
-    let n = xa.shape[1];
-    if k != kx {
-        rbqn_core::error::throw(format!("•math.MatMul: inner dimensions must match: {}≠{}", k, kx));
-    }
-    let w_vals: Vec<f64> = match &wa.data {
-        rbqn_core::array::ArrData::F64(v) => v.clone(),
-        rbqn_core::array::ArrData::I32(v) => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::I16(v) => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::I8(v)  => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::Bit(v) => {
-            let ia = wa.ia();
-            (0..ia).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect()
-        }
-        _ => rbqn_core::error::throw("•math.MatMul: left argument must be numeric"),
-    };
-    let x_vals: Vec<f64> = match &xa.data {
-        rbqn_core::array::ArrData::F64(v) => v.clone(),
-        rbqn_core::array::ArrData::I32(v) => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::I16(v) => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::I8(v)  => v.iter().map(|&x| x as f64).collect(),
-        rbqn_core::array::ArrData::Bit(v) => {
-            let ia = xa.ia();
-            (0..ia).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect()
-        }
-        _ => rbqn_core::error::throw("•math.MatMul: right argument must be numeric"),
-    };
+    let (w_vals, x_vals, m, k, n) = matmul_args(w, x, "•math.MatMul");
     // Naive triple-loop matmul
     let mut result = vec![0.0f64; m * n];
     for i in 0..m {
@@ -3265,12 +3283,85 @@ fn math_matmul_cpu(w: B, x: B) -> B {
             result[i * n + j] = acc;
         }
     }
-    let out = rbqn_core::array::BqnArr {
-        shape: vec![m, n],
-        data: rbqn_core::array::ArrData::F64(result),
-        fill: Some(B::m_f64(0.0)),
-    };
-    crate::vm::tag_arr(out)
+    f64_arr(vec![m, n], result)
+}
+
+// =============================================================================
+// •gpu namespace
+// =============================================================================
+
+// NOTE: Explicit f32 kernels (issue #17, option A of #16). Inputs are rounded
+// to f32 and results come back as f64 arrays holding the f32 values, so they
+// differ from •math.MatMul / •math.Softmax by rounding. No size threshold and
+// no exactness gate: the caller asked for the GPU.
+
+/// Cached •gpu namespace object.
+static GPU_NS: std::sync::LazyLock<Mutex<Option<B>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+fn make_gpu_namespace() -> B {
+    let mut guard = GPU_NS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ns_b) = *guard {
+        return ns_b;
+    }
+
+    use crate::namespace::{str2gid, NSDesc, NS};
+
+    let gids = vec![str2gid("matmul"), str2gid("softmax"), str2gid("available")];
+    let var_am: i32 = gids.len() as i32;
+    let var_am_u16 = var_am as u16;
+
+    let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
+    let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
+        body,
+        None,
+        var_am_u16,
+        &[m_sys_fn(1116), m_sys_fn(1117), m_sys_fn(1118)],
+    ));
+
+    let ns_b = crate::namespace::store_ns(NS { desc, sc });
+    *guard = Some(ns_b);
+    ns_b
+}
+
+fn gpu_unavailable(name: &str) -> ! {
+    rbqn_core::error::throw(format!(
+        "{name}: no GPU available (CPU-only build, --no-gpu, RBQN_GPU=off, or no adapter); •math.{} is the exact CPU path",
+        &name["•gpu.".len()..]
+    ))
+}
+
+/// w •gpu.MatMul x: f32 matrix multiply on the GPU.
+fn gpu_matmul_c2(w: B, x: B) -> B {
+    let (w_vals, x_vals, m, k, n) = matmul_args(w, x, "•gpu.MatMul");
+    let hook = GPU_F32_MATMUL_HOOK.get().unwrap_or_else(|| gpu_unavailable("•gpu.MatMul"));
+    // NOTE: wgpu rejects zero-size bindings; an empty product is all zeros.
+    if m * k * n == 0 {
+        return f64_arr(vec![m, n], vec![0.0; m * n]);
+    }
+    let out = hook(&w_vals, &x_vals, m, k, n).unwrap_or_else(|| gpu_unavailable("•gpu.MatMul"));
+    f64_arr(vec![m, n], out)
+}
+
+/// •gpu.Softmax x: f32 softmax of a rank-1 array, or of each row of a rank-2 array.
+fn gpu_softmax_c1(x: B) -> B {
+    let arr = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw("•gpu.Softmax: argument must be a numeric array"));
+    if arr.rank() != 1 && arr.rank() != 2 {
+        rbqn_core::error::throw("•gpu.Softmax: argument must be rank-1 or rank-2");
+    }
+    let shape = arr.shape.to_vec();
+    let hook = GPU_F32_SOFTMAX_HOOK.get().unwrap_or_else(|| gpu_unavailable("•gpu.Softmax"));
+    if arr.ia() == 0 {
+        return f64_arr(shape, Vec::new());
+    }
+    let vals = num_arr_f64(&arr, "•gpu.Softmax: argument");
+    let row = *shape.last().unwrap();
+    let mut out = Vec::with_capacity(vals.len());
+    for r in vals.chunks(row) {
+        out.extend(hook(r).unwrap_or_else(|| gpu_unavailable("•gpu.Softmax")));
+    }
+    f64_arr(shape, out)
 }
 
 // =============================================================================
