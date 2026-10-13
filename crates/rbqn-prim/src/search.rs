@@ -660,6 +660,7 @@ fn atom_keys(a: &BqnArr) -> Option<Vec<Option<u128>>> {
         ArrData::C8(v) => v.iter().map(|&c| chr_key(c as u32)).collect(),
         ArrData::C16(v) => v.iter().map(|&c| chr_key(c as u32)).collect(),
         ArrData::C32(v) => v.iter().map(|&c| chr_key(c)).collect(),
+        ArrData::Gpu(_) => return None,
         ArrData::Boxed(v) => {
             let mut out = Vec::with_capacity(v.len());
             for &b in v {

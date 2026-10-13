@@ -83,6 +83,10 @@ fn interp_main(mut t: std::time::Instant) {
         rbqn_vm::derive::register_gpu_f32_matmul(gpu_runtime::gpu_f32_matmul);
         rbqn_vm::derive::register_gpu_f32_softmax(gpu_runtime::gpu_f32_softmax);
         rbqn_vm::derive::register_gpu_available(gpu_runtime::gpu_available);
+        // NOTE: Resident arrays (issue #14): •gpu.Tensor uploads once; get_arr
+        // downloads a resident value on its first host touch.
+        rbqn_vm::derive::register_gpu_tensor(gpu_runtime::gpu_tensor);
+        rbqn_core::register_resident_download(gpu_runtime::resident_download);
 
         // NOTE: Register GPU fold/scan hooks into rbqn-vm modifiers.
         // These enable +´ and +` to dispatch to GPU for large arrays.

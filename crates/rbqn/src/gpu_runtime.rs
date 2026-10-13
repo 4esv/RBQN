@@ -3,8 +3,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use rbqn_core::array::{ArrData, BqnArr, squeeze_num, squeeze_i32};
-use rbqn_core::{B, DeviceValue, peek_device, tag_device};
+use rbqn_core::array::{ArrData, BqnArr, GpuData, GpuDType, squeeze_num, squeeze_i32};
+use rbqn_core::{B, DeviceValue, peek_device, peek_resident, tag_device, tag_resident};
 use rbqn_gpu::buffer::{ElementKind, GpuBuffer, upload_i32_with, upload_f32, download_i32, download_i64, download_f32};
 use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::expr::Expr;
@@ -305,7 +305,7 @@ pub fn gpu_safe_arr(arr: &BqnArr) -> bool {
     match &arr.data {
         ArrData::Bit(_) | ArrData::I8(_) | ArrData::I16(_) | ArrData::I32(_) => true,
         ArrData::F64(v) => gpu_safe_integer(v),
-        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) | ArrData::Boxed(_) => false,
+        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) | ArrData::Boxed(_) | ArrData::Gpu(_) => false,
     }
 }
 
@@ -378,7 +378,7 @@ pub fn arr_to_gpu_i32_bound(gpu: &GpuRuntime, arr: &BqnArr) -> Option<(GpuBuffer
             }
             1.0
         }),
-        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) | ArrData::Boxed(_) => return None,
+        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) | ArrData::Boxed(_) | ArrData::Gpu(_) => return None,
     })
 }
 
@@ -1396,9 +1396,22 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
 }
 
 /// w (M×K) •gpu.MatMul x (K×N) on the f32 kernel, with no threshold or
-/// exactness gate. None when no device. Registered as GPU_F32_MATMUL_HOOK.
-pub fn gpu_f32_matmul(w: &[f64], x: &[f64], m: usize, k: usize, n: usize) -> Option<Vec<f64>> {
-    guarded("matmul", || matmul_f32(get()?, w, x, m, k, n))
+/// exactness gate; the result stays resident. None when no device.
+/// Registered as GPU_F32_MATMUL_HOOK.
+pub fn gpu_f32_matmul(w: B, x: B, m: usize, k: usize, n: usize) -> Option<B> {
+    guarded("matmul", || {
+        let gpu = get()?;
+        let (a, b) = (f32_operand(gpu, w)?, f32_operand(gpu, x)?);
+        let out = GpuBuffer::storage(&gpu.ctx.device, ElementKind::F32, m * n);
+        {
+            let mut cache = gpu.cache.lock().ok()?;
+            rbqn_gpu::kernels::matmul::matmul(&gpu.ctx.device, &gpu.ctx.queue, &mut cache, &a, &b, &out, m as u32, n as u32, k as u32);
+        }
+        if debug_enabled() {
+            eprintln!("[gpu] matmul {m}x{k}x{n} (f32, resident)");
+        }
+        Some(tag_resident_buf(out, GpuDType::F32, vec![m, n]))
+    })
 }
 
 /// Run the f32 matmul kernel; inputs are rounded to f32, the result widened back.
@@ -1438,34 +1451,141 @@ fn matmul_f32(gpu: &GpuRuntime, w: &[f64], x: &[f64], m: usize, k: usize, n: usi
     Some(result_f32.iter().map(|&v| v as f64).collect())
 }
 
-/// •gpu.Softmax of one row on the f32 kernel, with no threshold. None when no
-/// device. Registered as GPU_F32_SOFTMAX_HOOK (•math.Softmax stays on the CPU,
-/// see main.rs).
-pub fn gpu_f32_softmax(x: &[f64]) -> Option<Vec<f64>> {
+/// •gpu.Softmax on the f32 kernel, with no threshold: a rank-1 argument, or
+/// each row of a rank-2 one (rows are copied in and out on the device). The
+/// result stays resident. None when no device. Registered as
+/// GPU_F32_SOFTMAX_HOOK (•math.Softmax stays on the CPU, see main.rs).
+pub fn gpu_f32_softmax(x: B) -> Option<B> {
     guarded("softmax", || {
         let gpu = get()?;
-        let n = x.len();
-        let x_f32: Vec<f32> = x.iter().map(|&v| v as f32).collect();
-
-        let device = &gpu.ctx.device;
-        let queue = &gpu.ctx.queue;
-
-        let input_buf = upload_f32(device, queue, &x_f32);
-        let out_buf = GpuBuffer::storage(device, ElementKind::F32, n);
-
-        {
-            let mut cache = gpu.cache.lock().ok()?;
-            rbqn_gpu::kernels::softmax::softmax(device, queue, &mut cache, &input_buf, &out_buf);
+        let shape = rbqn_core::arr_shape(x)?;
+        let input = f32_operand(gpu, x)?;
+        let (device, queue) = (&gpu.ctx.device, &gpu.ctx.queue);
+        let n = input.len();
+        let row = *shape.last()?;
+        let out = GpuBuffer::storage(device, ElementKind::F32, n);
+        let mut cache = gpu.cache.lock().ok()?;
+        if row == n {
+            rbqn_gpu::kernels::softmax::softmax(device, queue, &mut cache, &input, &out);
+        } else {
+            let (row_in, row_out) = (GpuBuffer::storage(device, ElementKind::F32, row), GpuBuffer::storage(device, ElementKind::F32, row));
+            let bytes = row as u64 * 4;
+            for r in 0..(n / row) as u64 {
+                let mut enc = device.create_command_encoder(&Default::default());
+                enc.copy_buffer_to_buffer(input.inner(), r * bytes, row_in.inner(), 0, bytes);
+                queue.submit(std::iter::once(enc.finish()));
+                rbqn_gpu::kernels::softmax::softmax(device, queue, &mut cache, &row_in, &row_out);
+                let mut enc = device.create_command_encoder(&Default::default());
+                enc.copy_buffer_to_buffer(row_out.inner(), 0, out.inner(), r * bytes, bytes);
+                queue.submit(std::iter::once(enc.finish()));
+            }
         }
-
-        let result_f32 = pollster::block_on(download_f32(device, queue, &out_buf));
-
         if debug_enabled() {
-            eprintln!("[gpu] softmax {} elements (f32)", n);
+            eprintln!("[gpu] softmax {} (f32, resident)", shape_str(&shape));
         }
-
-        Some(result_f32.iter().map(|&v| v as f64).collect())
+        Some(tag_resident_buf(out, GpuDType::F32, shape))
     })
+}
+
+// =============================================================================
+// Resident arrays (•gpu.Tensor, issue #14)
+// =============================================================================
+
+// NOTE: A resident value is a BqnArr holding ArrData::Gpu in core's resident
+// table. •gpu functions read its buffer directly; any other consumer goes
+// through get_arr, which calls `resident_download` once and caches the host
+// copy. RBQN_GPU_DEBUG=1 logs every upload and download here.
+
+fn shape_str(shape: &[usize]) -> String {
+    shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("x")
+}
+
+fn dtype_str(d: GpuDType) -> &'static str {
+    match d {
+        GpuDType::F32 => "f32",
+        GpuDType::I32 => "i32",
+    }
+}
+
+fn tag_resident_buf(buf: GpuBuffer, dtype: GpuDType, shape: Vec<usize>) -> B {
+    let data = ArrData::Gpu(GpuData { buf: Arc::new(buf), dtype });
+    tag_resident(BqnArr { shape, data, fill: Some(B::m_f64(0.0)) })
+}
+
+/// The buffer and dtype of a resident array.
+fn resident_parts(r: &BqnArr) -> Option<(Arc<GpuBuffer>, GpuDType)> {
+    let ArrData::Gpu(g) = &r.data else { return None };
+    Some((g.buf.clone().downcast::<GpuBuffer>().ok()?, g.dtype))
+}
+
+/// Upload host data as one buffer and log it.
+fn upload_logged(gpu: &GpuRuntime, shape: &[usize], dtype: GpuDType, f32s: impl FnOnce() -> Vec<f32>, i32s: impl FnOnce() -> Vec<i32>) -> GpuBuffer {
+    let (device, queue) = (&gpu.ctx.device, &gpu.ctx.queue);
+    let buf = match dtype {
+        GpuDType::F32 => upload_f32(device, queue, &f32s()),
+        GpuDType::I32 => {
+            let v = i32s();
+            upload_i32_with(device, queue, v.len(), |d| d.copy_from_slice(&v)).0
+        }
+    };
+    if debug_enabled() {
+        eprintln!("[gpu] upload {} ({})", shape_str(shape), dtype_str(dtype));
+    }
+    buf
+}
+
+/// An f32 buffer for a •gpu kernel argument: a resident f32 buffer as is, a
+/// resident i32 one converted through the host, or a host array uploaded.
+fn f32_operand(gpu: &GpuRuntime, b: B) -> Option<Arc<GpuBuffer>> {
+    if let Some(r) = peek_resident(b) {
+        let (buf, dtype) = resident_parts(&r)?;
+        if dtype == GpuDType::F32 {
+            return Some(buf);
+        }
+        let host = resident_download(&r);
+        let v = arr_to_f64(&host)?;
+        return Some(Arc::new(upload_logged(gpu, &r.shape, GpuDType::F32, || v.iter().map(|&x| x as f32).collect(), Vec::new)));
+    }
+    let arr = rbqn_core::get_arr(b)?;
+    let v = arr_to_f64(&arr)?;
+    Some(Arc::new(upload_logged(gpu, &arr.shape, GpuDType::F32, || v.iter().map(|&x| x as f32).collect(), Vec::new)))
+}
+
+/// •gpu.Tensor x: upload once. f32 when every value is exact in f32, else i32
+/// when every value is an i32 integer (so ints above 2^24 round-trip exactly),
+/// else f32 (rounded). Registered as GPU_TENSOR_HOOK.
+pub fn gpu_tensor(x: B) -> Option<B> {
+    guarded("tensor", || {
+        let gpu = get()?;
+        let arr = rbqn_core::get_arr(x)?;
+        let v = arr_to_f64(&arr)?;
+        let f32_exact = v.iter().all(|&e| e as f32 as f64 == e);
+        let dtype = if !f32_exact && v.iter().all(|&e| e == e as i32 as f64) { GpuDType::I32 } else { GpuDType::F32 };
+        let buf = upload_logged(gpu, &arr.shape, dtype, || v.iter().map(|&e| e as f32).collect(), || v.iter().map(|&e| e as i32).collect());
+        Some(tag_resident_buf(buf, dtype, arr.shape.clone()))
+    })
+}
+
+/// Read a resident array back to host data (squeezed like any host result).
+/// Registered with core: get_arr calls it on a resident value's first touch.
+pub fn resident_download(r: &BqnArr) -> BqnArr {
+    let (buf, dtype) = resident_parts(r).expect("resident array holds a GPU buffer");
+    let gpu = get().expect("resident array without a GPU runtime");
+    let (device, queue) = (&gpu.ctx.device, &gpu.ctx.queue);
+    let data = guarded("download", || {
+        Some(match dtype {
+            GpuDType::F32 => {
+                let v = pollster::block_on(download_f32(device, queue, &buf));
+                squeeze_num(BqnArr { shape: vec![], data: ArrData::F64(v.into_iter().map(|e| e as f64).collect()), fill: None }).data
+            }
+            GpuDType::I32 => squeeze_i32(pollster::block_on(download_i32(device, queue, &buf))),
+        })
+    })
+    .expect("GPU readback failed");
+    if debug_enabled() {
+        eprintln!("[gpu] download {} ({})", shape_str(&r.shape), dtype_str(dtype));
+    }
+    BqnArr { shape: r.shape.clone(), data, fill: r.fill }
 }
 
 /// •gpu.Available: whether a device exists (waits for device creation).
@@ -1482,7 +1602,7 @@ fn arr_to_f64(arr: &BqnArr) -> Option<Vec<f64>> {
         ArrData::I16(v) => Some(v.iter().map(|&x| x as f64).collect()),
         ArrData::I8(v)  => Some(v.iter().map(|&x| x as f64).collect()),
         ArrData::Bit(v) => Some((0..n).map(|i| ((v[i/64] >> (i%64)) & 1) as f64).collect()),
-        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) | ArrData::Boxed(_) => None,
+        ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) | ArrData::Boxed(_) | ArrData::Gpu(_) => None,
     }
 }
 

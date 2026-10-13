@@ -566,6 +566,7 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         ArrData::C8(v) => ArrData::C8(v[..m].to_vec()),
         ArrData::C16(v) => ArrData::C16(v[..m].to_vec()),
         ArrData::C32(v) => ArrData::C32(v[..m].to_vec()),
+        ArrData::Gpu(_) => unreachable!("get_arr downloads resident data"),
         ArrData::Boxed(v) if m == 1 && !v[0].is_f64() && !v[0].is_c32() => {
             // Single non-number/char element (e.g. <"ab"): plain fill, no per-element retyping.
             return Ok(PrimResult::Array(BqnArr {
@@ -589,7 +590,7 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         ArrData::C8(v) => (ArrData::C8(repeat_to(v.as_slice(), new_ia)), chr_fill),
         ArrData::C16(v) => (ArrData::C16(repeat_to(v.as_slice(), new_ia)), chr_fill),
         ArrData::C32(v) => (ArrData::C32(repeat_to(v.as_slice(), new_ia)), chr_fill),
-        ArrData::Boxed(_) => unreachable!(),
+        ArrData::Boxed(_) | ArrData::Gpu(_) => unreachable!(),
     };
     Ok(PrimResult::Array(BqnArr { shape: new_shape, data, fill }))
 }
@@ -1093,7 +1094,7 @@ fn join_typed_vectors(arr: &BqnArr) -> Option<BqnArr> {
             ArrData::C8(_) => (true, 1),
             ArrData::C16(_) => (true, 2),
             ArrData::C32(_) => (true, 3),
-            ArrData::Boxed(_) => return None,
+            ArrData::Boxed(_) | ArrData::Gpu(_) => return None,
         };
         match is_char {
             None => is_char = Some(c),
@@ -1153,7 +1154,7 @@ fn join_typed_vectors(arr: &BqnArr) -> Option<BqnArr> {
                 ArrData::C8(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
                 ArrData::C16(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
                 ArrData::C32(v) => $o.extend(v[..$a.ia()].iter().map(|&x| x as $t)),
-                ArrData::Boxed(_) => {}
+                ArrData::Boxed(_) | ArrData::Gpu(_) => {}
             }
         };
     }
