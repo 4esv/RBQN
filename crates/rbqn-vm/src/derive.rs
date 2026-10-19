@@ -2208,6 +2208,16 @@ fn dispatch_sys_primind_c1(x: B) -> B {
 
 // --- System value name resolver ---
 
+/// Canonical spellings of every `•` system value that `sys_name_to_b` resolves
+/// (without the `•`). Used for REPL Tab completion.
+pub const SYS_VALUE_NAMES: &[&str] = &[
+    "Type", "Decompose", "Glyph", "PrimInd", "Fill", "BQN", "ReBQN", "Out", "Show", "Fmt", "Repr",
+    "Exit", "args", "path", "name", "wdpath", "state", "FLines", "FChars", "FBytes", "Import",
+    "ParseFloat", "Hash", "FromUTF8", "ToUTF8", "CurrentError", "file", "math", "gpu", "rand",
+    "MakeRand", "platform", "UnixTime", "MonoTime", "Delay", "SH", "_while_", "_fillBy_", "FFI",
+    "bit", "term", "ns", "HashMap",
+];
+
 /// Map a system value name (lowercase) to its B value.
 /// Returns SENTINEL for unknown names (signals to BQN runtime: value unavailable).
 fn sys_name_to_b(name: &str) -> B {
@@ -4061,4 +4071,22 @@ pub fn register_derived_equality() {
     rbqn_core::compare::register_derived_equal_fn(|w, x, depth| {
         derived_values_equal(w, x, depth)
     });
+}
+
+#[cfg(test)]
+mod sys_value_names_tests {
+    use super::*;
+
+    #[test]
+    fn every_listed_sys_value_resolves() {
+        for n in SYS_VALUE_NAMES {
+            let key = n.to_lowercase();
+            assert!(sys_name_to_b(&key).0 != B::SENTINEL.0, "•{n} does not resolve");
+        }
+    }
+
+    #[test]
+    fn unknown_sys_value_is_sentinel() {
+        assert!(sys_name_to_b("nosuchthing").0 == B::SENTINEL.0);
+    }
 }
