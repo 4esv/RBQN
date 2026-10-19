@@ -2592,17 +2592,13 @@ fn sys_import_c1(x: B) -> B {
     });
 
     // Set •path and •name for the imported file's context
-    let import_dir = std::path::Path::new(&resolved)
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let old_path = *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner());
     let old_name = *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner());
     set_sys_path(&resolved);
 
     // Compile and execute the imported file using •BQN machinery
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        dispatch_sys_bqn_eval_with_path(&contents, &import_dir)
+        dispatch_sys_bqn_eval_named(&contents, Some(&resolved))
     }));
 
     // Restore •path and •name
@@ -2614,6 +2610,7 @@ fn sys_import_c1(x: B) -> B {
         Err(_) => {
             // Remove sentinel on error so caller can retry
             IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&canonical);
+            crate::vm::keep_error_site_for_next_throw();
             rbqn_core::error::throw(format!("•Import: error loading {resolved}"))
         }
     };
@@ -2624,8 +2621,8 @@ fn sys_import_c1(x: B) -> B {
 }
 
 /// Execute BQN source with a given working path context.
-fn dispatch_sys_bqn_eval_with_path(src: &str, _dir: &str) -> B {
-    dispatch_sys_bqn_eval(src)
+fn dispatch_sys_bqn_eval_named(src: &str, name: Option<&str>) -> B {
+    dispatch_sys_bqn_eval_in(src, name)
 }
 
 // --- Utility functions ---
@@ -2958,6 +2955,10 @@ fn format_b_repr(x: B) -> String {
 /// Execute a BQN source string using the stored global runtime.
 /// This is the implementation of •BQN.
 fn dispatch_sys_bqn_eval(src: &str) -> B {
+    dispatch_sys_bqn_eval_in(src, None)
+}
+
+fn dispatch_sys_bqn_eval_in(src: &str, name: Option<&str>) -> B {
     // Retrieve the global runtime state
     let (compiler, runtime, _formatter) = {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -3020,7 +3021,8 @@ fn dispatch_sys_bqn_eval(src: &str) -> B {
 
     let block = rbqn_vm_compile_all(
         &bc, objs, &blocks, &bodies,
-        indices_b, token_info_b, src_b2, B::SENTINEL,
+        indices_b, token_info_b, src_b2,
+        name.map_or(B::SENTINEL, str_to_b),
     );
 
     let body = block.bodies[0].clone();
