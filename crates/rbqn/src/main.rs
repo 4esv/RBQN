@@ -129,6 +129,14 @@ fn interp_main(mut t: std::time::Instant) {
 
     // Execute pre-REPL arguments
     for action in &args.actions {
+        rbqn_vm::vm::clear_error_site();
+        let name = match action {
+            cli::Action::Eval(_) => "(-e)".to_string(),
+            cli::Action::Print(_) => "(-p)".to_string(),
+            cli::Action::Output(_) => "(-o)".to_string(),
+            cli::Action::File(path, _) if path == "-" => "(stdin)".to_string(),
+            cli::Action::File(path, _) => path.clone(),
+        };
         let result = match action {
             cli::Action::Eval(code) => exec_string(&rt, code).map(|_| ()),
             cli::Action::Print(code) => exec_string(&rt, code).map(|r| {
@@ -159,7 +167,7 @@ fn interp_main(mut t: std::time::Instant) {
             }
         };
         if let Err(e) = result {
-            eprintln!("Error: {e}");
+            print_error(&e, &name);
             gpu_runtime::print_summary();
             std::process::exit(1);
         }
@@ -176,6 +184,14 @@ fn interp_main(mut t: std::time::Instant) {
         let _ = std::io::stdout().flush();
         drop(_gpu_summary);
         unsafe { libc::_exit(0) };
+    }
+}
+
+/// Print `Error: <msg>`, followed by the source position when one was recorded.
+pub(crate) fn print_error(e: &BqnError, default_name: &str) {
+    eprintln!("Error: {e}");
+    if let Some(site) = rbqn_vm::vm::take_error_site_lines(default_name) {
+        eprintln!("{site}");
     }
 }
 

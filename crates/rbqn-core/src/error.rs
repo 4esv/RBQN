@@ -44,9 +44,19 @@ pub fn fmt_shape(sh: &[usize]) -> String {
 
 pub type Result<T> = std::result::Result<T, BqnError>;
 
+std::thread_local! {
+    static THROW_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Number of BQN errors thrown on this thread so far; identifies one unwind.
+pub fn throw_count() -> u64 {
+    THROW_COUNT.with(|c| c.get())
+}
+
 /// Panic with a typed BqnError value. Use this to propagate errors through
 /// catch_unwind boundaries without losing the error variant.
 pub fn throw_bqn(e: BqnError) -> ! {
+    THROW_COUNT.with(|c| c.set(c.get() + 1));
     std::panic::panic_any(e)
 }
 

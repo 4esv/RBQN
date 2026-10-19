@@ -60,6 +60,7 @@ fn eval_line(rt: &Runtime, line: &str, silent: bool, state: &mut ReplState) {
         return;
     }
 
+    rbqn_vm::vm::clear_error_site();
     match crate::exec_repl_line(rt, line, state) {
         Ok(result) => {
             if !silent {
@@ -68,7 +69,7 @@ fn eval_line(rt: &Runtime, line: &str, silent: bool, state: &mut ReplState) {
             }
         }
         Err(e) => {
-            eprintln!("Error: {e}");
+            crate::print_error(&e, "(repl)");
         }
     }
 }

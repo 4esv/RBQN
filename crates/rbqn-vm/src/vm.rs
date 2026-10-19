@@ -270,6 +270,9 @@ struct Frame {
     pscs: Vec<ScRef>,
     /// The thread's TLS block, looked up once by the caller of `eval_bc_in`.
     t: *const Tls,
+    /// Start pc of the instruction being run, for error-site capture on unwind.
+    pc: usize,
+    bl: *const Block,
 }
 
 impl Frame {
@@ -282,7 +285,7 @@ impl Frame {
         let (mut stack, mut pscs) = unsafe { (*t.frames.get()).pop() }.unwrap_or_default();
         stack.reserve(max_stack);
         pscs.reserve(max_psc);
-        let fr = Frame { stack, pscs, t };
+        let fr = Frame { stack, pscs, t, pc: 0, bl: std::ptr::null() };
         if n > MAX_EVAL_DEPTH {
             rbqn_core::error::throw("Stack overflow");
         }
@@ -293,6 +296,10 @@ impl Frame {
 impl Drop for Frame {
     #[inline]
     fn drop(&mut self) {
+        if !self.bl.is_null() && std::thread::panicking() {
+            // SAFETY: `bl` is the caller's block reference, which outlives the frame.
+            record_error_site(unsafe { &*self.bl }, self.pc);
+        }
         let mut stack = std::mem::take(&mut self.stack);
         let mut pscs = std::mem::take(&mut self.pscs);
         // B and ScRef have no destructors: clearing is just a length reset.
@@ -574,6 +581,8 @@ pub fn exec_block_each(
 /// The interpreter loop proper, on a frame owned by the caller.
 #[inline(always)]
 fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
+    frame.bl = bl;
+    let pc_slot: *mut usize = &mut frame.pc;
     let stack = &mut frame.stack;
     let pscs = &mut frame.pscs;
     stack.clear();
@@ -620,6 +629,8 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
         let Some(&op_raw) = bc.get(pc) else {
             rbqn_core::error::throw("VM: bytecode overrun");
         };
+        // SAFETY: `pc_slot` points into `frame`, which outlives the loop.
+        unsafe { *pc_slot = pc };
         pc += 1;
         let op_val = op_raw as u32;
 
@@ -1162,4 +1173,86 @@ impl Clone for Scope {
             vars: std::cell::RefCell::new(self.vars.borrow_mut().clone()),
         }
     }
+}
+
+
+/// Source position of the innermost user-code instruction that raised an error.
+pub struct ErrorSite {
+    comp: Arc<crate::block::Comp>,
+    pc: usize,
+    throw_id: u64,
+}
+
+thread_local! {
+    static ERROR_SITE: std::cell::RefCell<Option<ErrorSite>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Called while unwinding: keep the first (innermost) frame whose block has source.
+fn record_error_site(bl: &Block, pc: usize) {
+    let id = rbqn_core::error::throw_count();
+    if !get_arr(bl.comp.indices).is_some_and(|a| a.ia() >= 2) {
+        return;
+    }
+    ERROR_SITE.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.as_ref().is_none_or(|e| e.throw_id != id) {
+            let src_pc = bl.map.get(pc).map_or(pc, |&p| p as usize);
+            *s = Some(ErrorSite { comp: bl.comp.clone(), pc: src_pc, throw_id: id });
+        }
+    });
+}
+
+/// Forget any recorded site (call before running a new top-level action).
+pub fn clear_error_site() {
+    ERROR_SITE.with(|s| *s.borrow_mut() = None);
+}
+
+/// Mark the recorded site as belonging to the next error thrown, so a
+/// catch-and-rethrow (•Import) keeps the innermost position.
+pub fn keep_error_site_for_next_throw() {
+    let next = rbqn_core::error::throw_count() + 1;
+    ERROR_SITE.with(|s| {
+        if let Some(e) = s.borrow_mut().as_mut() {
+            e.throw_id = next;
+        }
+    });
+}
+
+/// Take the site of the most recent error as text lines:
+/// `<name>:<line>:`, the source line, and a caret line.
+pub fn take_error_site_lines(default_name: &str) -> Option<String> {
+    let site = ERROR_SITE.with(|s| s.borrow_mut().take())?;
+    if site.throw_id != rbqn_core::error::throw_count() {
+        return None;
+    }
+    let comp = &site.comp;
+    let ind = get_arr(comp.indices)?;
+    let at = |k: usize| -> Option<usize> {
+        let a = get_arr(ind.get(k).ok()?)?;
+        let v = a.get(site.pc).ok()?.o2f();
+        if v >= 0.0 { Some(v as usize) } else { None }
+    };
+    let (start, end) = (at(0)?, at(1)?);
+    let src: Vec<char> = {
+        let a = get_arr(comp.src)?;
+        (0..a.ia())
+            .map(|i| a.get(i).ok().and_then(|b| b.o2c().ok()).and_then(char::from_u32).unwrap_or('?'))
+            .collect()
+    };
+    if start >= src.len() {
+        return None;
+    }
+    let end = end.clamp(start, src.len() - 1);
+    let line_start = src[..start].iter().rposition(|&c| c == '\n').map_or(0, |i| i + 1);
+    let line_end = src[start..].iter().position(|&c| c == '\n').map_or(src.len(), |i| start + i);
+    let line_no = src[..start].iter().filter(|&&c| c == '\n').count() + 1;
+    let caret_end = end.min(line_end.saturating_sub(1)).max(start);
+    let text: String = src[line_start..line_end].iter().collect();
+    let pad: String = src[line_start..start].iter().map(|&c| if c == '\t' { '\t' } else { ' ' }).collect();
+    let carets = "^".repeat(caret_end - start + 1);
+    let name = match get_arr(comp.fullpath) {
+        Some(a) if a.ia() > 0 => crate::derive::b_to_string_pub(comp.fullpath),
+        _ => default_name.to_string(),
+    };
+    Some(format!("{name}:{line_no}:\n  {text}\n  {pad}{carets}"))
 }
