@@ -1,73 +1,68 @@
 # RBQN
 
-A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language with experimental GPU dispatch.
+A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language, built to let BQN use the whole machine: typed arrays, a bytecode VM, and GPU dispatch for array operations.
 
-> **Experimental.** Built primarily with Claude. Passes the full official BQN test suite and runs 2-6x slower than [CBQN](https://github.com/dzaima/CBQN) on most array workloads (see [Performance](#performance)). Use CBQN for anything serious.
+RBQN passes the official BQN test suite and is self-hosting: it compiles its own compiler, runtime and formatter from the BQN sources, with no other BQN implementation involved. The goal is a BQN that leverages compute as far as it safely can. The language is Marshall Lochbaum's; the implementation goes its own way.
+
+Status: pre-1.0. The language is complete; the system namespaces (`•file`, `•FFI`, `•term`) are partial. See [Limitations](#limitations).
 
 ## What works
 
-- **Self-hosting**: compiles its own BQN compiler, runtime, and formatter. No external BQN implementation needed to build. Fixpoint-verified (round 2 produces identical bytecode).
-- **All primitives**: arithmetic, comparison, structural (`⥊↑↓↕⌽⍉`), search/sort (`⊐⊒∊⍋⍒`), modifiers (`˘¨⌜´˝`), combinators (`∘○⊸⟜⊘◶⍟`), etc.
-- **System values**: `•BQN`, `•Show`, `•Out`, `•Fmt`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•args`, `•Exit`
-- **`•math` namespace**: `Sin`, `Cos`, `Tan`, `ASin`, `ACos`, `ATan`, `Log`, `Cbrt`, `Hypot`, `Erf`, `Comb`, `MatMul`, `Softmax`, `Pi`
-- **`•gpu` namespace**: `MatMul`, `Softmax`, `Available`, explicit f32 kernels, and `Tensor`/`Fetch` for device-resident arrays (see [`•gpu`](#gpu))
-- **`•file` namespace**: `Lines`, `Chars`, `Bytes`, `List`, `At`, `Name`, `Parent`, `Exists`, `Type`, `CreateDir`, `Remove`, `Rename`
-- **`•term` namespace**: `RawMode`, `CharB`, `CharN`, `Flush`, `OutRaw`, `ErrRaw`
-- **`•bit` namespace**: `_cast`, `_not`, `_neg`, and binary bit operations across widths
-- **Other**: `•Import`, `•ParseFloat`, `•Hash`, `•FromUTF8`, `•ToUTF8`, inverse (`⁼`) for many primitives, headers/predicates, block bodies, REPL
-- **GPU kernels** (wgpu): elementwise arithmetic, reductions, prefix scan, sort, gather, softmax, matmul. Auto-dispatches to GPU above size thresholds (~10M+ elements on Apple Silicon). Fused kernel support.
+- **The language.** Every primitive, modifier and combinator; headers, predicates, multiple bodies, namespaces, `⁼` for the invertible primitives, `⌾` and `⚇`. The official test suite passes in full (13 files, 1316 cases, see [Testing](#testing)).
+- **Self-hosting.** The compiler, runtimes and formatter are compiled by RBQN itself from `c.bqn`, `r0.bqn`, `r1.bqn` and `f.bqn`, embedded as bytecode. A fixpoint check confirms that the compiler compiled by itself produces identical bytecode.
+- **Typed arrays.** Arrays are stored unboxed as bits, i8, i16, i32, f64, or 8/16/32-bit characters, squeezed to the narrowest exact type, with boxed arrays only for nested data; the primitives have specialised paths for each.
+- **GPU dispatch.** Elementwise arithmetic, reductions, scans, sorting, selection, softmax and matrix multiply have wgpu kernels. Arithmetic, folds, scans and `•math.MatMul` dispatch automatically when a cost model says the GPU wins, using exact integer kernels only; the `•gpu` namespace gives explicit f32 kernels and device-resident arrays with lazy fusion. See [GPU](#gpu).
+- **System values.** `•BQN`, `•Import`, `•Show`, `•Out`, `•Fmt`, `•Repr`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•Hash`, `•HashMap`, `•ParseFloat`, `•FromUTF8`, `•ToUTF8`, `•UnixTime`, `•MonoTime`, `•Delay`, `•SH`, `•Exit`, `•args`, `•path`, `•name`, `•wdpath`, `•state`, `•rand`, `•platform`, `•GroupLen`, `•GroupOrd`, `•FLines`, `•FChars`, `•FBytes`, `•PrimInd`, `•ReBQN`.
+- **Namespaces.** `•math` (`Sin` `Cos` `Tan` `ASin` `ACos` `ATan` `Log` `Cbrt` `Hypot` `Erf` `Comb` `MatMul` `Softmax` `Pi`), `•gpu`, `•file` (`Lines` `Chars` `Bytes` `List` `At` `Name` `Parent` `Exists` `Type` `CreateDir` `Remove` `Rename`), `•term` (`RawMode` `CharB` `CharN` `Flush` `OutRaw` `ErrRaw`), `•bit` (`_cast` `_not` `_neg` and the binary operations across widths).
+- **A REPL** (`-r`), and script, expression and file modes.
 
-## What doesn't
+## Limitations
 
-- Slower than CBQN: 2-6x on array workloads, up to ~14x on per-element paths like `•Fmt` of large arrays (startup is ~15 ms vs CBQN's ~3 ms)
-- No REPL completion or history
-- `•FFI` is stubbed but non-functional
-- `•file.Open` not implemented
-- Error messages are often unhelpful
-- No namespace support beyond the built-in ones
-- Known divergences from CBQN: rank>1 fold returns a value instead of erroring, `⌊`/`⌈` with NaN follow Rust `min`/`max`, large floats print with all digits instead of `1e308`
-- Error messages: the parts scripts match on follow CBQN (no `Domain error:`-style kind prefix, `Stack overflow`, `Mapping: Expected equal shape prefix (…)` for arithmetic, `Assertion error` / the `!` message, compiler messages without position). Accepted divergence: per-primitive wording (e.g. `⊑` out-of-bounds, `↕`, `⌽`, `>`, `⊏` messages), values shown in Rust notation (`[1, 2]` instead of `⟨1, 2⟩`), and no source position or caret under the error
-- Recursion depth: 4096 nested block evaluations, as CBQN (`{𝕊⍟(𝕩<4094) 𝕩+1} 0` is the deepest that succeeds in both). Accepted divergence: CBQN halves the limit when the recursion goes through `¨`, RBQN does not. Native recursion on deeply nested arrays (comparison, hashing, sorting, arithmetic) raises `Stack overflow` before the 512 MB interpreter stack runs out, where CBQN can segfault
+- `•FFI` is declared but not functional.
+- `•file.Open` is not implemented.
+- The REPL has no completion or history.
+- Error messages name the primitive and the shapes involved but carry no source position.
+- Recursion depth is capped at 4096 nested block calls. Native recursion on deeply nested arrays (comparison, hashing, sorting, arithmetic) raises `Stack overflow` rather than crashing.
+- Large floats print with full precision (`1e308×10` gives `∞`, `1e308` prints all digits).
+- GPU sort and grade are gated at 4M elements, where the kernel beats the CPU counting sort. The radix kernel is wrong on small inputs and must stay behind that gate.
+- GPU kernels are f32 or integer. Float arithmetic that must stay f64 never dispatches automatically.
 
 ## Performance
 
-Measured with `bench/compare.sh` (hyperfine, mean ms, Apple Silicon). Before/after files are in `bench/`.
+`bench/compare.sh`, hyperfine, mean wall time in ms including process startup, Apple M3 Pro, 2026-10-19, RBQN at commit 28629e0. CBQN f4257c14 is shown as a reference point, not a target.
 
-| expression | CBQN ms | RBQN ms | ratio |
-|---|---:|---:|---:|
-| `+´↕10000000` | 6.5 | 24.9 | 3.8x |
-| `+´ {𝕩+1}¨ ↕1000000` | 20.0 | 96.8 | 4.8x |
-| `{𝕩<2 ? 𝕩 ; (𝕊 𝕩-1)+𝕊 𝕩-2} 27` | 33.9 | 120.7 | 3.6x |
-| `≠ ⊐ 3000000⥊↕1000` | 5.6 | 32.8 | 5.9x |
-| `+´⥊ (↕3000) ×⌜ ↕3000` | 7.4 | 30.3 | 4.1x |
-| ``+´ +` ↕5000000`` | 13.5 | 29.0 | 2.1x |
-| `≠ •Fmt ↕1000000` | 223.5 | 3087.3 | 13.8x |
+| expression | RBQN | CBQN |
+|---|---:|---:|
+| `1` (startup) | 4.8 | 3.4 |
+| `+´↕10000000` | 6.7 | 7.9 |
+| `+´×˜↕10000000` | 24.2 | 22.1 |
+| `+´ 2 × ↕5000000` | 5.9 | 8.2 |
+| `+´ 5000000⥊1` | 5.7 | 3.4 |
+| ``+´ +` ↕5000000`` | 22.0 | 15.8 |
+| `+´ {𝕩+1}¨ ↕1000000` | 25.0 | 21.5 |
+| `+´ {𝕩×𝕩}¨ ↕1000000` | 25.5 | 27.8 |
+| `{𝕩<2 ? 𝕩 ; (𝕊 𝕩-1)+𝕊 𝕩-2} 27` | 55.7 | 36.1 |
+| `≠ ⊐ 3000000⥊↕1000` | 8.7 | 6.2 |
+| `+´⥊ (↕3000) ×⌜ ↕3000` | 13.0 | 8.2 |
+| `+´ (⊢ ⍋⊸⊏ ⊢) 1000000⥊3‿1‿2` | 8.5 | 6.3 |
+| `≠ ∾ 100000⥊⟨"ab","cde"⟩` | 6.3 | 4.7 |
+| `≠ •Fmt ↕100000` | 7.3 | 27.0 |
+| `≠ •Fmt ↕1000000` | 25.8 | 244.9 |
 
-Before the October 2026 performance work these rows were 10-200x slower than CBQN (`bench/baseline.md`). The remaining gap is mostly per-call scope allocation and boxing in `¨`; see the git log for `perf(...)` commits.
+Scalar code through the VM (the fib row) is where the most room remains. `bench/` holds the history of every measured step, and `bench/pgo.sh` builds a profile-guided binary that is 10 to 16% faster on VM-bound code (`bench/pgo.md`).
 
-## Usage
+## GPU
 
-```
-rbqn [options] [file.bqn [arguments]]
+Two layers, kept separate so that nothing outside `•gpu` ever changes a result.
 
-Options:
-  -e code    execute BQN code
-  -p code    execute and pretty-print result
-  -o code    execute and print raw output
-  -f file    execute file with remaining args as •args
-  -r         start REPL after executing arguments
-  --version  show version and bytecode source
-  --help     show help
-```
+**Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path. A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper; `RBQN_GPU_DEBUG=1` prints each decision. `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`).
 
-## •gpu
-
-Explicit f32 GPU kernels, for code that accepts f32 rounding in exchange for speed. Nothing outside `•gpu` changes results: automatic GPU dispatch (arithmetic, folds, scans, sorts, `•math.MatMul`) runs integer (i32/i64) kernels only where the result is exact and falls back to the f64 CPU path otherwise; `tests/gpu/corpus.txt` checks it against the CPU.
+**`•gpu`.** Explicit f32 kernels and device-resident arrays, for code that accepts f32 rounding in exchange for speed.
 
 | function | does |
 |---|---|
 | `w •gpu.MatMul x` | rank-2 `w` (m×k) times rank-2 `x` (k×n), f32 kernel |
-| `•gpu.Softmax x` | softmax of a rank-1 `x`, or of each row of a rank-2 `x` (one dispatch per row), f32 kernel |
+| `•gpu.Softmax x` | softmax of a rank-1 `x`, or of each row of a rank-2 `x`, f32 kernel |
 | `•gpu.Available @` | 1 if a GPU device exists, else 0 |
 | `•gpu.Tensor x` | upload numeric `x` once; the result stays on the device |
 | `•gpu.Fetch x` | download a resident `x` (any other value is returned unchanged) |
@@ -83,46 +78,85 @@ Contract:
 - With no device (a CPU-only build via `--no-default-features`, `--no-gpu`, `RBQN_GPU=off`, or no adapter) `MatMul`, `Softmax` and `Tensor` error with `no GPU available`, and `Available` returns 0.
 - `RBQN_GPU_DEBUG=1` logs each `upload`, `download` and `(f32, resident)` dispatch.
 
-## Install
+## Usage
 
-```bash
-cargo install rbqn
+```
+rbqn [options] [file.bqn [arguments]]
+
+Options:
+  -f file    execute the contents of the file with all further arguments as •args
+  -e code    execute the argument as BQN
+  -p code    execute the argument as BQN and print its result pretty-printed
+  -o code    execute the argument as BQN and print its raw result
+  -M num     set maximum heap size to num megabytes
+  -r         start the REPL after executing all arguments
+  -s         start a silent REPL
+  --no-gpu   disable GPU acceleration
+  --help     show this help text
+  --version  display version information
 ```
 
-No external dependencies required. The BQN compiler and runtime are embedded as bytecode.
+Environment: `RBQN_GPU=off|force` overrides the dispatch decision; `RBQN_GPU_DEBUG=1` traces it.
 
-An optional profile-guided build (`bench/pgo.sh`, two steps, not available via `cargo install`) is up to 16% faster on interpreter-bound code; see `bench/pgo.md`.
+## Build
+
+```bash
+cargo build --release          # target/release/rbqn
+cargo build --release --no-default-features   # CPU-only, no wgpu
+```
+
+Rust 1.85 or later (edition 2024), no external dependencies. The BQN compiler and runtime are embedded as bytecode, so nothing else is needed to build or run. RBQN is not yet on crates.io.
 
 ## Architecture
 
-~24K lines of Rust across five crates:
+About 29K lines of Rust in five crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `rbqn` | CLI, REPL, bootstrap, `•Import`/`•BQN` |
-| `rbqn-core` | Value types, NaN-boxed `B` representation, arrays, errors |
-| `rbqn-prim` | Primitive implementations (arithmetic, structural, search/sort) |
-| `rbqn-vm` | Bytecode VM, block compilation, modifiers, derived functions, system values |
+| `rbqn` | CLI, REPL, bootstrap, `•Import`/`•BQN`, GPU dispatch decisions |
+| `rbqn-core` | Value representation (NaN-boxed `B`), typed arrays, errors |
+| `rbqn-prim` | Primitives: arithmetic, structural, search, sort, group |
+| `rbqn-vm` | Bytecode VM, blocks and scopes, modifiers, derived functions, system values |
 | `rbqn-gpu` | wgpu context, buffer pool, pipeline cache, WGSL kernels |
 
 ## Bootstrap
 
-RBQN is self-hosting. Bytecode files in `bins/` are compiled from the BQN source files (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) and loaded via `include_bytes!` at compile time.
+Bytecode files in `bins/` are compiled from the BQN sources (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) by RBQN itself and loaded with `include_bytes!`.
 
 ```bash
 # Regenerate bins from updated BQN sources
 BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -- --self
 
-# Verify fixpoint
+# Verify fixpoint: the compiler compiled by itself produces identical bytecode
 BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -- --self --fixpoint-check
+```
+
+## Testing
+
+```bash
+cargo test --workspace --release                  # unit and integration tests
+BQN_TEST_DIR=/path/to/BQN/test ./test_suite.sh    # official BQN test suite
+make gpu-corpus                                   # GPU kernels vs CPU, 87 expressions
+```
+
+CI runs all three plus clippy with `-D warnings` on every push, against a pinned BQN revision. The suite result at this commit:
+
+```
+simple       PASS|20|0      fill         PASS|62|0
+literal      PASS|52|0      header       PASS|156|0
+syntax       PASS|156|0     under        PASS|64|0
+bytecode     PASS|37|0      undo         PASS|68|0
+token        PASS|29|0      namespace    PASS|50|0
+identity     PASS|14|0      unhead       PASS|44|0
+prim         PASS|564|0
 ```
 
 ## Acknowledgements
 
-**BQN** was designed by [Marshall Lochbaum](https://mlochbaum.github.io/). The language spec, compiler source (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`), and reference test suite are his work and are licensed under the ISC License. RBQN embeds bytecode compiled from those source files. The language itself is Marshall's creation.
+**BQN** was designed by [Marshall Lochbaum](https://mlochbaum.github.io/). The language specification, the compiler and runtime sources (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) and the test suite are his work, under the ISC License. RBQN embeds bytecode compiled from those sources.
 
-**CBQN** is the reference C implementation of BQN, written by [dzaima](https://github.com/dzaima) with contributions from the BQN community. RBQN was originally bootstrapped from CBQN-compiled bytecode and is now self-hosting. CBQN's internals, the bytecode format, provide array layout, and runtime structure documented in `load.c`, were essential reference material throughout development.
+**CBQN**, by [dzaima](https://github.com/dzaima) and the BQN community, provided the first bytecode RBQN ran before it became self-hosting, and its documented internals were reference material for the bytecode format and runtime structure.
 
 - BQN: https://mlochbaum.github.io/BQN/
-- CBQN: https://github.com/dzaima/CBQN
 - BQN community: https://mlochbaum.github.io/BQN/community/
+- CBQN: https://github.com/dzaima/CBQN
