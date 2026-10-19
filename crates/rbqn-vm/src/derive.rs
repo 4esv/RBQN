@@ -131,6 +131,7 @@ pub enum DerivedKind {
     InvMd2Block,  // 2-modifier block inverse: bl=modifier block, f=left operand, h=right operand
     ScanInv,      // Scan inverse (F`⁼): f=F (the scan operand), c1/c2 compute scan undone
     FfiFn { spec_id: usize },  // FFI function: calls a C function via libffi
+    PtrFn { ptr_id: usize, op: u8 },  // FFI pointer-object method (Read Write Add Sub Cast Field)
 }
 
 #[derive(Debug)]
@@ -673,6 +674,15 @@ pub fn m_sys_fn(idx: u32) -> B {
     tagu64(id << 3, FUN_TAG)
 }
 
+pub fn m_ptr_fn(ptr_id: usize, op: u8) -> B {
+    let id = store_derived(Derived {
+        kind: DerivedKind::PtrFn { ptr_id, op },
+        f: B::SENTINEL, g: B::SENTINEL, h: B::SENTINEL,
+        bl: None, sc: None,
+    });
+    tagu64(id << 3, FUN_TAG)
+}
+
 pub fn m_ffi_fn(spec_id: usize) -> B {
     let id = store_derived(Derived {
         kind: DerivedKind::FfiFn { spec_id },
@@ -928,9 +938,8 @@ pub fn c1(f: B, x: B) -> B {
                     rbqn_core::error::throw("2-modifier block has no inverse header")
                 }
             }
-            DerivedKind::FfiFn { spec_id } => {
-                crate::ffi::ffi_call(spec_id, &[x])
-            }
+            DerivedKind::FfiFn { spec_id } => crate::ffi::ffi_call(spec_id, None, x),
+            DerivedKind::PtrFn { ptr_id, op } => crate::ffi::ptr_call(ptr_id, op, None, x),
             _ => rbqn_core::error::throw("c1: unhandled derived kind"),
         }
     } else if f.is_md() {
@@ -1155,17 +1164,8 @@ pub fn c2(f: B, w: B, x: B) -> B {
                     rbqn_core::error::throw("2-modifier block has no dyadic inverse header")
                 }
             }
-            DerivedKind::FfiFn { spec_id } => {
-                // Dyadic: x is a list of arguments for multi-arg C functions
-                if let Some(arr) = crate::vm::get_arr(x) {
-                    let args: Vec<B> = (0..arr.ia()).map(|i| {
-                        arr.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e))
-                    }).collect();
-                    crate::ffi::ffi_call(spec_id, &args)
-                } else {
-                    crate::ffi::ffi_call(spec_id, &[x])
-                }
-            }
+            DerivedKind::FfiFn { spec_id } => crate::ffi::ffi_call(spec_id, Some(w), x),
+            DerivedKind::PtrFn { ptr_id, op } => crate::ffi::ptr_call(ptr_id, op, Some(w), x),
             _ => rbqn_core::error::throw("c2: unhandled derived kind"),
         }
     } else if f.is_md() {
