@@ -22,7 +22,7 @@ Status: pre-1.0. The language is complete; the system namespaces (`•file`, `�
 - `•file.Open` is not implemented.
 - The REPL has no completion or history.
 - Error messages name the primitive and the shapes involved but carry no source position.
-- Recursion depth is capped at 4096 nested block calls. Native recursion on deeply nested arrays (comparison, hashing, sorting, arithmetic) raises `Stack overflow` rather than crashing.
+- Recursion depth is bounded by the 512 MB interpreter stack, not a call count. Native recursion on deeply nested arrays (comparison, hashing, sorting, arithmetic) raises `Stack overflow` rather than crashing.
 - Large floats print with full precision (`1e308×10` gives `∞`, `1e308` prints all digits).
 - GPU sort and grade are gated at 4M elements, where the kernel beats the CPU counting sort. The radix kernel is wrong on small inputs and must stay behind that gate.
 - GPU kernels are f32 or integer. Float arithmetic that must stay f64 never dispatches automatically.
