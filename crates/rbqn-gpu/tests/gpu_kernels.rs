@@ -1008,3 +1008,61 @@ mod int64_tests {
         });
     }
 }
+
+const SMALL_LENS: [usize; 10] = [1, 2, 3, 16, 17, 255, 256, 257, 1000, 65537];
+
+fn small_shapes(n: usize) -> Vec<(&'static str, Vec<i32>)> {
+    let mut sorted = rand_i32(n, 1000, 31);
+    sorted.sort();
+    let mut reversed = sorted.clone();
+    reversed.reverse();
+    vec![
+        ("random", rand_i32(n, u32::MAX, 30)),
+        ("sorted", sorted),
+        ("reversed", reversed),
+        ("equal", vec![42; n]),
+    ]
+}
+
+#[test]
+fn test_sort_i32_small_sizes() {
+    use rbqn_gpu::buffer::{download_i32, upload_i32};
+    use rbqn_gpu::kernels::sort;
+    pollster::block_on(async {
+        let Some((ctx, mut cache)) = setup().await else {
+            println!("No GPU available — skipping");
+            return;
+        };
+        for &n in &SMALL_LENS {
+            for (shape, data) in small_shapes(n) {
+                let buf = upload_i32(&ctx.device, &ctx.queue, &data);
+                let out = sort::sort_i32(&ctx.device, &ctx.queue, &mut cache, &buf);
+                let got = download_i32(&ctx.device, &ctx.queue, &out).await;
+                let mut expected = data.clone();
+                expected.sort();
+                assert!(got == expected, "sort n={n} {shape}");
+            }
+        }
+    });
+}
+
+#[test]
+fn test_argsort_i32_small_sizes() {
+    use rbqn_gpu::buffer::upload_i32;
+    use rbqn_gpu::kernels::sort;
+    pollster::block_on(async {
+        let Some((ctx, mut cache)) = setup().await else {
+            println!("No GPU available — skipping");
+            return;
+        };
+        for &n in &SMALL_LENS {
+            for (shape, data) in small_shapes(n) {
+                let buf = upload_i32(&ctx.device, &ctx.queue, &data);
+                let got = sort::argsort_i32(&ctx.device, &ctx.queue, &mut cache, &buf);
+                let mut expected: Vec<i32> = (0..n as i32).collect();
+                expected.sort_by_key(|&a| data[a as usize]);
+                assert!(got == expected, "argsort n={n} {shape}");
+            }
+        }
+    });
+}

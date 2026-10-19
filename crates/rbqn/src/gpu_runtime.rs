@@ -411,14 +411,11 @@ pub fn gpu_i32_to_arr(gpu: &GpuRuntime, buf: &GpuBuffer, shape: Vec<usize>, fill
 pub fn should_dispatch(op: &str, len: usize) -> bool {
     match gpu_mode() {
         GpuMode::Off => false,
-        // HACK: GPU sort/grade return wrong results on small arrays (e.g. `⍋3‿1‿1`
-        // gives 0 1 2), and the compiler sorts, so forcing sort to 0 breaks every
-        // program. Force lowers its threshold to 1M instead.
         GpuMode::Force => {
             if !rbqn_gpu::stats::program_started() {
                 return rbqn_gpu::dispatch::should_use_gpu(op, len);
             }
-            len >= if op == "sort" { 1_000_000 } else { 1 }
+            len >= 1
         }
         GpuMode::Default => rbqn_gpu::dispatch::should_use_gpu(op, len),
     }
