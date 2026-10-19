@@ -234,13 +234,20 @@ fn eval_bin(expr: &str) -> (String, bool) {
 }
 
 #[test]
-fn test_block_depth_matches_cbqn() {
-    // CBQN f4257c1 overflows above 4094 for both shapes.
-    for (expr, want) in [("•Show {𝕊⍟(𝕩<4094) 𝕩+1} 0", "4095"), ("•Show {𝕩<4094 ? 𝕊 𝕩+1 ; 𝕩} 0", "4094")] {
+fn test_block_depth_bounded_by_stack() {
+    for (expr, want) in [("•Show {𝕊⍟(𝕩<100000) 𝕩+1} 0", "100001"), ("•Show {𝕩<100000 ? 𝕊 𝕩+1 ; 𝕩} 0", "100000")] {
         assert_eq!(eval_bin(expr), (want.into(), true), "{expr}");
     }
-    for expr in ["•Show {𝕊⍟(𝕩<4095) 𝕩+1} 0", "•Show {𝕊⍟(𝕩<19000) 𝕩+1} 0"] {
-        assert_eq!(eval_bin(expr), ("Error: Stack overflow".into(), false), "{expr}");
+}
+
+#[test]
+fn test_runaway_recursion_raises() {
+    // Must exit with a normal error status (not a signal) after unwinding.
+    for expr in ["{𝕊 𝕩+1} 0", "{1+𝕊¨ <𝕩} 0"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-e", expr]).output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(stderr.lines().next().unwrap_or(""), "Error: Stack overflow", "{expr}");
+        assert!(out.status.code().is_some_and(|c| c != 0), "{expr}: {:?}", out.status);
     }
 }
 
