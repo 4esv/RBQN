@@ -256,13 +256,9 @@ pub fn fmt_b_detail(b: B) -> String {
 }
 
 
-/// Maximum nesting of block evaluations before raising "Stack overflow".
-/// Matches CBQN (f4257c1): `{𝕊⍟(𝕩<n) 𝕩+1} 0` and direct `𝕊` recursion both stop
-/// at n=4094 in either. One level costs 1.6-2.5 KB of native stack, ~10 MB at
-/// the limit; `stack::guard` covers native recursion that bypasses blocks.
-pub const MAX_EVAL_DEPTH: u32 = 4096;
-
-/// One block evaluation's pooled buffers plus the depth count. Entering takes
+/// One block evaluation's pooled buffers plus the depth count. Nesting depth is
+/// bounded only by the native stack: `stack::guard` in `enter` throws
+/// "Stack overflow" before the interpreter thread's stack runs out. Entering takes
 /// both vectors from the thread-local pool and bumps the depth in a single TLS
 /// access; Drop (also on unwinding from a BQN error) returns them in one more.
 struct Frame {
@@ -276,17 +272,12 @@ impl Frame {
     #[inline]
     fn enter(t: &Tls, max_stack: usize, max_psc: usize) -> Frame {
         rbqn_core::stack::guard();
-        let n = t.depth.get() + 1;
-        t.depth.set(n);
+        t.depth.set(t.depth.get() + 1);
         // SAFETY: single-threaded, and no other code runs while the pool is borrowed.
         let (mut stack, mut pscs) = unsafe { (*t.frames.get()).pop() }.unwrap_or_default();
         stack.reserve(max_stack);
         pscs.reserve(max_psc);
-        let fr = Frame { stack, pscs, t };
-        if n > MAX_EVAL_DEPTH {
-            rbqn_core::error::throw("Stack overflow");
-        }
-        fr
+        Frame { stack, pscs, t }
     }
 }
 
