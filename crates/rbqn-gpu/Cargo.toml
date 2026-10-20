@@ -3,6 +3,11 @@ name = "rbqn-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "wgpu context, buffer pool and WGSL kernels for RBQN, a Rust BQN implementation"
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 rbqn-core.workspace = true

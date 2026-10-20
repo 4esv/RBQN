@@ -1,4 +1,4 @@
-// NOTE: This build script checks that the committed .bin bytecode files exist in bins/.
+// NOTE: This build script checks that the committed .bin bytecode files exist in crates/rbqn/bins/.
 // To regenerate them using RBQN's own compiler:
 //   BQN_SRC=/path/to/BQN/src cargo run --bin rbqn-gen --features gen-tools -- --self
 
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let bins_dir = PathBuf::from(&manifest_dir).join("../../bins");
+    let bins_dir = PathBuf::from(&manifest_dir).join("bins");
 
     // CBQN_PATH deprecation warning
     if env::var("CBQN_PATH").is_ok() {
@@ -24,7 +24,7 @@ fn main() {
                 "Missing bins/{name}\nRun: BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -- --self"
             );
         }
-        println!("cargo:rerun-if-changed=../../bins/{name}");
+        println!("cargo:rerun-if-changed=bins/{name}");
     }
 
     // Dev profile: also watch BQN_SRC for source changes

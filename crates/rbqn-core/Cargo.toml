@@ -3,6 +3,11 @@ name = "rbqn-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Value representation, typed arrays and errors for RBQN, a Rust BQN implementation"
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 
