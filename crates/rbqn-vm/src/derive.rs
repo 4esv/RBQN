@@ -2981,10 +2981,8 @@ fn dispatch_sys_bqn_eval_in(src: &str, name: Option<&str>) -> B {
         vec![rt_arr, sys_fn, var_names, var_depths]
     ));
 
-    let src_b = str_to_b(src);
-
-    // Call compiler: compiler(comp_args, src_b) → ⟨bc, objs, blocks, bodies, ...⟩
-    let comp_result = c2(compiler, comp_args, src_b);
+    // Call compiler: compiler(comp_args, src) → ⟨bc, objs, blocks, bodies, ...⟩
+    let comp_result = crate::vm::compile_call(compiler, comp_args, src, Some(name.unwrap_or("(•BQN)")));
 
     let comp_arr = match crate::vm::get_arr(comp_result) {
         Some(a) => a,

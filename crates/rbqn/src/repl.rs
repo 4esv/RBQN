@@ -55,7 +55,9 @@ pub fn run_repl(rt: &Runtime, silent: bool) {
                 continue;
             }
             Err(ReadlineError::Eof) => {
-                println!();
+                if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    println!();
+                }
                 break;
             }
             Err(e) => {
