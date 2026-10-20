@@ -97,7 +97,7 @@ cargo build --release          # target/release/rbqn
 cargo build --release --no-default-features   # CPU-only, no wgpu
 ```
 
-Rust 1.85 or later (edition 2024), no external dependencies. The BQN compiler and runtime are embedded as bytecode, so nothing else is needed to build or run. RBQN is not yet on crates.io.
+Rust 1.85 or later (edition 2024), no external dependencies. The BQN compiler and runtime are embedded as bytecode, so nothing else is needed to build or run. Or install from crates.io: `cargo install rbqn`.
 
 ## Architecture
 
@@ -113,7 +113,7 @@ About 30K lines of Rust in five crates:
 
 ## Bootstrap
 
-Bytecode files in `bins/` are compiled from the BQN sources (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) by RBQN itself and loaded with `include_bytes!`.
+Bytecode files in `crates/rbqn/bins/` are compiled from the BQN sources (`c.bqn`, `r0.bqn`, `r1.bqn`, `f.bqn`) by RBQN itself and loaded with `include_bytes!`.
 
 ```bash
 # Regenerate bins from updated BQN sources

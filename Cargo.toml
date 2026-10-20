@@ -12,12 +12,16 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "ISC"
+repository = "https://github.com/4esv/RBQN"
+rust-version = "1.88"
+keywords = ["bqn", "array-language", "apl", "gpu", "interpreter"]
+categories = ["compilers", "science"]
 
 [workspace.dependencies]
-rbqn-core = { path = "crates/rbqn-core" }
-rbqn-vm = { path = "crates/rbqn-vm" }
-rbqn-prim = { path = "crates/rbqn-prim" }
-rbqn-gpu = { path = "crates/rbqn-gpu" }
+rbqn-core = { version = "0.1.0", path = "crates/rbqn-core" }
+rbqn-vm = { version = "0.1.0", path = "crates/rbqn-vm" }
+rbqn-prim = { version = "0.1.0", path = "crates/rbqn-prim" }
+rbqn-gpu = { version = "0.1.0", path = "crates/rbqn-gpu" }
 wgpu = "24"
 bytemuck = { version = "1", features = ["derive"] }
 criterion = { version = "0.5", features = ["html_reports"] }

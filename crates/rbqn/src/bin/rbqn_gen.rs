@@ -540,9 +540,9 @@ fn verify_self_compilation(cbqn_path: &Path) {
 // ---------------------------------------------------------------------------
 
 fn find_bins_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR = {repo}/crates/rbqn → bins/ is at {repo}/bins/
+    // CARGO_MANIFEST_DIR = {repo}/crates/rbqn → bins/ is at {repo}/crates/rbqn/bins/
     if let Ok(manifest) = env::var("CARGO_MANIFEST_DIR") {
-        let p = PathBuf::from(manifest).join("../../bins");
+        let p = PathBuf::from(manifest).join("bins");
         if let Ok(canonical) = p.canonicalize() {
             if canonical.is_dir() {
                 return canonical;

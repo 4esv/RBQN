@@ -3,6 +3,12 @@ name = "rbqn"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "A Rust implementation of the BQN array language with GPU dispatch: CLI and REPL"
+repository.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [features]
 default = ["gpu"]

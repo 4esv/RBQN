@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # NOTE: bins/*.bin are LFS; without this rbqn embeds pointer files and panics.
+          # NOTE: crates/rbqn/bins/*.bin are LFS; without this rbqn embeds pointer files and panics.
           lfs: true
 
       - uses: dtolnay/rust-toolchain@stable
