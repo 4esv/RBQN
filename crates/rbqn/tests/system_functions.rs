@@ -9,10 +9,10 @@
 
 use std::process::Command;
 
-/// Build path to the rbqn binary. Uses `cargo run` to ensure it's built.
+/// The rbqn binary cargo built for this test run (no nested `cargo run`, which
+/// fails with exit 101 when tests run concurrently).
 fn rbqn_cmd() -> Command {
-    let mut cmd = Command::new("cargo");
-    cmd.args(["run", "-p", "rbqn", "-q", "--release", "--"]);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rbqn"));
     if let Ok(path) = std::env::var("CBQN_PATH") {
         cmd.env("CBQN_PATH", path);
     }
@@ -75,14 +75,21 @@ fn sys_repr_number() {
 // -- •Show --
 
 #[test]
-#[ignore = "requires CBQN_PATH"]
 fn sys_show_number() {
     let (stdout, stderr, code) = run_print("•Show 42");
     assert_eq!(code, 0, "•Show 42 should succeed");
-    // •Show prints to stderr and returns the value
-    assert!(stderr.contains("42"), "•Show should print 42 to stderr, got: {}", stderr);
-    // •Show returns x, so -p mode prints it
-    assert_eq!(stdout, "42", "•Show should return its argument");
+    // •Show prints to stdout (like CBQN, so `rbqn f.bqn > out` keeps it) and returns x,
+    // which -p then prints again.
+    assert_eq!(stdout, "42\n42");
+    assert_eq!(stderr, "");
+}
+
+#[test]
+fn sys_out_rejects_non_string() {
+    let (stdout, stderr, code) = run_eval("•Out 5");
+    assert_eq!(code, 1);
+    assert_eq!(stdout, "");
+    assert!(stderr.starts_with("Error: •Out 𝕩: 𝕩 must be a string"), "{stderr}");
 }
 
 // -- •Exit --
