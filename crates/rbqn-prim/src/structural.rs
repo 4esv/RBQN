@@ -1797,7 +1797,10 @@ pub fn register_gpu_iota(f: fn(usize) -> Option<B>) {
 // ↕ monad: range
 pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if x.is_f64() {
-        let n = x.to_usz()?;
+        let n = x.to_usz().map_err(|_| BqnError::Domain(format!("↕𝕩: Expected non-negative integer, got {}", x.o2f().to_string().replace('-', "¯"))))?;
+        if n > i32::MAX as usize {
+            return Err(BqnError::Domain(format!("↕𝕩: 𝕩 must be less than 2147483648, got {n}")));
+        }
         if let Some(b) = GPU_IOTA_HOOK.get().and_then(|h| h(n)) {
             return Ok(PrimResult::Scalar(b));
         }
@@ -1811,6 +1814,9 @@ pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
     // Multi-dimensional range: ↕ s produces array of index lists
     let dims = arr.i32_iter()?;
+    if let Some(&d) = dims.iter().find(|&&d| d < 0) {
+        return Err(BqnError::Domain(format!("↕𝕩: Expected non-negative integer, got {}", d.to_string().replace('-', "¯"))));
+    }
     let total: usize = dims.iter().map(|&d| d as usize).product();
     let rank = dims.len();
 

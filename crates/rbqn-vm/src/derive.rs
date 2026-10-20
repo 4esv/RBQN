@@ -1317,15 +1317,20 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         // NOTE: •Out
         32 => {
             // c1: print x (must be a string — char array) to stdout with newline, return x.
+            let is_string = crate::vm::get_arr(x)
+                .is_some_and(|a| a.rank() == 1 && (0..a.ia()).all(|i| a.get(i).is_ok_and(|b| b.is_c32())));
+            if !is_string {
+                rbqn_core::error::throw_bqn(rbqn_core::error::BqnError::Domain("•Out 𝕩: 𝕩 must be a string".into()));
+            }
             let s = b_to_string(x);
             println!("{}", s);
             x
         }
         // NOTE: •Show
         33 => {
-            // c1: format x and print to stderr with newline, return x.
+            // c1: format x and print to stdout with newline (as CBQN does), return x.
             let s = format_b_for_show(x);
-            eprintln!("{}", s);
+            println!("{}", s);
             x
         }
         // NOTE: •BQN

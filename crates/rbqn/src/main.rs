@@ -31,6 +31,11 @@ const INTERP_STACK_BYTES: usize = 512 << 20;
 
 fn main() {
     let t0 = std::time::Instant::now();
+    // NOTE: Rust starts with SIGPIPE ignored, so `rbqn -p '↕1e6' | head` would report
+    // "Broken pipe" as a BQN error. Restore the default: exit quietly like any CLI.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     // NOTE: All interpreter work (bootstrap, evaluation, REPL, •Exit) runs on this
     // one thread: the value stores are thread-local, and the default 8 MB main
     // stack overflowed at a few thousand BQN calls. std::process::exit from the

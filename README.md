@@ -80,7 +80,7 @@ Options:
   -e code    execute the argument as BQN
   -p code    execute the argument as BQN and print its result pretty-printed
   -o code    execute the argument as BQN and print its raw result
-  -M num     set maximum heap size to num megabytes
+  -M num     accepted for CBQN compatibility; no heap limit is enforced yet
   -r         start the REPL after executing all arguments
   -s         start a silent REPL
   --no-gpu   disable GPU acceleration
