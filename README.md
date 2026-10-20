@@ -4,7 +4,7 @@ A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array langu
 
 RBQN passes the official BQN test suite and is self-hosting: it compiles its own compiler, runtime and formatter from the BQN sources, with no other BQN implementation involved. The goal is a BQN that leverages compute as far as it safely can. The language is Marshall Lochbaum's; the implementation goes its own way.
 
-Status: pre-1.0. The language is complete; the system namespaces (`•file`, `•FFI`, `•term`) are partial. See [Limitations](#limitations).
+Status: pre-1.0, complete language, no known divergences from the specification. `•file.Open` is unspecified in BQN and absent here.
 
 ## What works
 
@@ -12,42 +12,34 @@ Status: pre-1.0. The language is complete; the system namespaces (`•file`, `�
 - **Self-hosting.** The compiler, runtimes and formatter are compiled by RBQN itself from `c.bqn`, `r0.bqn`, `r1.bqn` and `f.bqn`, embedded as bytecode. A fixpoint check confirms that the compiler compiled by itself produces identical bytecode.
 - **Typed arrays.** Arrays are stored unboxed as bits, i8, i16, i32, f64, or 8/16/32-bit characters, squeezed to the narrowest exact type, with boxed arrays only for nested data; the primitives have specialised paths for each.
 - **GPU dispatch.** Elementwise arithmetic, reductions, scans, sorting, selection, softmax and matrix multiply have wgpu kernels. Arithmetic, folds, scans and `•math.MatMul` dispatch automatically when a cost model says the GPU wins, using exact integer kernels only; the `•gpu` namespace gives explicit f32 kernels and device-resident arrays with lazy fusion. See [GPU](#gpu).
+- **`•FFI`.** The full specification: numeric, pointer (`*`, mutable `&`), array and struct types, `>` and `𝕨`/`𝕩` argument markers, `a` for BQN values, pointer objects with `Read Write Add Sub Cast Field`, calls through libffi on the platform C ABI. `f←"@" •FFI "&"‿"memset"‿"&u8"‿"i32"‿"u64" ⋄ F ⟨0‿0‿0‿0, 7, 3⟩` gives `⟨ 7 7 7 0 ⟩`.
+- **Errors with position.** Every error names the primitive and the shapes involved, then the file and line, the source line and a caret under the failing token.
+- **Recursion** is bounded by the 512 MB interpreter stack, not a call count. Runaway recursion, and native recursion on deeply nested arrays, raise `Stack overflow` instead of crashing.
 - **System values.** `•BQN`, `•Import`, `•Show`, `•Out`, `•Fmt`, `•Repr`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•Hash`, `•HashMap`, `•ParseFloat`, `•FromUTF8`, `•ToUTF8`, `•UnixTime`, `•MonoTime`, `•Delay`, `•SH`, `•Exit`, `•args`, `•path`, `•name`, `•wdpath`, `•state`, `•rand`, `•platform`, `•GroupLen`, `•GroupOrd`, `•FLines`, `•FChars`, `•FBytes`, `•PrimInd`, `•ReBQN`.
 - **Namespaces.** `•math` (`Sin` `Cos` `Tan` `ASin` `ACos` `ATan` `Log` `Cbrt` `Hypot` `Erf` `Comb` `MatMul` `Softmax` `Pi`), `•gpu`, `•file` (`Lines` `Chars` `Bytes` `List` `At` `Name` `Parent` `Exists` `Type` `CreateDir` `Remove` `Rename`), `•term` (`RawMode` `CharB` `CharN` `Flush` `OutRaw` `ErrRaw`), `•bit` (`_cast` `_not` `_neg` and the binary operations across widths).
-- **A REPL** (`-r`), and script, expression and file modes.
-
-## Limitations
-
-- `•FFI` is declared but not functional.
-- `•file.Open` is not implemented.
-- The REPL has no completion or history.
-- Error messages name the primitive and the shapes involved but carry no source position.
-- Recursion depth is bounded by the 512 MB interpreter stack, not a call count. Native recursion on deeply nested arrays (comparison, hashing, sorting, arithmetic) raises `Stack overflow` rather than crashing.
-- Large floats print with full precision (`1e308×10` gives `∞`, `1e308` prints all digits).
-- GPU sort and grade are gated at 4M elements, where the kernel beats the CPU counting sort. The radix kernel is wrong on small inputs and must stay behind that gate.
-- GPU kernels are f32 or integer. Float arithmetic that must stay f64 never dispatches automatically.
+- **A REPL** (`-r`) with history, backslash glyph input (`\r` gives `↑`, the standard BQN keymap) and Tab completion of system values and session names; plus script, expression and file modes.
 
 ## Performance
 
-`bench/compare.sh`, hyperfine, mean wall time in ms including process startup, Apple M3 Pro, 2026-10-19, RBQN at commit 28629e0. CBQN f4257c14 is shown as a reference point, not a target.
+`bench/compare.sh`, hyperfine, mean wall time in ms including process startup, Apple M3 Pro, 2026-10-19, RBQN at commit 9595606. CBQN f4257c14 is shown as a reference point, not a target.
 
 | expression | RBQN | CBQN |
 |---|---:|---:|
-| `1` (startup) | 4.8 | 3.4 |
-| `+´↕10000000` | 6.7 | 7.9 |
-| `+´×˜↕10000000` | 24.2 | 22.1 |
-| `+´ 2 × ↕5000000` | 5.9 | 8.2 |
-| `+´ 5000000⥊1` | 5.7 | 3.4 |
-| ``+´ +` ↕5000000`` | 22.0 | 15.8 |
-| `+´ {𝕩+1}¨ ↕1000000` | 25.0 | 21.5 |
-| `+´ {𝕩×𝕩}¨ ↕1000000` | 25.5 | 27.8 |
-| `{𝕩<2 ? 𝕩 ; (𝕊 𝕩-1)+𝕊 𝕩-2} 27` | 55.7 | 36.1 |
-| `≠ ⊐ 3000000⥊↕1000` | 8.7 | 6.2 |
-| `+´⥊ (↕3000) ×⌜ ↕3000` | 13.0 | 8.2 |
-| `+´ (⊢ ⍋⊸⊏ ⊢) 1000000⥊3‿1‿2` | 8.5 | 6.3 |
-| `≠ ∾ 100000⥊⟨"ab","cde"⟩` | 6.3 | 4.7 |
-| `≠ •Fmt ↕100000` | 7.3 | 27.0 |
-| `≠ •Fmt ↕1000000` | 25.8 | 244.9 |
+| `1` (startup) | 4.7 | 3.1 |
+| `+´↕10000000` | 5.9 | 6.6 |
+| `+´×˜↕10000000` | 21.9 | 20.4 |
+| `+´ 2 × ↕5000000` | 5.4 | 7.1 |
+| `+´ 5000000⥊1` | 4.5 | 3.4 |
+| ``+´ +` ↕5000000`` | 19.3 | 14.4 |
+| `+´ {𝕩+1}¨ ↕1000000` | 24.1 | 20.4 |
+| `+´ {𝕩×𝕩}¨ ↕1000000` | 23.1 | 21.1 |
+| `{𝕩<2 ? 𝕩 ; (𝕊 𝕩-1)+𝕊 𝕩-2} 27` | 48.9 | 34.4 |
+| `≠ ⊐ 3000000⥊↕1000` | 8.2 | 5.6 |
+| `+´⥊ (↕3000) ×⌜ ↕3000` | 11.9 | 7.4 |
+| `+´ (⊢ ⍋⊸⊏ ⊢) 1000000⥊3‿1‿2` | 7.8 | 5.2 |
+| `≠ ∾ 100000⥊⟨"ab","cde"⟩` | 5.4 | 4.3 |
+| `≠ •Fmt ↕100000` | 6.6 | 25.7 |
+| `≠ •Fmt ↕1000000` | 23.1 | 226.3 |
 
 Scalar code through the VM (the fib row) is where the most room remains. `bench/` holds the history of every measured step, and `bench/pgo.sh` builds a profile-guided binary that is 10 to 16% faster on VM-bound code (`bench/pgo.md`).
 
@@ -55,7 +47,7 @@ Scalar code through the VM (the fib row) is where the most room remains. `bench/
 
 Two layers, kept separate so that nothing outside `•gpu` ever changes a result.
 
-**Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path. A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper; `RBQN_GPU_DEBUG=1` prints each decision. `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`).
+**Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path; f64 arithmetic stays on the CPU (Metal has no f64). A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper; `RBQN_GPU_DEBUG=1` prints each decision. `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`).
 
 **`•gpu`.** Explicit f32 kernels and device-resident arrays, for code that accepts f32 rounding in exchange for speed.
 
@@ -109,7 +101,7 @@ Rust 1.85 or later (edition 2024), no external dependencies. The BQN compiler an
 
 ## Architecture
 
-About 29K lines of Rust in five crates:
+About 30K lines of Rust in five crates:
 
 | Crate | Purpose |
 |-------|---------|
@@ -134,7 +126,7 @@ BQN_SRC=/path/to/BQN/src cargo run -p rbqn --features gen-tools --bin rbqn-gen -
 ## Testing
 
 ```bash
-cargo test --workspace --release                  # unit and integration tests
+cargo test --workspace --release                  # unit and integration tests (•FFI tests compile tests/ffi/lib.c with cc)
 BQN_TEST_DIR=/path/to/BQN/test ./test_suite.sh    # official BQN test suite
 make gpu-corpus                                   # GPU kernels vs CPU, 87 expressions
 ```
