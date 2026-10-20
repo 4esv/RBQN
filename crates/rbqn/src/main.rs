@@ -20,7 +20,7 @@ use rbqn_core::array::BqnArr;
 use rbqn_core::error::BqnError;
 use rbqn_core::B;
 use rbqn_vm::compiler::compile_all;
-use rbqn_vm::derive::{c1, c2};
+use rbqn_vm::derive::c1;
 use rbqn_vm::scope::Scope;
 use rbqn_vm::vm::{get_arr, tag_arr};
 
@@ -305,11 +305,8 @@ fn exec_repl_line_inner(
     let var_depths_b = tag_arr(BqnArr::new_vec_f64(var_depths));
     let comp_args = tag_arr(BqnArr::from_b_vec(vec![rt_arr, sys_fn, var_names_b, var_depths_b]));
 
-    let src_chars: Vec<u32> = code.chars().map(|c| c as u32).collect();
-    let src_b = tag_arr(BqnArr::new_vec_c32(src_chars));
-
     // Call compiler: compiler(args, source) -> ⟨bc, objs, blocks, bodies, indices, tokenInfo⟩
-    let comp_result = c2(rt.compiler, comp_args, src_b);
+    let comp_result = rbqn_vm::vm::compile_call(rt.compiler, comp_args, code, None);
 
     let comp_arr = get_arr(comp_result)
         .ok_or_else(|| BqnError::Domain("compiler did not return an array".into()))?;

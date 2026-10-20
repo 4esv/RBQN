@@ -60,6 +60,11 @@ pub fn parse_args() -> Args {
             continue;
         }
 
+        if arg.starts_with("--") {
+            eprintln!("{program}: unknown option: {arg}");
+            process::exit(1);
+        }
+
         // Parse single-character flags
         let chars: Vec<char> = arg[1..].chars().collect();
         let mut j = 0;
@@ -173,7 +178,7 @@ pub fn print_help() {
          \x20 -e code    execute the argument as BQN\n\
          \x20 -p code    execute the argument as BQN and print its result pretty-printed\n\
          \x20 -o code    execute the argument as BQN and print its raw result\n\
-         \x20 -M num     set maximum heap size to num megabytes\n\
+         \x20 -M num     accepted for CBQN compatibility; no heap limit is enforced yet\n\
          \x20 -r         start the REPL after executing all arguments\n\
          \x20 -s         start a silent REPL\n\
          \x20 --no-gpu   disable GPU acceleration\n\

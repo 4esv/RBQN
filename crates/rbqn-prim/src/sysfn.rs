@@ -41,8 +41,14 @@ fn format_assert_msg(x: B) -> String {
         }
         // Try to decode as boxed array of strings (nested message)
         if let rbqn_core::array::ArrData::Boxed(ref v) = arr.data {
-            // Compiler errors are ⟨position, message⟩; CBQN shows only the message.
-            if v.len() == 2 && rbqn_core::get_arr(v[0]).is_some_and(|p| p.f64_iter().is_ok()) {
+            // Compiler errors are ⟨positions, message⟩: the message is the error text,
+            // the positions (char indices into the source) become the caret line.
+            if v.len() == 2
+                && let Some(p) = rbqn_core::get_arr(v[0])
+                && let Ok(pos) = p.f64_iter()
+            {
+                let pos: Vec<usize> = pos.iter().filter(|&&f| f >= 0.0).map(|&f| f as usize).collect();
+                rbqn_core::error::set_compile_error_pos(pos);
                 return format_assert_msg(v[1]);
             }
             let parts: Vec<String> = v.iter().map(|&b| format_assert_msg(b)).collect();

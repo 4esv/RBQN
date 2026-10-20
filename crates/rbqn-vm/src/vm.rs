@@ -1196,6 +1196,7 @@ fn record_error_site(bl: &Block, pc: usize) {
 /// Forget any recorded site (call before running a new top-level action).
 pub fn clear_error_site() {
     ERROR_SITE.with(|s| *s.borrow_mut() = None);
+    COMPILE_SITE.with(|s| *s.borrow_mut() = None);
 }
 
 /// Mark the recorded site as belonging to the next error thrown, so a
@@ -1207,13 +1208,73 @@ pub fn keep_error_site_for_next_throw() {
             e.throw_id = next;
         }
     });
+    COMPILE_SITE.with(|s| {
+        if let Some(e) = s.borrow_mut().as_mut() {
+            e.throw_id = next;
+        }
+    });
+}
+
+/// Source and span of a compiler error, kept until the error is reported.
+struct CompileSite {
+    name: Option<String>,
+    src: Vec<char>,
+    start: usize,
+    end: usize,
+    throw_id: u64,
+}
+
+thread_local! {
+    static COMPILE_SITE: std::cell::RefCell<Option<CompileSite>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Call the BQN compiler on `src`. A compiler error (`!⟨positions, message⟩`)
+/// keeps its positions so the report can show the offending line and carets.
+pub fn compile_call(compiler: B, args: B, src: &str, name: Option<&str>) -> B {
+    let chars: Vec<char> = src.chars().collect();
+    let src_b = tag_arr(BqnArr::new_vec_c32(chars.iter().map(|&c| c as u32).collect()));
+    rbqn_core::error::take_compile_error_pos();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::derive::c2(compiler, args, src_b))) {
+        Ok(r) => r,
+        Err(payload) => {
+            if let Some(pos) = rbqn_core::error::take_compile_error_pos()
+                && let (Some(&start), Some(&last)) = (pos.iter().min(), pos.iter().max())
+                && start < chars.len()
+            {
+                // The compiler points at token starts; extend the last one over its word.
+                let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '•';
+                let mut end = last.min(chars.len() - 1);
+                if is_word(chars[end]) {
+                    while end + 1 < chars.len() && is_word(chars[end + 1]) {
+                        end += 1;
+                    }
+                }
+                COMPILE_SITE.with(|s| {
+                    *s.borrow_mut() = Some(CompileSite {
+                        name: name.map(str::to_string),
+                        src: chars,
+                        start,
+                        end,
+                        throw_id: rbqn_core::error::throw_count(),
+                    })
+                });
+            }
+            std::panic::resume_unwind(payload)
+        }
+    }
 }
 
 /// Take the site of the most recent error as text lines:
 /// `<name>:<line>:`, the source line, and a caret line.
 pub fn take_error_site_lines(default_name: &str) -> Option<String> {
+    let current = rbqn_core::error::throw_count();
+    if let Some(cs) = COMPILE_SITE.with(|s| s.borrow_mut().take())
+        && cs.throw_id == current
+    {
+        return render_site(&cs.src, cs.start, cs.end, cs.name.as_deref().unwrap_or(default_name));
+    }
     let site = ERROR_SITE.with(|s| s.borrow_mut().take())?;
-    if site.throw_id != rbqn_core::error::throw_count() {
+    if site.throw_id != current {
         return None;
     }
     let comp = &site.comp;
@@ -1230,6 +1291,14 @@ pub fn take_error_site_lines(default_name: &str) -> Option<String> {
             .map(|i| a.get(i).ok().and_then(|b| b.o2c().ok()).and_then(char::from_u32).unwrap_or('?'))
             .collect()
     };
+    let name = match get_arr(comp.fullpath) {
+        Some(a) if a.ia() > 0 => crate::derive::b_to_string_pub(comp.fullpath),
+        _ => default_name.to_string(),
+    };
+    render_site(&src, start, end, &name)
+}
+
+fn render_site(src: &[char], start: usize, end: usize, name: &str) -> Option<String> {
     if start >= src.len() {
         return None;
     }
@@ -1241,9 +1310,5 @@ pub fn take_error_site_lines(default_name: &str) -> Option<String> {
     let text: String = src[line_start..line_end].iter().collect();
     let pad: String = src[line_start..start].iter().map(|&c| if c == '\t' { '\t' } else { ' ' }).collect();
     let carets = "^".repeat(caret_end - start + 1);
-    let name = match get_arr(comp.fullpath) {
-        Some(a) if a.ia() > 0 => crate::derive::b_to_string_pub(comp.fullpath),
-        _ => default_name.to_string(),
-    };
     Some(format!("{name}:{line_no}:\n  {text}\n  {pad}{carets}"))
 }

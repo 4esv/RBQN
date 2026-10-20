@@ -53,6 +53,20 @@ pub fn throw_count() -> u64 {
     THROW_COUNT.with(|c| c.get())
 }
 
+std::thread_local! {
+    static COMPILE_ERROR_POS: std::cell::RefCell<Option<Vec<usize>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Record the source positions of a compiler error (`!⟨positions, message⟩`).
+pub fn set_compile_error_pos(pos: Vec<usize>) {
+    COMPILE_ERROR_POS.with(|c| *c.borrow_mut() = Some(pos));
+}
+
+/// Take the positions recorded by the last compiler error, if any.
+pub fn take_compile_error_pos() -> Option<Vec<usize>> {
+    COMPILE_ERROR_POS.with(|c| c.borrow_mut().take())
+}
+
 /// Panic with a typed BqnError value. Use this to propagate errors through
 /// catch_unwind boundaries without losing the error variant.
 pub fn throw_bqn(e: BqnError) -> ! {
