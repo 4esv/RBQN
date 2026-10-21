@@ -39,6 +39,14 @@ impl Vars {
 }
 
 impl Vars {
+    /// Extend to `var_am` slots (new ones NO_VAR), keeping existing values.
+    pub fn grow(&mut self, var_am: usize) {
+        if var_am <= self.len() { return; }
+        let mut v: Vec<B> = self.to_vec();
+        v.resize(var_am, B::NO_VAR);
+        *self = Vars::Heap(v);
+    }
+
     /// Reinitialise in place: copy `init`, fill the remaining slots with NO_VAR.
     #[inline]
     pub fn reset(&mut self, var_am: usize, init: &[B]) {
