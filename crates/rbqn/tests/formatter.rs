@@ -158,3 +158,25 @@ fn fmt_small_float_exponent() {
     assert_output("0.0001", "0.0001");
     assert_output("¯1.2345e¯5", "¯1.2345e¯5");
 }
+
+// Expected strings are CBQN's output for the same expression.
+#[test]
+fn fmt_derived_functions_show_derivation() {
+    assert_output("diff←¯32 ⋄ -⟜diff", "-⟜¯32");
+    assert_output("diff←¯32 ⋄ -⟜diff⁼", "-⟜¯32⁼");
+    assert_output("-⟜¯32", "-⟜¯32");
+    assert_output("+˜", "+˜");
+    assert_output("2⊸+", "2⊸+");
+    assert_output("+∘-", "+∘-");
+    assert_output("+⌜", "+⌜");
+    assert_output("+´˘", "+´˘");
+    assert_output("+⊸-⟜×", "+⊸-⟜×");
+    assert_output("(+-)", "+-");
+    assert_output("(+-)˜", "(+-)˜");
+    assert_output("(+⟜1)⁼", "+⟜1⁼");
+    assert_output("+⟜(-˜)", "+⟜(-˜)");
+    assert_output("+⟜(1⊸+)", "+⟜(1⊸+)");
+    assert_output("1‿2⊸+", "⟨ 1 2 ⟩⊸+");
+    assert_output("=⌾(2⊸⊑)", "=⌾(2⊸⊑)");
+    assert_output("{𝕩}˜", "(function block)˜");
+}
