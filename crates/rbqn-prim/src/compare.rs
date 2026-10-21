@@ -6,6 +6,13 @@ fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
     short.len() <= long.len() && short.iter().zip(long.iter()).all(|(a, b)| a == b)
 }
 
+/// Rank-0 wrapper so an atom can go through the boxed broadcast path.
+fn scalar_arr(v: B) -> BqnArr {
+    let mut a = BqnArr::new_vec_b(vec![v]);
+    a.shape = vec![];
+    a
+}
+
 /// Recursive helper for pervasive comparison on a single B value pair.
 fn cmp_pervasive_b(w: B, x: B, scalar_fn: fn(B, B) -> i32, name: &str) -> Result<B> {
     rbqn_core::stack::guard();
@@ -151,6 +158,9 @@ fn cmp_pervasive(
                 && let Some(out) = crate::arith_dyad::typed_scalar_arr(name, w.o2f(), xa_arr, true) {
                     return Ok(PrimResult::Array(out));
                 }
+            if xa_arr.el_type() == ElType::B {
+                return cmp_pervasive_boxed(&scalar_arr(w), xa_arr, scalar_fn, name);
+            }
             let ia = xa_arr.ia();
             let mut result = Vec::with_capacity(ia);
             for i in 0..ia {
@@ -166,6 +176,9 @@ fn cmp_pervasive(
                 && let Some(out) = crate::arith_dyad::typed_scalar_arr(name, x.o2f(), wa_arr, false) {
                     return Ok(PrimResult::Array(out));
                 }
+            if wa_arr.el_type() == ElType::B {
+                return cmp_pervasive_boxed(wa_arr, &scalar_arr(x), scalar_fn, name);
+            }
             let ia = wa_arr.ia();
             let mut result = Vec::with_capacity(ia);
             for i in 0..ia {
