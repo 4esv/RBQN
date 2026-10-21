@@ -118,6 +118,7 @@ fn interp_main(mut t: std::time::Instant) {
     rbqn::timing::lap(&mut t, "bootstrap (total)");
     // NOTE: Register the global runtime state for •BQN re-evaluation after bootstrap.
     rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
+    rbqn_vm::derive::set_sys_compgen(rt.compgen);
 
     // NOTE: Register derived function structural equality with rbqn-core (for ≡ and = on functions).
     rbqn_vm::derive::register_derived_equality();

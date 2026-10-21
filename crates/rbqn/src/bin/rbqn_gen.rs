@@ -164,6 +164,7 @@ fn bootstrap_rbqn() -> rbqn::bootstrap::Runtime {
     // Suppress BQN runtime panics from here on (compilation errors use panic-based throw())
     std::panic::set_hook(Box::new(|_| {}));
     rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
+    rbqn_vm::derive::set_sys_compgen(rt.compgen);
     rbqn_vm::derive::set_sys_args(&[]);
     rbqn_vm::derive::set_sys_path("");
     rt

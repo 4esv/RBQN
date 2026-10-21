@@ -17,6 +17,8 @@ pub struct SysRuntime {
     pub compiler: B,
     pub runtime: Vec<B>,
     pub formatter: Option<(B, B)>,
+    /// Compiler generator: `compgen glyphs` builds a compiler for a custom primitive set (•ReBQN).
+    pub compgen: B,
 }
 
 // NOTE: B contains a u64 which is Send-safe; all B values are NaN-boxed pointers or scalars.
@@ -29,7 +31,15 @@ pub fn set_sys_runtime(compiler: B, runtime: Vec<B>, formatter: Option<(B, B)>) 
         compiler,
         runtime,
         formatter,
+        compgen: B::SENTINEL,
     });
+}
+
+/// Register the compiler generator used by •ReBQN's `primitives` option.
+pub fn set_sys_compgen(compgen: B) {
+    if let Some(rt) = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        rt.compgen = compgen;
+    }
 }
 
 /// Global •args value — set before executing any user code.
@@ -1241,6 +1251,9 @@ pub fn prim_to_b(idx: usize) -> B {
 ///   8=setInvReg, 9=setInvSwap, 10=nativeInvReg, 11=nativeInvSwap,
 ///   22=GroupLen, 23=GroupOrd
 fn dispatch_sys_c1(idx: u32, x: B) -> B {
+    if idx >= REBQN_BASE {
+        return rebqn_call((idx - REBQN_BASE) as usize, x);
+    }
     // NOTE: •gpu functions take resident arguments; dispatch them before the
     // get_arr below, which would download one.
     match idx {
@@ -1309,11 +1322,8 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         23 => { // •_groupOrd
             call_prim(rbqn_prim::group::group_ord(x, x_arr.as_deref()))
         }
-        // NOTE: •ReBQN (alias for •BQN for now)
-        31 => {
-            let src = b_to_string(x);
-            dispatch_sys_bqn_eval(&src)
-        }
+        // NOTE: •ReBQN
+        31 => rebqn_make(x),
         // NOTE: •Out
         32 => {
             // c1: print x (must be a string — char array) to stdout with newline, return x.
@@ -1675,6 +1685,9 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
 
 /// Dispatch system function c2.
 fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
+    if idx >= REBQN_BASE {
+        return rebqn_call((idx - REBQN_BASE) as usize, x);
+    }
     // NOTE: before get_arr, which would download a resident argument.
     if idx == 1116 {
         return gpu_matmul_c2(w, x);
@@ -2216,7 +2229,7 @@ fn dispatch_sys_primind_c1(x: B) -> B {
 /// Canonical spellings of every `•` system value that `sys_name_to_b` resolves
 /// (without the `•`). Used for REPL Tab completion.
 pub const SYS_VALUE_NAMES: &[&str] = &[
-    "Type", "Decompose", "Glyph", "PrimInd", "Fill", "BQN", "ReBQN", "Out", "Show", "Fmt", "Repr",
+    "Type", "Decompose", "Glyph", "PrimInd", "Fill", "BQN", "ReBQN", "primitives", "Out", "Show", "Fmt", "Repr",
     "Exit", "args", "path", "name", "wdpath", "state", "FLines", "FChars", "FBytes", "Import",
     "ParseFloat", "Hash", "FromUTF8", "ToUTF8", "CurrentError", "file", "math", "gpu", "rand",
     "MakeRand", "platform", "UnixTime", "MonoTime", "Delay", "SH", "_while_", "_fillBy_", "FFI",
@@ -2235,7 +2248,8 @@ fn sys_name_to_b(name: &str) -> B {
         "fill"      => m_sys_fn(7),
         // Runtime I/O and evaluation (callable functions)
         "bqn"       => m_sys_fn(30),
-        "rebqn"     => m_sys_fn(31),  // NOTE: alias for •BQN for now
+        "rebqn"     => m_sys_fn(31),
+        "primitives" => sys_primitives(),
         "out"       => m_sys_fn(32),
         "show"      => m_sys_fn(33),
         "fmt"       => m_sys_fn(34),
@@ -2965,23 +2979,39 @@ fn dispatch_sys_bqn_eval(src: &str) -> B {
 
 fn dispatch_sys_bqn_eval_in(src: &str, name: Option<&str>) -> B {
     // Retrieve the global runtime state
-    let (compiler, runtime, _formatter) = {
+    let (compiler, runtime) = {
         let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
         match guard.as_ref() {
-            Some(rt) => (rt.compiler, rt.runtime.clone(), rt.formatter),
+            Some(rt) => (rt.compiler, rt.runtime.clone()),
             None => rbqn_core::error::throw("•BQN: runtime not initialized"),
         }
     };
+    dispatch_sys_bqn_eval_with(compiler, runtime, src, name)
+}
 
+/// Compile `src` with an explicit compiler and runtime array, then run it in a fresh scope.
+fn dispatch_sys_bqn_eval_with(compiler: B, runtime: Vec<B>, src: &str, name: Option<&str>) -> B {
+    let no_vars = crate::vm::tag_arr(rbqn_core::array::BqnArr::empty_harr());
+    let no_depths = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_i32(vec![]));
+    let (block, _, _) = sys_compile(compiler, &runtime, no_vars, no_depths, src, name);
+    let body = block.bodies[0].clone();
+    let var_am = body.var_am;
+    let root_scope = std::rc::Rc::new(crate::scope::Scope::new(body.clone(), None, var_am, &[]));
+    crate::block::eval_fun_block(block, root_scope)
+}
+
+/// Run the BQN compiler on `src`. Returns the root block plus the compiler's
+/// `bodies` and `tokenInfo` (the REPL needs them to track variable names).
+fn sys_compile(
+    compiler: B, runtime: &[B], var_names: B, var_depths: B, src: &str, name: Option<&str>,
+) -> (Arc<Block>, B, B) {
     if compiler.q_n() || compiler.0 == B::SENTINEL.0 {
         rbqn_core::error::throw("•BQN: compiler not available");
     }
 
     // Build compiler arguments (same as exec_string_inner in main.rs)
-    let rt_arr = crate::vm::tag_arr(rbqn_core::array::BqnArr::from_b_vec(runtime));
+    let rt_arr = crate::vm::tag_arr(rbqn_core::array::BqnArr::from_b_vec(runtime.to_vec()));
     let sys_fn = m_sys_fn(100);
-    let var_names = crate::vm::tag_arr(rbqn_core::array::BqnArr::empty_harr());
-    let var_depths = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_i32(vec![]));
     let comp_args = crate::vm::tag_arr(rbqn_core::array::BqnArr::from_b_vec(
         vec![rt_arr, sys_fn, var_names, var_depths]
     ));
@@ -3027,11 +3057,7 @@ fn dispatch_sys_bqn_eval_in(src: &str, name: Option<&str>) -> B {
         indices_b, token_info_b, src_b2,
         name.map_or(B::SENTINEL, str_to_b),
     );
-
-    let body = block.bodies[0].clone();
-    let var_am = body.var_am;
-    let root_scope = std::rc::Rc::new(crate::scope::Scope::new(body.clone(), None, var_am, &[]));
-    crate::block::eval_fun_block(block, root_scope)
+    (block, bodies_b, token_info_b)
 }
 
 /// Wrapper to call rbqn_vm::compiler::compile_all from within derive.rs
@@ -3048,6 +3074,182 @@ fn rbqn_vm_compile_all(
     fullpath: B,
 ) -> Arc<crate::block::Block> {
     crate::compiler::compile_all(bc, objs, blocks, bodies, indices, token_info, src, fullpath, None, 0)
+}
+
+// =============================================================================
+// •ReBQN
+// =============================================================================
+
+/// SysFn indices from here up are •ReBQN evaluators; the offset is the REBQN table slot.
+const REBQN_BASE: u32 = 1 << 20;
+
+struct ReBqn {
+    /// 0 none (fresh scope per call), 1 strict, 2 loose (persistent scope).
+    mode: u8,
+    compiler: B,
+    runtime: Vec<B>,
+    var_names: Vec<String>,
+    var_values: Vec<B>,
+}
+
+// NOTE: thread-local like the namespace store: the interpreter is single-threaded.
+std::thread_local! {
+    static REBQN: std::cell::RefCell<Vec<ReBqn>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn is_string_b(x: B) -> bool {
+    crate::vm::get_arr(x)
+        .is_some_and(|a| a.rank() == 1 && (0..a.ia()).all(|i| a.get(i).is_ok_and(|b| b.is_c32())))
+}
+
+/// •ReBQN 𝕩: 𝕩 is a namespace with optional `repl` and `primitives`; returns an evaluator.
+fn rebqn_make(x: B) -> B {
+    if !x.is_nsp() {
+        rbqn_core::error::throw("•ReBQN 𝕩: Argument must be a namespace");
+    }
+    let ns = crate::namespace::get_ns(x);
+    let field = |name: &str| ns.get_by_gid(crate::namespace::str2gid(name)).filter(|b| !b.q_n());
+    let mode = match field("repl") {
+        None => 0,
+        Some(r) if is_string_b(r) => match b_to_string(r).as_str() {
+            "none" => 0,
+            "strict" => 1,
+            "loose" => 2,
+            _ => rbqn_core::error::throw("•ReBQN 𝕩: Invalid repl value"),
+        },
+        Some(_) => rbqn_core::error::throw("•ReBQN 𝕩: Invalid repl value"),
+    };
+    let (mut compiler, mut runtime, compgen) = {
+        let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(rt) => (rt.compiler, rt.runtime.clone(), rt.compgen),
+            None => rbqn_core::error::throw("•ReBQN: runtime not initialized"),
+        }
+    };
+    if let Some(prim) = field("primitives") {
+        let pairs = match crate::vm::get_arr(prim) {
+            Some(a) if a.rank() == 1 => a,
+            _ => rbqn_core::error::throw("•ReBQN: 𝕩.primitives must be a list"),
+        };
+        // Glyph and value per kind: 0 functions, 1 1-modifiers, 2 2-modifiers.
+        let mut glyphs: [Vec<u32>; 3] = [vec![], vec![], vec![]];
+        let mut values: [Vec<B>; 3] = [vec![], vec![], vec![]];
+        for i in 0..pairs.ia() {
+            let p = pairs.get(i).unwrap_or(B::SENTINEL);
+            let pa = match crate::vm::get_arr(p) {
+                Some(a) if a.rank() == 1 && a.ia() == 2 => a,
+                _ => rbqn_core::error::throw("•ReBQN: 𝕩.primitives must consist of glyph-primitive pairs"),
+            };
+            let g = pa.get(0).unwrap_or(B::SENTINEL);
+            if !g.is_c32() {
+                rbqn_core::error::throw("•ReBQN 𝕩.primitives: Glyphs must be characters");
+            }
+            let v = pa.get(1).unwrap_or(B::SENTINEL);
+            let t = if v.is_fun() { 0 } else if v.is_md1() { 1 } else if v.is_md2() { 2 } else {
+                rbqn_core::error::throw("•ReBQN 𝕩.primitives: Primitives must be operations")
+            };
+            glyphs[t].push(g.o2c().unwrap_or(0));
+            values[t].push(v);
+        }
+        if compgen.q_n() || compgen.0 == B::SENTINEL.0 {
+            rbqn_core::error::throw("•ReBQN: compiler generator not available");
+        }
+        let triple: Vec<B> = glyphs.into_iter()
+            .map(|g| crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_c32(g)))
+            .collect();
+        compiler = c1(compgen, crate::vm::tag_arr(rbqn_core::array::BqnArr::from_b_vec(triple)));
+        runtime = values.into_iter().flatten().collect();
+    }
+    let slot = REBQN.with(|t| {
+        let mut t = t.borrow_mut();
+        t.push(ReBqn { mode, compiler, runtime, var_names: vec![], var_values: vec![] });
+        t.len() - 1
+    });
+    m_sys_fn(REBQN_BASE + slot as u32)
+}
+
+/// Run an evaluator made by `rebqn_make` on source string `x`.
+fn rebqn_call(slot: usize, x: B) -> B {
+    if !is_string_b(x) {
+        rbqn_core::error::throw("REPL 𝕩: Argument must be a string");
+    }
+    let src = b_to_string(x);
+    let (mode, compiler, runtime, mut names, values) = REBQN.with(|t| {
+        let r = &t.borrow()[slot];
+        (r.mode, r.compiler, r.runtime.clone(), r.var_names.clone(), r.var_values.clone())
+    });
+    if mode == 0 {
+        return dispatch_sys_bqn_eval_with(compiler, runtime, &src, Some("(REPL)"));
+    }
+    // Existing variables are passed to the compiler by name; depth -1 (loose) lets
+    // them be redefined, depth 0 (strict) makes redefinition an error.
+    let depth = if mode == 2 { -1.0 } else { 0.0 };
+    let names_b = if names.is_empty() {
+        crate::vm::tag_arr(rbqn_core::array::BqnArr::empty_harr())
+    } else {
+        crate::vm::b_vec_to_arr(names.iter().map(|n| str_to_b(n)).collect())
+    };
+    let depths_b = crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(vec![depth; names.len()]));
+    let (block, bodies_b, token_info_b) = sys_compile(compiler, &runtime, names_b, depths_b, &src, Some("(REPL)"));
+
+    let body = block.bodies[0].clone();
+    let var_am = body.var_am;
+    let init: Vec<B> = (0..var_am as usize)
+        .map(|i| values.get(i).copied().unwrap_or(B::NO_VAR))
+        .collect();
+    let scope = std::rc::Rc::new(crate::scope::Scope::new(body.clone(), None, var_am, &init));
+    let result = crate::vm::eval_bc(&body, scope.clone(), &block);
+
+    // New variables take their names from the compiler's nameList via body 0's varIDs.
+    let prev = names.len();
+    let name_list = repl_name_list(token_info_b);
+    let var_ids = repl_var_ids(bodies_b);
+    for i in prev..var_am as usize {
+        let name = match (&name_list, &var_ids) {
+            (Some(nl), Some(ids)) if i < ids.len() && ids[i] < nl.len() => nl[ids[i]].clone(),
+            _ => format!("_v{}", i),
+        };
+        names.push(name);
+    }
+    let new_values: Vec<B> = scope.vars.borrow().iter().take(var_am as usize).copied().collect();
+    REBQN.with(|t| {
+        let r = &mut t.borrow_mut()[slot];
+        r.var_names = names;
+        r.var_values = new_values;
+    });
+    result
+}
+
+/// The compiler's variable name list: tokenInfo[2][0].
+fn repl_name_list(token_info_b: B) -> Option<Vec<String>> {
+    let ti = crate::vm::get_arr(token_info_b)?;
+    let ti2 = crate::vm::get_arr(ti.get(2).ok()?)?;
+    let nl = crate::vm::get_arr(ti2.get(0).ok()?)?;
+    Some((0..nl.ia()).map(|i| nl.get(i).map(b_to_string).unwrap_or_default()).collect())
+}
+
+/// varIDs of body 0: bodies[0][2].
+fn repl_var_ids(bodies_b: B) -> Option<Vec<usize>> {
+    let bodies = crate::vm::get_arr(bodies_b)?;
+    let body0 = crate::vm::get_arr(bodies.get(0).ok()?)?;
+    if body0.ia() < 3 { return None; }
+    let ids = crate::vm::get_arr(body0.get(2).ok()?)?;
+    Some((0..ids.ia()).map(|i| ids.get(i).map(|v| v.o2f() as usize).unwrap_or(0)).collect())
+}
+
+/// •primitives: ⟨glyph, value⟩ for every runtime primitive, in runtime order.
+fn sys_primitives() -> B {
+    let runtime = {
+        let guard = SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Some(rt) => rt.runtime.clone(),
+            None => vec![],
+        }
+    };
+    let pairs = PRIM_GLYPHS.chars().zip(runtime)
+        .map(|(g, v)| crate::vm::b_vec_to_arr(vec![B::m_c32(g as u32), v]))
+        .collect();
+    crate::vm::b_vec_to_arr(pairs)
 }
 
 // =============================================================================
