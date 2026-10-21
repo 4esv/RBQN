@@ -412,6 +412,12 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 
     // Fast path: typed integer 𝕨, typed 𝕩, non-empty result.
     let real_cell: usize = cell_shape.iter().product();
+    // NOTE: CBQN does not bounds-check a list 𝕨 against zero-size cells (1‿2‿3⊏1‿0⥊0 is 3‿0).
+    if arr.rank() > 1 && real_cell == 0 && warr.rank() >= 1 && warr.el_type() != ElType::B {
+        let mut out_shape = warr.shape.clone();
+        out_shape.extend_from_slice(cell_shape);
+        return Ok(PrimResult::Array(typed_arr_from_b_vec(vec![], out_shape, cell_fill)));
+    }
     if warr.ia() > 0 && arr.rank() >= 1 && arr.el_type() != ElType::B
         && let Some(r) = resolve_typed_indices(warr, first_dim)
     {

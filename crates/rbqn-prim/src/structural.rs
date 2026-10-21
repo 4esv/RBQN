@@ -63,7 +63,7 @@ fn enclose_scalar(x: B) -> BqnArr {
 /// Used everywhere we slice along axis 0 to extract/copy major cells.
 #[inline]
 fn cell_size(shape: &[usize]) -> usize {
-    shape.iter().product::<usize>().max(1)
+    shape.iter().product::<usize>()
 }
 
 /// Return the length of the first (major) axis.
@@ -149,7 +149,7 @@ pub fn arr_fill(arr: &BqnArr) -> B {
             if let Some(&first) = elems.first() {
                 prototype_of(first)
             } else {
-                tag_arr(BqnArr::empty_harr())
+                B::m_i32(0)
             }
         }
         ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) => {
@@ -769,7 +769,16 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
         if outer_ia == 0 {
             let fill_shape: Vec<usize> = if let Some(fill) = arr.fill {
-                if let Some(fa) = get_arr(fill) { fa.shape.clone() }
+                if let Some(fa) = get_arr(fill) {
+                    // NOTE: an empty block matrix scales the fill's leading axes by the outer shape.
+                    let mut s = fa.shape.clone();
+                    if s.len() >= outer_rank {
+                        for k in 0..outer_rank {
+                            s[k] *= outer_shape[k];
+                        }
+                    }
+                    s
+                }
                 else { vec![0usize; outer_rank] }
             } else { vec![0usize; outer_rank] };
             return Ok(PrimResult::Array(BqnArr {
@@ -1689,13 +1698,14 @@ pub fn drop_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<
             return drop_multi_axis(warr, _x, xa);
         }
     let n = w.to_i32()?;
-    // NOTE: BQN allows scalar x for drop: 0↓atom = <atom (rank-0 result).
-    if xa.is_none() {
-        // x is atom (scalar or function): treat as rank-0 enclosed.
-        // Any drop on rank-0 returns rank-0.
-        return Ok(PrimResult::Array(enclose_scalar(_x)));
-    }
-    let arr = xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?;
+    // NOTE: an atom 𝕩 is a one-element list, as in take: 0↓5 is ⟨5⟩ and 1↓5 is ⟨⟩.
+    let atom_arr;
+    let arr = if _x.is_atom() {
+        atom_arr = typed_arr(vec![_x], vec![1], None);
+        &atom_arr
+    } else {
+        xa.ok_or_else(|| BqnError::Type("𝕨↓𝕩: 𝕩 must be an array".into()))?
+    };
 
     let first_dim = leading_dim(arr);
 
@@ -1824,7 +1834,8 @@ pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
 
     // Multi-dimensional range: ↕ s produces array of index lists
-    let dims = arr.i32_iter()?;
+    // NOTE: an empty list of any element type is the empty shape (↕0⥊'a' is <⟨⟩).
+    let dims = if arr.ia() == 0 { vec![] } else { arr.i32_iter()? };
     if let Some(&d) = dims.iter().find(|&&d| d < 0) {
         return Err(BqnError::Domain(format!("↕𝕩: Expected non-negative integer, got {}", d.to_string().replace('-', "¯"))));
     }

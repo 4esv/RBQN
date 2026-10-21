@@ -1060,6 +1060,9 @@ fn cells_c1(f: B, x: B) -> B {
                     fill: Some(rbqn_prim::structural::prototype_of(elem)),
                 });
                 results.push(c1(f, cell));
+            } else if elem.is_atom() && is_join_prim(f) {
+                // NOTE: CBQN's ∾˘ joins cells, so an atom cell is its own join.
+                results.push(elem);
             } else {
                 results.push(c1(f, elem));
             }
@@ -1069,12 +1072,53 @@ fn cells_c1(f: B, x: B) -> B {
     // Rank >= 2: cells are subarrays along the leading axis
     let cell_size: usize = arr.shape[1..].iter().product();
     let cell_shape = arr.shape[1..].to_vec();
+    if lead == 0
+        && let Some(shape) = empty_cells_shape(f, &cell_shape)
+    {
+        return results_to_arr(vec![], shape);
+    }
     let mut results = Vec::with_capacity(lead);
     for i in 0..lead {
         let cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
         results.push(c1(f, cell));
     }
     merge_cells_result(results, vec![lead])
+}
+
+/// Index into the primitive table when `f` is a native primitive function.
+fn native_prim_idx(f: B) -> Option<usize> {
+    if !f.is_fun() {
+        return None;
+    }
+    let fid = (f.0 & 0xFFFFFFFFFFFF) >> 3;
+    match crate::derive::get_derived(fid).kind {
+        crate::derive::DerivedKind::NativeFn { prim_idx } => Some(prim_idx),
+        _ => None,
+    }
+}
+
+fn is_join_prim(f: B) -> bool {
+    native_prim_idx(f).is_some_and(|i| rbqn_prim::dispatch::get_runtime().get(i).is_some_and(|p| p.glyph == "∾"))
+}
+
+/// Shape of `0 ∾ ≢ r` for a primitive-on-fill result `r`, or None if it cannot be found.
+fn shape_over_empty(r: std::thread::Result<B>) -> Option<Vec<usize>> {
+    let r = r.ok()?;
+    let mut shape = vec![0usize];
+    if let Some(a) = crate::vm::get_arr(r) {
+        shape.extend_from_slice(&a.shape);
+    }
+    Some(shape)
+}
+
+/// Result shape of a primitive `F˘` over zero cells: 0 ∾ ≢ F fill-cell, the way CBQN
+/// finds it. User functions are never run on a fill (side effects), so they give None.
+fn empty_cells_shape(f: B, cell_shape: &[usize]) -> Option<Vec<usize>> {
+    native_prim_idx(f)?;
+    let mut cell = BqnArr::new_vec_i32(vec![0; cell_shape.iter().product()]);
+    cell.shape = cell_shape.to_vec();
+    let cell = crate::vm::tag_arr(cell);
+    shape_over_empty(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c1(f, cell))))
 }
 
 /// Major cell `i` of `arr` as an argument for 𝕨F˘𝕩. A list's cells are rank-0 arrays.
