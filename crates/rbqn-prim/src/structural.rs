@@ -1955,89 +1955,39 @@ fn windows_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRe
     result_shape.extend_from_slice(&window_shape);
     result_shape.extend_from_slice(&arr.shape[axes.len()..]);
 
-    let inner_size: usize = arr.shape[axes.len()..].iter().product::<usize>().max(1);
+    let inner_size: usize = arr.shape[axes.len()..].iter().product();
     let total: usize = result_shape.iter().product();
     let mut result = Vec::with_capacity(total);
-
-    // Compute result by iterating over all output positions
+    // Row-major strides of the windowed axes in the source.
     let n_axes = axes.len();
-    let out_total: usize = out_shape.iter().product::<usize>().max(1);
-    let win_total: usize = window_shape.iter().product::<usize>().max(1);
-
-    for out_pos in 0..out_total {
-        // Convert out_pos to multi-dim indices
-        let mut out_indices = vec![0usize; n_axes];
-        let mut rem = out_pos;
-        for a in (0..n_axes).rev() {
-            out_indices[a] = rem % out_shape[a];
-            rem /= out_shape[a];
-        }
-        for win_pos in 0..win_total {
-            let mut win_indices = vec![0usize; n_axes];
-            let mut rem = win_pos;
+    let mut strides = vec![inner_size; n_axes];
+    for a in (0..n_axes.saturating_sub(1)).rev() {
+        strides[a] = strides[a + 1] * arr.shape[a + 1];
+    }
+    let out_total: usize = out_shape.iter().product();
+    let win_total: usize = window_shape.iter().product();
+    if total > 0 {
+        for out_pos in 0..out_total {
+            let mut base = 0usize;
+            let mut rem = out_pos;
             for a in (0..n_axes).rev() {
-                win_indices[a] = rem % window_shape[a];
-                rem /= window_shape[a];
+                base += (rem % out_shape[a]) * strides[a];
+                rem /= out_shape[a];
             }
-            // Source index = out_indices + win_indices for each axis
-            let mut _flat_idx = 0usize;
-            let mut stride = inner_size;
-            for a in (0..n_axes).rev() {
-                let src = out_indices[a] + win_indices[a];
-                _flat_idx += src * stride;
-                stride *= arr.shape[a];
-            }
-            // Actually stride needs to be computed differently
-            // Let me recalculate from the beginning
-            let mut _src_flat = 0;
-            let mut s = 1;
-            for a in (0..arr.rank() as usize).rev() {
-                if a < n_axes {
-                    _src_flat += (out_indices[a] + win_indices[a]) * s;
+            for win_pos in 0..win_total {
+                let mut off = base;
+                let mut rem = win_pos;
+                for a in (0..n_axes).rev() {
+                    off += (rem % window_shape[a]) * strides[a];
+                    rem /= window_shape[a];
                 }
-                s *= arr.shape[a];
-            }
-            // This approach is getting complex. For inner dimensions, iterate directly.
-            for j in 0..inner_size {
-                // Compute flat source index
-                let mut _src = j;
-                let mut stride = 1;
-                for a in (0..arr.rank() as usize).rev() {
-                    if a >= n_axes {
-                        // inner dimension: decompose j
-                        // handled by j already
-                    } else {
-                        let idx = out_indices[a] + win_indices[a];
-                        _src += idx * stride * inner_size;
-                    }
-                    stride *= arr.shape[a];
+                for j in 0..inner_size {
+                    result.push(arr.get(off + j)?);
                 }
-                // Simpler: compute flat index directly
-                result.push(B::SENTINEL); // placeholder
             }
         }
     }
-
-    // Simpler approach: just handle the common 1-axis case efficiently, error on multi-axis
-    result.clear();
-    if n_axes == 1 {
-        let n = axes[0] as usize;
-        let dim = arr.shape[0];
-        let cell_size: usize = cell_size(&arr.shape[1..]);
-        let num_windows = dim + 1 - n;
-        for w_start in 0..num_windows {
-            for row in w_start..w_start + n {
-                for j in 0..cell_size {
-                    result.push(arr.get(row * cell_size + j)?);
-                }
-            }
-        }
-        let mut out_shape = vec![num_windows, n];
-        out_shape.extend_from_slice(&arr.shape[1..]);
-        return Ok(PrimResult::Array(typed_arr(result, out_shape, arr.fill)));
-    }
-
-    Err(BqnError::Nyi("↕: multi-axis windows (>1 axis) not yet implemented".into()))
+    Ok(PrimResult::Array(typed_arr(result, result_shape, arr.fill)))
 }
 
 // « monad: shift after (shift left, fill from right with type fill)
