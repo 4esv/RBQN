@@ -773,13 +773,17 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         // Elements at the same outer-axis-k position must have the same inner size along axis k.
 
         if arr.el_type() != ElType::B {
-            return Err(BqnError::Type("∾𝕩: elements of rank>1 𝕩 must be arrays".into()));
+            return Err(BqnError::Type("∾𝕩: Empty array 𝕩 cannot have an atom fill element".into()));
         }
         let outer_rank = arr.rank() as usize;
         let outer_shape = arr.shape.clone();
         let outer_ia = arr.ia();
 
         if outer_ia == 0 {
+            // NOTE: an empty outer array whose fill is an atom has no array elements to join.
+            if arr.fill.is_some_and(|f| !f.is_arr()) {
+                return Err(BqnError::Type("∾𝕩: Empty array 𝕩 cannot have an atom fill element".into()));
+            }
             let fill_shape: Vec<usize> = if let Some(fill) = arr.fill {
                 if let Some(fa) = get_arr(fill) {
                     // NOTE: an empty block matrix scales the fill's leading axes by the outer shape.
@@ -1606,7 +1610,7 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
         let dim = current_shape[a];
         let abs_n = n.unsigned_abs() as usize;
         let outer_size: usize = if a == 0 { 1 } else { current_shape[..a].iter().product::<usize>() };
-        let inner_size: usize = current_shape[a+1..].iter().product::<usize>().max(1);
+        let inner_size: usize = current_shape[a+1..].iter().product::<usize>();
         let old_slice = dim * inner_size;
 
         let mut new_data = Vec::with_capacity(outer_size * abs_n * inner_size);
@@ -1786,7 +1790,7 @@ fn drop_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
         };
         let remaining = end - start;
         let outer_size: usize = if a == 0 { 1 } else { current_shape[..a].iter().product::<usize>() };
-        let inner_size: usize = current_shape[a+1..].iter().product::<usize>().max(1);
+        let inner_size: usize = current_shape[a+1..].iter().product::<usize>();
         let old_slice = current_shape[a] * inner_size;
 
         let mut new_data = Vec::with_capacity(outer_size * remaining * inner_size);
@@ -1876,6 +1880,9 @@ pub fn windows_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     // Multi-axis windows: when w is a list, each element specifies window size along one axis
     if w.is_arr()
         && let Some(warr) = wa {
+            if warr.rank() > 1 {
+                return Err(BqnError::Rank("𝕨↕𝕩: 𝕨 must have rank at most 1".into()));
+            }
             return windows_multi_axis(warr, x, xa);
         }
     let n = w.to_usz()?;

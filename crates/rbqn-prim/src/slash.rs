@@ -258,6 +258,9 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
     // `<arr /x` where arr is an integer array: use arr as the replication counts.
     let counts = if w.is_f64() {
         let n = w.to_i32()?;
+        if n < 0 {
+            return Err(BqnError::Domain("𝕨/𝕩: 𝕨 cannot be negative".into()));
+        }
         vec![n; arr.ia()]
     } else {
         let warr = wa.ok_or_else(|| BqnError::Type("𝕨/𝕩: 𝕨 must be a number or array".into()))?;
