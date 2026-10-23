@@ -36,7 +36,9 @@ pub struct Body {
     // NOTE: GIDs for all variable slots (including implicit args). Used by
     // namespace destructuring (⟨a⟩←ns) to map slot index → field name GID.
     // Entry is -1 if no GID is known for that slot.
-    pub all_var_gids: Vec<i32>,
+    // NOTE: behind a Mutex because the REPL's persistent scope keeps its first
+    // line's body and refreshes this table as later lines add names (#87).
+    pub all_var_gids: std::sync::Mutex<Vec<i32>>,
 }
 
 impl Body {
@@ -51,7 +53,7 @@ impl Body {
             var_am,
             exists: true,
             var_data: vec![-1; var_am as usize * 2],
-            all_var_gids: vec![-1; var_am as usize],
+            all_var_gids: std::sync::Mutex::new(vec![-1; var_am as usize]),
         }
     }
 

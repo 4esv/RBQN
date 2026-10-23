@@ -391,6 +391,10 @@ fn exec_repl_line_inner(
             vars[i] = B::NO_VAR;
         }
     }
+    // The scope keeps its first line's body; give it this line's slot names.
+    // (Clone first: on line 1 the scope's body is this body, so locking both would deadlock.)
+    let gids = body.all_var_gids.lock().unwrap().clone();
+    *exec_scope.body.all_var_gids.lock().unwrap() = gids;
     let result = rbqn_vm::vm::eval_bc(&body, exec_scope.clone(), &block);
 
     // Build updated variable names list.

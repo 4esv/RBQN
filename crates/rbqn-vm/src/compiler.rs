@@ -621,7 +621,7 @@ fn compile_block(
                 if let Some(desc) = ns_desc {
                     b.ns_desc = Some(desc);
                 }
-                b.all_var_gids = all_var_gids;
+                b.all_var_gids = std::sync::Mutex::new(all_var_gids);
             }
 
             let body_idx = bodies.len();

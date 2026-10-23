@@ -25,3 +25,16 @@ fn variables_survive_a_failed_line() {
     let out = repl("a ← 1\na ↩ 2 ⋄ 1+\"x\"\na\nb ← a+1\nb\n");
     assert!(out.trim_end().ends_with("2\n3\n3"), "{out}");
 }
+
+#[test]
+fn namespace_destructuring_over_earlier_lines() {
+    let out = repl("q ← 1\nr ← 2\nq‿r ↩ {q⇐2+r⇐0.5} ⋄ q\n");
+    assert!(out.trim_end().ends_with("1\n2\n2.5"), "{out}");
+}
+
+#[test]
+fn namespace_destructuring_alias_over_earlier_lines() {
+    let out = repl("to ← 1\nns ← {x⇐7}\n⟨to⇐x⟩ ↩ ns\nto\n");
+    assert!(out.trim_end().ends_with("7"), "{out}");
+    assert!(!out.contains("Error"), "{out}");
+}

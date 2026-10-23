@@ -346,11 +346,7 @@ pub fn v_set(pscs: &[ScRef], s: B, x: B, upd: bool, chk: bool) {
                     let sc = if d < pscs.len() { &pscs[d] } else {
                         rbqn_core::error::throw("v_set: depth out of bounds for namespace destructuring");
                     };
-                    let gid = if p < sc.body.all_var_gids.len() {
-                        sc.body.all_var_gids[p]
-                    } else {
-                        -1
-                    };
+                    let gid = sc.body.all_var_gids.lock().unwrap().get(p).copied().unwrap_or(-1);
                     if gid < 0 {
                         rbqn_core::error::throw(
                             "Namespace destructuring: cannot infer field name for variable slot"
@@ -536,11 +532,7 @@ pub fn v_seth(pscs: &[ScRef], s: B, x: B) -> bool {
                     let dep = si.v_depth() as usize;
                     let pos = si.v_pos() as usize;
                     if dep >= pscs.len() { return false; }
-                    let gid = if pos < pscs[dep].body.all_var_gids.len() {
-                        pscs[dep].body.all_var_gids[pos]
-                    } else {
-                        -1
-                    };
+                    let gid = pscs[dep].body.all_var_gids.lock().unwrap().get(pos).copied().unwrap_or(-1);
                     if gid < 0 { return false; }
                     match ns.get_by_gid(gid) {
                         Some(field_val) => pscs[dep].var_set(pos, field_val),
