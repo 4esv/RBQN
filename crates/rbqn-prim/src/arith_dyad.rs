@@ -431,6 +431,10 @@ pub fn add_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
         return pervasive_mixed_boxed(w, wa, x, xa, add_c2);
     }
 
+    if let Some(r) = empty_pairing(wa, xa) {
+        return Ok(r);
+    }
+
     // char + char is a type error in BQN
     Err(BqnError::Type("𝕨+𝕩: Unexpected argument types".into()))
 }
@@ -774,6 +778,12 @@ fn pervasive_char_sub_char(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>)
     }
 }
 
+/// NOTE: an empty array pairs with nothing, so no types clash (⟨⟩-'a' and ('b'+⟨⟩)+'c' are ⟨⟩).
+fn empty_pairing(wa: Option<&BqnArr>, xa: Option<&BqnArr>) -> Option<PrimResult> {
+    let a = wa.filter(|a| a.ia() == 0).or(xa.filter(|a| a.ia() == 0))?;
+    Some(PrimResult::Array(BqnArr { shape: a.shape.clone(), data: ArrData::Boxed(vec![]), fill: None }))
+}
+
 // - dyad: subtract
 pub fn sub_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let wk = char_num_class(w, wa);
@@ -803,9 +813,8 @@ pub fn sub_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
         return pervasive_mixed_boxed(w, wa, x, xa, sub_c2);
     }
 
-    // empty array - char: nothing to subtract from
-    if let Some(a) = wa && wk == 'n' && xk == 'c' && a.ia() == 0 {
-        return Ok(PrimResult::Array(a.clone()));
+    if let Some(r) = empty_pairing(wa, xa) {
+        return Ok(r);
     }
 
     // num - char is a type error in BQN

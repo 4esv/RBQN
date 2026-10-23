@@ -191,7 +191,7 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];
         let cell_shape = arr.shape[1..].to_vec();
-        let cell_size: usize = cell_shape.iter().product::<usize>().max(1);
+        let cell_size: usize = cell_shape.iter().product::<usize>();
 
         let counts: Vec<i32> = if w.is_f64() {
             let n = w.to_i32()?;
