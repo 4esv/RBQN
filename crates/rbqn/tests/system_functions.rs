@@ -292,3 +292,50 @@ fn test_runtime1_deferred() {
     assert_eq!(run("(3⊸↑)⌾⌽ ↕6"), ("⟨ 3 4 5 ⟩".to_string(), false));
     assert_eq!(run("⌽⚇1 ⟨1‿2,3‿4⟩"), ("⟨ ⟨ 2 1 ⟩ ⟨ 4 3 ⟩ ⟩".to_string(), true));
 }
+
+// ============================================================
+// •ReBQN and •primitives (#69); expected values are CBQN's output
+// ============================================================
+
+#[test]
+fn rebqn_primitives_and_repl_match_cbqn() {
+    let cases: &[(&str, &str)] = &[
+        ("3 ↑ •primitives",
+         "⟨ ⟨ '+' + ⟩ ⟨ '-' - ⟩ ⟨ '×' × ⟩ ⟩"),
+        ("≠ •primitives",
+         "64"),
+        ("r←•ReBQN {repl⇐\"strict\"} ⋄ (R \"a←5\") ‿ (R \"a+1\")",
+         "⟨ 5 6 ⟩"),
+        ("r←•ReBQN {repl⇐\"strict\"} ⋄ R \"a←5\" ⋄ R⎊\"err\" \"a←6\"",
+         "\"err\""),
+        ("r←•ReBQN {repl⇐\"strict\"} ⋄ R⎊\"err\" \"zz\"",
+         "\"err\""),
+        ("l←•ReBQN {repl⇐\"loose\"} ⋄ L \"b←2\" ⋄ L \"b←3\" ⋄ L \"b\"",
+         "3"),
+        ("l←•ReBQN {repl⇐\"loose\"} ⋄ L⎊\"err\" \"zz\"",
+         "\"err\""),
+        ("n←•ReBQN {repl⇐\"none\"} ⋄ N \"c←2\" ⋄ N⎊\"err\" \"c\"",
+         "\"err\""),
+        ("n←•ReBQN {a⇐1} ⋄ N \"1+2\"",
+         "3"),
+        ("p←•ReBQN {primitives⇐⟨⟨'+',{𝕨-𝕩}⟩⟩} ⋄ P \"5+3\"",
+         "2"),
+        ("p←•ReBQN {primitives⇐⟨⟨'+',{𝕨-𝕩}⟩⟩} ⋄ P⎊\"err\" \"5×3\"",
+         "\"err\""),
+        ("p←•ReBQN {primitives⇐⟨⟨'+',{𝕨-𝕩}⟩⟩∾1↓•primitives} ⋄ (P \"5×3\")‿(P \"5+3\")",
+         "⟨ 15 2 ⟩"),
+        ("•ReBQN⎊\"err\" 5",
+         "\"err\""),
+        ("•ReBQN⎊\"err\" {repl⇐\"bad\"}",
+         "\"err\""),
+        ("•ReBQN⎊\"err\" {primitives⇐⟨⟨\"+\",{𝕨-𝕩}⟩⟩}",
+         "\"err\""),
+        ("•primitives",
+         "⟨ ⟨ '+' + ⟩ ⟨ '-' - ⟩ ⟨ '×' × ⟩ ⟨ '÷' ÷ ⟩ ⟨ '⋆' ⋆ ⟩ ⟨ '√' √ ⟩ ⟨ '⌊' ⌊ ⟩ ⟨ '⌈' ⌈ ⟩ ⟨ '|' | ⟩ ⟨ '¬' ¬ ⟩ ⟨ '∧' ∧ ⟩ ⟨ '∨' ∨ ⟩ ⟨ '<' < ⟩ ⟨ '>' > ⟩ ⟨ '≠' ≠ ⟩ ⟨ '=' = ⟩ ⟨ '≤' ≤ ⟩ ⟨ '≥' ≥ ⟩ ⟨ '≡' ≡ ⟩ ⟨ '≢' ≢ ⟩ ⟨ '⊣' ⊣ ⟩ ⟨ '⊢' ⊢ ⟩ ⟨ '⥊' ⥊ ⟩ ⟨ '∾' ∾ ⟩ ⟨ '≍' ≍ ⟩ ⟨ '⋈' ⋈ ⟩ ⟨ '↑' ↑ ⟩ ⟨ '↓' ↓ ⟩ ⟨ '↕' ↕ ⟩ ⟨ '«' « ⟩ ⟨ '»' » ⟩ ⟨ '⌽' ⌽ ⟩ ⟨ '⍉' ⍉ ⟩ ⟨ '/' / ⟩ ⟨ '⍋' ⍋ ⟩ ⟨ '⍒' ⍒ ⟩ ⟨ '⊏' ⊏ ⟩ ⟨ '⊑' ⊑ ⟩ ⟨ '⊐' ⊐ ⟩ ⟨ '⊒' ⊒ ⟩ ⟨ '∊' ∊ ⟩ ⟨ '⍷' ⍷ ⟩ ⟨ '⊔' ⊔ ⟩ ⟨ '!' ! ⟩ ⟨ '˙' ˙ ⟩ ⟨ '˜' ˜ ⟩ ⟨ '˘' ˘ ⟩ ⟨ '¨' ¨ ⟩ ⟨ '⌜' ⌜ ⟩ ⟨ '⁼' ⁼ ⟩ ⟨ '´' ´ ⟩ ⟨ '˝' ˝ ⟩ ⟨ '`' ` ⟩ ⟨ '∘' ∘ ⟩ ⟨ '○' ○ ⟩ ⟨ '⊸' ⊸ ⟩ ⟨ '⟜' ⟜ ⟩ ⟨ '⌾' ⌾ ⟩ ⟨ '⊘' ⊘ ⟩ ⟨ '◶' ◶ ⟩ ⟨ '⎉' ⎉ ⟩ ⟨ '⚇' ⚇ ⟩ ⟨ '⍟' ⍟ ⟩ ⟨ '⎊' ⎊ ⟩ ⟩"),
+    ];
+    for (expr, want) in cases {
+        let (stdout, stderr, code) = run_print(expr);
+        assert_eq!(code, 0, "{expr}: {stderr}");
+        assert_eq!(&stdout, want, "{expr}");
+    }
+}
