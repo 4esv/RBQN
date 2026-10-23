@@ -4065,7 +4065,10 @@ pub fn derived_values_equal(w: B, x: B, depth: u32) -> bool {
             // Compare block identity by pointer
             let w_bl_ptr = wd.bl.as_ref().map(|bl| Arc::as_ptr(bl) as usize);
             let x_bl_ptr = xd.bl.as_ref().map(|bl| Arc::as_ptr(bl) as usize);
-            w_bl_ptr == x_bl_ptr
+            // Instance identity includes the environment the block closed over
+            let w_sc_ptr = wd.sc.as_ref().map(|sc| std::rc::Rc::as_ptr(sc) as usize);
+            let x_sc_ptr = xd.sc.as_ref().map(|sc| std::rc::Rc::as_ptr(sc) as usize);
+            w_bl_ptr == x_bl_ptr && w_sc_ptr == x_sc_ptr
         }
         _ => false, // Other derived kinds not compared structurally
     }
