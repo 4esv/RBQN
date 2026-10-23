@@ -119,6 +119,18 @@ pub fn native_md1_c1(prim_idx: usize, operand: B, _self_val: B, x: B) -> B {
     }
 }
 
+/// Atom or rank-0 array → one-element list of its element; other arrays unchanged.
+fn unit_list(w: B) -> B {
+    let elem = if w.is_arr() {
+        let a = arr_of(w);
+        if a.rank() != 0 { return w; }
+        get_elem(&a, 0)
+    } else {
+        w
+    };
+    results_to_arr_fill(vec![elem], vec![1], None)
+}
+
 pub fn native_md1_c2(prim_idx: usize, operand: B, _self_val: B, w: B, x: B) -> B {
     match prim_idx {
         MD1_CONST => operand,
@@ -129,6 +141,8 @@ pub fn native_md1_c2(prim_idx: usize, operand: B, _self_val: B, w: B, x: B) -> B
         MD1_UNDO => {
             // w F⁼ x: look up the inverse of F, then call it dyadically
             let inv_fn = crate::derive::inv_reg(operand);
+            // NOTE: 𝕨∾⁼𝕩 with an atom or enclosed 𝕨 treats it as a unit list (1∾⁼1‿2‿3 ≡ ⟨2 3⟩).
+            let w = if is_join_prim(operand) { unit_list(w) } else { w };
             c2(inv_fn, w, x)
         }
         MD1_FOLD => fold_c2(operand, w, x),
@@ -288,47 +302,6 @@ fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
 fn arr_of(x: B) -> std::sync::Arc<BqnArr> {
     crate::vm::get_arr(x)
         .unwrap_or_else(|| rbqn_core::error::throw("Expected array argument"))
-}
-
-/// Normalize a scan cell result to match the expected cell_shape.
-/// BQN scan always produces an array with the same shape as the input.
-/// When F returns a scalar for a cell operation, replicate it cell_size times.
-/// When F returns an array matching cell_shape, leave it as-is.
-/// Otherwise leave as-is (will be boxed by merge_cells_result).
-fn normalize_cell_result(result: B, cell_shape: &[usize], cell_size: usize) -> B {
-    if cell_size <= 1 {
-        return result;
-    }
-    // If result matches expected cell shape, nothing to do
-    if result.is_arr() {
-        let rarr = crate::vm::get_arr(result);
-        if let Some(a) = rarr
-            && a.shape == cell_shape {
-                return result;
-            }
-        return result;
-    }
-    // Result is a scalar — replicate it to fill cell_shape
-    if result.is_f64() || result.is_c32() || result.is_atom() {
-        let vals: Vec<B> = std::iter::repeat_n(result, cell_size).collect();
-        if result.is_f64() {
-            let fvals: Vec<f64> = vals.iter().map(|b| b.o2f()).collect();
-            let mut out = rbqn_core::array::BqnArr::new_vec_f64(fvals);
-            out.shape = cell_shape.to_vec();
-            return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
-        }
-        if result.is_c32() {
-            let cvals: Vec<u32> = vals.iter().map(|b| b.0 as u32).collect();
-            let mut out = rbqn_core::array::BqnArr::new_vec_c32(cvals);
-            out.shape = cell_shape.to_vec();
-            return crate::vm::tag_arr(out);
-        }
-        // Generic boxed scalar
-        let mut out = BqnArr::new_vec_b(vals);
-        out.shape = cell_shape.to_vec();
-        return crate::vm::tag_arr(out);
-    }
-    result
 }
 
 fn get_elem(arr: &BqnArr, i: usize) -> B {
@@ -820,27 +793,21 @@ fn scan_c1(f: B, x: B) -> B {
         }
         return results_to_arr_fill(results, arr.shape.clone(), arr.fill);
     }
-    // Rank > 1: scan operates on major cells (slices along axis 0)
-    // Apply F between consecutive cells; result has same shape as input
+    // Rank > 1: scan runs along the first axis, F applied to atoms
+    // column by column (CBQN): result[i][j] ≡ F(result[i-1][j], x[i][j]).
     let cell_size: usize = arr.shape[1..].iter().product();
-    let cell_shape = arr.shape[1..].to_vec();
-    // NOTE: when cell_size=0, F is never called (no elements to process), return input as-is
     if cell_size == 0 {
         return x;
     }
-    let mut cell_results: Vec<B> = Vec::with_capacity(lead);
-    // First cell is copied as-is
-    let first_cell = crate::vm::tag_arr(extract_cell(&arr, 0, cell_size, &cell_shape));
-    cell_results.push(first_cell);
-    for i in 1..lead {
-        let prev_cell = cell_results[i - 1];
-        let curr_cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
-        // NOTE: normalize result to cell_shape so merge_cells_result can build correct shape
-        let result = c2(f, prev_cell, curr_cell);
-        cell_results.push(normalize_cell_result(result, &cell_shape, cell_size));
+    let mut results: Vec<B> = Vec::with_capacity(arr.ia());
+    for i in 0..lead {
+        for j in 0..cell_size {
+            let cur = get_elem(&arr, i * cell_size + j);
+            let v = if i == 0 { cur } else { c2(f, results[(i - 1) * cell_size + j], cur) };
+            results.push(v);
+        }
     }
-    // Merge cell results back into shape of x
-    merge_cells_result(cell_results, vec![lead])
+    results_to_arr_fill(results, arr.shape.clone(), arr.fill)
 }
 
 fn scan_c2(f: B, w: B, x: B) -> B {
@@ -853,27 +820,14 @@ fn scan_c2(f: B, w: B, x: B) -> B {
         return crate::vm::tag_arr((*arr).clone());
     }
     let lead = arr.shape[0];
-    if rank == 1 {
-        // Rank-1: scan with initial value w over elements
-        let n = arr.ia();
-        let mut results = Vec::with_capacity(n);
-        let mut acc = w;
-        for i in 0..n {
-            acc = c2(f, acc, get_elem(&arr, i));
-            results.push(acc);
-        }
-        return results_to_arr_fill(results, arr.shape.clone(), arr.fill);
-    }
-    // Rank > 1: scan operates on major cells with initial cell w
-    // w must have shape matching the cell shape of x
     let cell_size: usize = arr.shape[1..].iter().product();
     let cell_shape = arr.shape[1..].to_vec();
-    // NOTE: when cell_size=0, F is never called (no elements to process), return input as-is
     if cell_size == 0 {
         return x;
     }
-    // Validate that w has the right shape
-    if w.is_arr() {
+    // 𝕨 is a cell of 𝕩: its elements are the initial values. An enclosed
+    // (rank-0) 𝕨 supplies its element; a plain atom is used for every column.
+    let w_elems: Option<Vec<B>> = if w.is_arr() {
         let warr = arr_of(w);
         if warr.shape != cell_shape {
             rbqn_core::error::throw(format!(
@@ -881,18 +835,22 @@ fn scan_c2(f: B, w: B, x: B) -> B {
                 warr.shape, arr.shape
             ));
         }
-    }
-    let mut cell_results: Vec<B> = Vec::with_capacity(lead);
-    let mut acc = w;
+        Some((0..warr.ia()).map(|j| get_elem(&warr, j)).collect())
+    } else {
+        None
+    };
+    let mut results: Vec<B> = Vec::with_capacity(arr.ia());
     for i in 0..lead {
-        let curr_cell = crate::vm::tag_arr(extract_cell(&arr, i, cell_size, &cell_shape));
-        acc = c2(f, acc, curr_cell);
-        // NOTE: normalize result to cell_shape so merge_cells_result can build correct shape
-        let norm = normalize_cell_result(acc, &cell_shape, cell_size);
-        acc = norm;
-        cell_results.push(acc);
+        for j in 0..cell_size {
+            let prev = if i == 0 {
+                match &w_elems { Some(v) => v[j], None => w }
+            } else {
+                results[(i - 1) * cell_size + j]
+            };
+            results.push(c2(f, prev, get_elem(&arr, i * cell_size + j)));
+        }
     }
-    merge_cells_result(cell_results, vec![lead])
+    results_to_arr_fill(results, arr.shape.clone(), arr.fill)
 }
 
 // ============================================================
