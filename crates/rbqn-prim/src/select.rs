@@ -4,8 +4,7 @@ use crate::dispatch::PrimResult;
 
 // ⊏ monad: first cell
 // For rank-1:
-//   - Flat (non-boxed) arrays: returns rank-0 unit containing the element
-//   - Boxed arrays: returns the first element directly (the inner array)
+//   - Returns a rank-0 unit containing the element (also for boxed arrays, as CBQN does)
 // For rank-n (n>1): returns first major cell (rank n-1 array)
 pub fn first_cell_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⊏𝕩: 𝕩 must be an array".into()))?;
@@ -14,18 +13,7 @@ pub fn first_cell_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     }
     if arr.rank() == 1 {
         let v = arr.get(0)?;
-        if arr.el_type() == ElType::B {
-            // NOTE: Boxed rank-1: first cell = first element directly (the inner value)
-            // The element v is already a B value that IS the inner array/scalar
-            if v.is_arr() {
-                // Return the inner array directly
-                if let Some(inner) = get_arr(v) {
-                    return Ok(PrimResult::Array((*inner).clone()));
-                }
-            }
-            return Ok(PrimResult::Scalar(v));
-        }
-        // NOTE: Flat rank-1: first cell = rank-0 unit containing the element
+        // NOTE: rank-1: first cell = rank-0 unit containing the element
         let out = BqnArr {
             shape: vec![],
             data: ArrData::Boxed(vec![v]),

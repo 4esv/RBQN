@@ -319,7 +319,7 @@ pub fn mark_firsts_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // x.shape[1..] must match w.shape[w.rank - (x.rank-1)..] (w's trailing shape = x's cell shape).
 // Result shape = w's leading axes (all of w's shape except the matching trailing axes).
 // NOTE: When x.rank==1, cell shape is [] (scalars), so we check elements of w against elements of x.
-pub fn member_of_c2(_w: B, wa: Option<&BqnArr>, w_raw: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn member_of_c2(w_raw: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨∊𝕩: 𝕩 must be an array".into()))?;
     let x_rank = xarr.rank() as usize;
 
@@ -454,7 +454,15 @@ pub fn deduplicate_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // w⍷x: result shape = (1 + ≢x) - ≢w (after rank-promoting w to x's rank).
 // If w has lower rank than x, w's shape is left-padded with 1s to match x's rank.
 // NOTE: Result shape per axis = (1 + x_dim) - w_dim, clamped to 0.
-pub fn find_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+pub fn find_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    // Atom 𝕩 is a rank-0 array: only an atom 𝕨 can match, giving a rank-0 result.
+    if x.is_atom() && w.is_atom() {
+        return Ok(PrimResult::Array(BqnArr {
+            shape: vec![],
+            data: ArrData::I32(vec![rbqn_core::compare::deep_equal(w, x) as i32]),
+            fill: Some(B::m_i32(0)),
+        }));
+    }
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍷𝕩: 𝕩 must be an array".into()))?;
     let x_rank = xarr.rank() as usize;
 

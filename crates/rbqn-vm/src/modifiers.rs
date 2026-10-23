@@ -275,10 +275,14 @@ fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
             return results_to_arr(flat, merged_shape);
         }
     }
-    // Fallback: boxed array
-    let mut out = BqnArr::new_vec_b(results);
-    out.shape = lead_shape;
-    crate::vm::tag_arr(out)
+    // Cell results of different shapes (or arrays mixed with atoms) cannot be merged.
+    let shape_of = |b: &B| crate::vm::get_arr(*b).map_or(vec![], |a| a.shape.clone());
+    let first = shape_of(&results[0]);
+    let bad = results.iter().map(shape_of).find(|s| *s != first).unwrap_or_default();
+    let show = |s: &[usize]| format!("⟨{}⟩", s.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","));
+    rbqn_core::error::throw(format!(
+        "𝔽˘: Incompatible result shapes (encountered shapes {} and {})", show(&first), show(&bad)
+    ))
 }
 
 fn arr_of(x: B) -> std::sync::Arc<BqnArr> {
@@ -685,6 +689,20 @@ fn insert_join_identity(f: B, cell_shape: &[usize], arr: &BqnArr) -> Option<B> {
     }
 }
 
+/// Rank-0 array holding `e` (a major cell of a list).
+fn enclose_cell(e: B) -> B {
+    crate::vm::tag_arr(BqnArr {
+        shape: vec![],
+        data: ArrData::Boxed(vec![e]),
+        fill: None,
+    })
+}
+
+/// A rank-0 array stays one: a bare atom becomes `<atom`, an array is returned as-is.
+fn as_unit(r: B) -> B {
+    if r.is_arr() { r } else { results_to_arr(vec![r], vec![]) }
+}
+
 fn insert_c1(f: B, x: B) -> B {
     let arr = arr_of(x);
     if arr.rank() == 0 {
@@ -696,23 +714,16 @@ fn insert_c1(f: B, x: B) -> B {
         let n = arr.shape[0];
         if n == 0 {
             if let Some(id) = fold_identity(f) {
-                return id;
+                return as_unit(id);
             }
             rbqn_core::error::throw("˝: empty array with no identity");
         }
-        let enclose_elem = |e: B| -> B {
-            crate::vm::tag_arr(BqnArr {
-                shape: vec![],
-                data: ArrData::Boxed(vec![e]),
-                fill: None,
-            })
-        };
-        let mut acc = enclose_elem(get_elem(&arr, n - 1));
+        let mut acc = enclose_cell(get_elem(&arr, n - 1));
         for i in (0..n - 1).rev() {
-            let cell = enclose_elem(get_elem(&arr, i));
+            let cell = enclose_cell(get_elem(&arr, i));
             acc = c2(f, cell, acc);
         }
-        return acc;
+        return as_unit(acc);
     }
     let lead = arr.shape[0];
     if lead == 0 {
@@ -747,6 +758,14 @@ fn insert_c1(f: B, x: B) -> B {
 
 fn insert_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
+    if arr.rank() == 1 {
+        // Cells of a list are rank-0 arrays, so the result is one too.
+        let mut acc = w;
+        for i in (0..arr.shape[0]).rev() {
+            acc = c2(f, enclose_cell(get_elem(&arr, i)), acc);
+        }
+        return if arr.shape[0] == 0 { acc } else { as_unit(acc) };
+    }
     if arr.rank() < 2 {
         return fold_c2(f, w, x);
     }
@@ -1058,97 +1077,82 @@ fn cells_c1(f: B, x: B) -> B {
     merge_cells_result(results, vec![lead])
 }
 
+/// Major cell `i` of `arr` as an argument for 𝕨F˘𝕩. A list's cells are rank-0 arrays.
+fn major_cell(arr: &BqnArr, i: usize) -> B {
+    if arr.rank() == 1 {
+        return enclose_cell(get_elem(arr, i));
+    }
+    let cell_shape = arr.shape[1..].to_vec();
+    let cell_size: usize = cell_shape.iter().product();
+    crate::vm::tag_arr(extract_cell(arr, i, cell_size, &cell_shape))
+}
+
+/// A cell of an empty-framed array: its fill elements, used to probe F's result shape.
+fn fill_cell(arr: &BqnArr, frame_rank: usize) -> B {
+    let fill = arr.fill.unwrap_or(B::m_i32(0));
+    if arr.rank() as usize == frame_rank {
+        return enclose_cell(fill);
+    }
+    let cell_shape = arr.shape[frame_rank..].to_vec();
+    let n: usize = cell_shape.iter().product();
+    results_to_arr(vec![fill; n], cell_shape)
+}
+
+/// Result of mapping over a frame with no cells: probe F on fill cells for the cell shape.
+fn empty_cells_result(lead_shape: Vec<usize>, probe: impl FnOnce() -> B) -> B {
+    let probed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(probe)).ok();
+    let mut shape = lead_shape;
+    let mut fill = None;
+    if let Some(r) = probed {
+        match crate::vm::get_arr(r) {
+            Some(a) => {
+                shape.extend_from_slice(&a.shape);
+                fill = a.fill;
+            }
+            None => fill = Some(r),
+        }
+    }
+    results_to_arr_fill(vec![], shape, fill)
+}
+
+fn show_shape(s: &[usize]) -> String {
+    if s.len() == 1 { format!("⟨{}⟩", s[0]) } else { s.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("‿") }
+}
+
 fn cells_c2(f: B, w: B, x: B) -> B {
-    // NOTE: ˘ applies F to each major cell of 𝕩 (and 𝕨 if it has matching leading axis).
-    // For rank-1 arrays, the cells are individual elements (rank-0 atoms).
-    // For rank-0 (atom) 𝕩, just call F directly.
-    if x.is_atom() {
-        return c2(f, w, x);
-    }
-    let xarr = arr_of(x);
-    // Rank-0 array: apply F to the whole rank-0 array; frame is ⟨⟩, merge result properly
-    if xarr.shape.is_empty() {
-        let result = c2(f, w, x);
-        return merge_cells_result(vec![result], vec![]);
-    }
-    let lead = xarr.shape[0];
-    if xarr.rank() == 1 {
-        // Rank 1: major cells are rank-0 units.
-        // For boxed arrays, array elements are wrapped in rank-0 enclosures.
-        let x_is_boxed = xarr.el_type() == ElType::B;
-        let get_x_cell = |arr: &BqnArr, i: usize| -> B {
-            let elem = get_elem(arr, i);
-            if x_is_boxed && elem.is_arr() {
-                crate::vm::tag_arr(BqnArr {
-                    shape: vec![],
-                    data: ArrData::Boxed(vec![elem]),
-                    fill: Some(rbqn_prim::structural::prototype_of(elem)),
-                })
-            } else {
-                elem
-            }
-        };
-        if w.is_arr() {
-            let warr = arr_of(w);
-            if warr.rank() == 1 && warr.shape[0] == lead {
-                // Both rank 1 with same length: pair up elements
-                let w_is_boxed = warr.el_type() == ElType::B;
-                let mut results = Vec::with_capacity(lead);
-                for i in 0..lead {
-                    let we = get_elem(&warr, i);
-                    let wc = if w_is_boxed && we.is_arr() {
-                        crate::vm::tag_arr(BqnArr {
-                            shape: vec![],
-                            data: ArrData::Boxed(vec![we]),
-                            fill: Some(rbqn_prim::structural::prototype_of(we)),
-                        })
-                    } else { we };
-                    results.push(c2(f, wc, get_x_cell(&xarr, i)));
-                }
-                return merge_cells_result(results, vec![lead]);
-            }
-            if warr.rank() >= 2 && warr.shape[0] == lead {
-                // w has higher rank, extract w cells
-                let w_cell_size: usize = warr.shape[1..].iter().product();
-                let w_cell_shape = warr.shape[1..].to_vec();
-                let mut results = Vec::with_capacity(lead);
-                for i in 0..lead {
-                    let wc = crate::vm::tag_arr(extract_cell(&warr, i, w_cell_size, &w_cell_shape));
-                    results.push(c2(f, wc, get_x_cell(&xarr, i)));
-                }
-                return merge_cells_result(results, vec![lead]);
-            }
+    // NOTE: ˘ is ⎉¯1: an argument with rank ≥ 1 contributes its major cells, a rank-0
+    // argument is passed whole to every call. Frames must agree when both have cells.
+    let warr = if w.is_atom() { None } else { Some(arr_of(w)) }.filter(|a| a.rank() >= 1);
+    let xarr = if x.is_atom() { None } else { Some(arr_of(x)) }.filter(|a| a.rank() >= 1);
+    let n = match (&warr, &xarr) {
+        (None, None) => {
+            return merge_cells_result(vec![c2(f, w, x)], vec![]);
         }
-        // w is atom or doesn't match: broadcast w to each x element
-        let mut results = Vec::with_capacity(lead);
-        for i in 0..lead {
-            results.push(c2(f, w, get_x_cell(&xarr, i)));
-        }
-        return merge_cells_result(results, vec![lead]);
-    }
-    // Rank >= 2: cells are subarrays along the leading axis
-    let cell_size: usize = xarr.shape[1..].iter().product();
-    let cell_shape = xarr.shape[1..].to_vec();
-    if w.is_arr() {
-        let warr = arr_of(w);
-        if warr.rank() >= 2 && warr.shape[0] == lead {
-            let w_cell_size: usize = warr.shape[1..].iter().product();
-            let w_cell_shape = warr.shape[1..].to_vec();
-            let mut results = Vec::with_capacity(lead);
-            for i in 0..lead {
-                let wc = crate::vm::tag_arr(extract_cell(&warr, i, w_cell_size, &w_cell_shape));
-                let xc = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
-                results.push(c2(f, wc, xc));
+        (Some(a), None) | (None, Some(a)) => a.shape[0],
+        (Some(a), Some(b)) => {
+            if a.shape[0] != b.shape[0] {
+                rbqn_core::error::throw(format!(
+                    "𝕨𝔽˘𝕩: Argument frames don't agree ({} ≡ ≢𝕨, {} ≡ ≢𝕩, common frame of 1 axes)",
+                    show_shape(&a.shape), show_shape(&b.shape)
+                ));
             }
-            return merge_cells_result(results, vec![lead]);
+            a.shape[0]
         }
+    };
+    if n == 0 {
+        return empty_cells_result(vec![0], || {
+            let wc = warr.as_ref().map_or(w, |a| fill_cell(a, 1));
+            let xc = xarr.as_ref().map_or(x, |a| fill_cell(a, 1));
+            c2(f, wc, xc)
+        });
     }
-    let mut results = Vec::with_capacity(lead);
-    for i in 0..lead {
-        let cell = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
-        results.push(c2(f, w, cell));
+    let mut results = Vec::with_capacity(n);
+    for i in 0..n {
+        let wc = warr.as_ref().map_or(w, |a| major_cell(a, i));
+        let xc = xarr.as_ref().map_or(x, |a| major_cell(a, i));
+        results.push(c2(f, wc, xc));
     }
-    merge_cells_result(results, vec![lead])
+    merge_cells_result(results, vec![n])
 }
 
 // ============================================================
@@ -1983,6 +1987,9 @@ fn rank_c2_sa(f: B, w: B, x: B, xcr: usize) -> B {
     let cell_shape = xarr.shape[frame_rank..].to_vec();
     let frame_shape = xarr.shape[..frame_rank].to_vec();
 
+    if cam == 0 {
+        return empty_cells_result(frame_shape, || c2(f, w, fill_cell(&xarr, frame_rank)));
+    }
     let mut results = Vec::with_capacity(cam);
     for i in 0..cam {
         let xc = crate::vm::tag_arr(extract_cell(&xarr, i, cell_size, &cell_shape));
@@ -2001,6 +2008,9 @@ fn rank_c2_as(f: B, w: B, x: B, wcr: usize) -> B {
     let cell_shape = warr.shape[frame_rank..].to_vec();
     let frame_shape = warr.shape[..frame_rank].to_vec();
 
+    if cam == 0 {
+        return empty_cells_result(frame_shape, || c2(f, fill_cell(&warr, frame_rank), x));
+    }
     let mut results = Vec::with_capacity(cam);
     for i in 0..cam {
         let wc = crate::vm::tag_arr(extract_cell(&warr, i, cell_size, &cell_shape));
@@ -2024,7 +2034,10 @@ fn rank_c2_aa(f: B, w: B, x: B, wcr: usize, xcr: usize) -> B {
 
     // The common frame portion (first inner_k axes) must match
     if warr.shape[..inner_k] != xarr.shape[..inner_k] {
-        rbqn_core::error::throw("⎉: frame shapes don't agree");
+        rbqn_core::error::throw(format!(
+            "𝕨𝔽⎉𝕘𝕩: Argument frames don't agree ({} ≡ ≢𝕨, {} ≡ ≢𝕩, common frame of {} axes)",
+            show_shape(&warr.shape), show_shape(&xarr.shape), inner_k
+        ));
     }
 
     // Outer frame shape
@@ -2045,6 +2058,11 @@ fn rank_c2_aa(f: B, w: B, x: B, wcr: usize, xcr: usize) -> B {
     let w_inner: usize = if wk < outer_k { 1 } else { warr.shape[inner_k..wk].iter().product() };
     let x_inner: usize = if xk < outer_k { 1 } else { xarr.shape[inner_k..xk].iter().product() };
 
+    if outer_cam == 0 {
+        return empty_cells_result(outer_shape, || {
+            c2(f, fill_cell(&warr, wk), fill_cell(&xarr, xk))
+        });
+    }
     let mut results = Vec::with_capacity(outer_cam);
     for i in 0..outer_cam {
         let wi = if wk >= xk { i } else { i / x_inner };
