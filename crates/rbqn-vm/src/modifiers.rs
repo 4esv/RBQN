@@ -985,21 +985,11 @@ pub fn scan_inv_c2(f: B, w: B, x: B) -> B {
 
 fn cells_c1(f: B, x: B) -> B {
     if x.is_atom() {
-        // BQN: F˘ on atom wraps result in rank-0 array
+        // BQN: F˘ on atom treats it as a rank-0 array with one cell, so an array
+        // result keeps its own shape (⟨⟩∾shape of F cell).
         let result = c1(f, x);
         if result.is_arr() {
-            // Already an array — wrap in rank-0
-            let inner = rbqn_core::get_arr(result);
-            if let Some(arr) = inner
-                && arr.shape.is_empty() {
-                    // Already rank-0 — return as-is
-                    return result;
-                }
-            return crate::vm::tag_arr(BqnArr {
-                shape: vec![],
-                data: ArrData::Boxed(vec![result]),
-                fill: Some(rbqn_prim::structural::prototype_of(result)),
-            });
+            return result;
         }
         // Scalar result: wrap in rank-0 array
         return crate::vm::tag_arr(BqnArr {
@@ -1026,11 +1016,16 @@ fn cells_c1(f: B, x: B) -> B {
         // For numeric/char arrays, rank-0 cells are just scalar values.
         // For boxed arrays, rank-0 cells are enclosed values (rank-0 arrays wrapping the inner value).
         let is_boxed = arr.el_type() == ElType::B;
+        if lead == 0 && native_prim_idx(f).is_some() {
+            return empty_cells_result(vec![0], || c1(f, fill_cell(&arr, 1)));
+        }
+        // ⋈ and ≍ see the rank-0 cell itself, not its atom.
+        let enclose_all = is_boxed || is_pair_prim(f);
         let mut results = Vec::with_capacity(lead);
         for i in 0..lead {
             let elem = get_elem(&arr, i);
-            if is_boxed && elem.is_arr() {
-                // Wrap array element in rank-0 enclosure (the major cell IS a rank-0 array)
+            if enclose_all {
+                // Wrap element in rank-0 enclosure (the major cell IS a rank-0 array)
                 let cell = crate::vm::tag_arr(BqnArr {
                     shape: vec![],
                     data: ArrData::Boxed(vec![elem]),
@@ -1072,6 +1067,10 @@ fn native_prim_idx(f: B) -> Option<usize> {
         crate::derive::DerivedKind::NativeFn { prim_idx } => Some(prim_idx),
         _ => None,
     }
+}
+
+fn is_pair_prim(f: B) -> bool {
+    native_prim_idx(f).is_some_and(|i| rbqn_prim::dispatch::get_runtime().get(i).is_some_and(|p| p.glyph == "⋈" || p.glyph == "≍"))
 }
 
 fn is_join_prim(f: B) -> bool {
