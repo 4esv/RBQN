@@ -2209,6 +2209,11 @@ fn repeat_c1_arr(f: B, counts: &rbqn_core::BqnArr, x: B) -> B {
     if n == 0 {
         return results_to_arr(vec![], counts.shape.clone());
     }
+    // A nested count list repeats per element, keeping the nesting: 2⊸×⍟⟨2,⟨4,¯2⟩⟩ 1.
+    if (0..n).any(|i| get_elem(counts, i).is_arr()) {
+        let results = (0..n).map(|i| { let e = get_elem(counts, i); repeat_c1(f, e, x) }).collect();
+        return results_to_arr(results, counts.shape.clone());
+    }
     // Collect all count values
     let mut count_vals: Vec<i32> = Vec::with_capacity(n);
     for i in 0..n {
@@ -2290,6 +2295,11 @@ fn repeat_c2_arr(f: B, counts: &rbqn_core::BqnArr, w: B, x: B) -> B {
     let n = counts.ia();
     if n == 0 {
         return results_to_arr(vec![], counts.shape.clone());
+    }
+    // A nested count list repeats per element, keeping the nesting: 2⊸×⍟⟨2,⟨4,¯2⟩⟩ 1.
+    if (0..n).any(|i| get_elem(counts, i).is_arr()) {
+        let results = (0..n).map(|i| { let e = get_elem(counts, i); repeat_c2(f, e, w, x) }).collect();
+        return results_to_arr(results, counts.shape.clone());
     }
     let mut count_vals: Vec<i32> = Vec::with_capacity(n);
     for i in 0..n {
