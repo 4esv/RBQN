@@ -432,7 +432,7 @@ pub fn add_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
     }
 
     if let Some(r) = empty_pairing(wa, xa) {
-        return Ok(r);
+        return r;
     }
 
     // char + char is a type error in BQN
@@ -779,9 +779,18 @@ fn pervasive_char_sub_char(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>)
 }
 
 /// NOTE: an empty array pairs with nothing, so no types clash (⟨⟩-'a' and ('b'+⟨⟩)+'c' are ⟨⟩).
-fn empty_pairing(wa: Option<&BqnArr>, xa: Option<&BqnArr>) -> Option<PrimResult> {
+fn empty_pairing(wa: Option<&BqnArr>, xa: Option<&BqnArr>) -> Option<Result<PrimResult>> {
     let a = wa.filter(|a| a.ia() == 0).or(xa.filter(|a| a.ia() == 0))?;
-    Some(PrimResult::Array(BqnArr { shape: a.shape.clone(), data: ArrData::Boxed(vec![]), fill: None }))
+    if let (Some(w), Some(x)) = (wa, xa) {
+        let n = w.shape.len().min(x.shape.len());
+        if w.shape[..n] != x.shape[..n] {
+            return Some(Err(BqnError::Shape(format!(
+                "Mapping: Expected equal shape prefix ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+                fmt_shape(&w.shape), fmt_shape(&x.shape)
+            ))));
+        }
+    }
+    Some(Ok(PrimResult::Array(BqnArr { shape: a.shape.clone(), data: ArrData::Boxed(vec![]), fill: None })))
 }
 
 // - dyad: subtract
@@ -814,7 +823,7 @@ pub fn sub_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
     }
 
     if let Some(r) = empty_pairing(wa, xa) {
-        return Ok(r);
+        return r;
     }
 
     // num - char is a type error in BQN
@@ -970,6 +979,23 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
                 }).collect();
                 let mut out = BqnArr::new_vec_c32(result?);
                 out.shape = wa_arr.shape.clone();
+                Ok(PrimResult::Array(out))
+            } else if is_shape_prefix(&wa_arr.shape, &xa_arr.shape)
+                || is_shape_prefix(&xa_arr.shape, &wa_arr.shape)
+            {
+                // Shorter shape is a prefix: each of its elements pairs with a contiguous block.
+                let w_short = is_shape_prefix(&wa_arr.shape, &xa_arr.shape);
+                let big = if w_short { xa_arr } else { wa_arr };
+                let rep = (big.ia() / if w_short { wa_arr.ia() } else { xa_arr.ia() }.max(1)).max(1);
+                let result: std::result::Result<Vec<u32>, _> = (0..big.ia()).map(|i| {
+                    let (c, n) = if w_short { (chars[i / rep], nums[i]) } else { (chars[i], nums[i / rep]) };
+                    let r = c as i64 + 1 - n as i64;
+                    if r < 0 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()))
+                    } else { Ok(r as u32) }
+                }).collect();
+                let mut out = BqnArr::new_vec_c32(result?);
+                out.shape = big.shape.clone();
                 Ok(PrimResult::Array(out))
             } else {
                 Err(BqnError::Shape(format!(

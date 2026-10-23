@@ -189,6 +189,9 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
     }
 
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⊏𝕩: 𝕨 must be a number or array".into()))?;
+    if warr.ia() > 0 && warr.is_char_arr() {
+        return Err(BqnError::Type("𝕨⊏𝕩: 𝕨 must be an array of numbers or list of such (𝕨 contained character)".into()));
+    }
 
     // rank-0 boxed 𝕨: unbox and use as index array for first axis
     if warr.rank() == 0 {
