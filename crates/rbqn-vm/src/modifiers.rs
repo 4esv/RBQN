@@ -625,6 +625,12 @@ fn fold_c1(f: B, x: B) -> B {
 
 fn fold_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
+    if arr.rank() != 1 {
+        rbqn_core::error::throw(format!(
+            "𝕨𝔽´𝕩: 𝕩 must be a list ({} ≡ ≢𝕩)",
+            rbqn_core::error::fmt_shape(&arr.shape)
+        ));
+    }
     if w.is_f64()
         && let Some(r) = crate::typed::fold(f, &arr, Some(w.o2f())) {
             return r;
@@ -731,6 +737,9 @@ fn insert_c1(f: B, x: B) -> B {
 
 fn insert_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
+    if arr.rank() == 0 {
+        rbqn_core::error::throw("𝕨𝔽˝𝕩: 𝕩 must have rank at least 1");
+    }
     if arr.rank() == 1 {
         // Cells of a list are rank-0 arrays, so the result is one too.
         let mut acc = w;
@@ -817,7 +826,17 @@ fn scan_c2(f: B, w: B, x: B) -> B {
     let arr = arr_of(x);
     let rank = arr.rank();
     if rank == 0 {
-        return crate::vm::tag_arr((*arr).clone());
+        rbqn_core::error::throw("𝕨𝔽`𝕩: 𝕩 cannot have rank 0");
+    }
+    {
+        let wshape: Vec<usize> = if w.is_arr() { arr_of(w).shape.clone() } else { vec![] };
+        if wshape[..] != arr.shape[1..] {
+            rbqn_core::error::throw(format!(
+                "𝕨𝔽`𝕩: Shape of 𝕨 must match the cell of 𝕩 ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+                rbqn_core::error::fmt_shape(&wshape),
+                rbqn_core::error::fmt_shape(&arr.shape)
+            ));
+        }
     }
     let lead = arr.shape[0];
     let cell_size: usize = arr.shape[1..].iter().product();

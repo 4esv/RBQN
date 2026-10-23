@@ -352,6 +352,9 @@ fn apply_row_permutation(arr: &BqnArr, indices: &[i32]) -> Result<BqnArr> {
 // ⍋ monad: grade up
 pub fn grade_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍋𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("⍋𝕩: 𝕩 cannot be a unit".into()));
+    }
     // GPU dispatch for rank-1 numeric arrays above threshold
     if let Some(hook) = GPU_GRADE_HOOK.get()
         && let Some(result) = hook(arr, true) {
@@ -366,6 +369,9 @@ pub fn grade_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ⍒ monad: grade down
 pub fn grade_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("⍒𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("⍒𝕩: 𝕩 cannot be a unit".into()));
+    }
     // GPU dispatch for rank-1 numeric arrays above threshold
     if let Some(hook) = GPU_GRADE_HOOK.get()
         && let Some(result) = hook(arr, false) {
@@ -380,6 +386,9 @@ pub fn grade_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ∧ monad: sort up (ascending) — returns sorted values, NOT the grade
 pub fn sort_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("∧𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("∧𝕩: 𝕩 cannot have rank 0".into()));
+    }
     // GPU dispatch for rank-1 numeric arrays above threshold
     if let Some(hook) = GPU_SORT_HOOK.get()
         && let Some(result) = hook(arr, true) {
@@ -394,6 +403,9 @@ pub fn sort_up_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // ∨ monad: sort down (descending) — returns sorted values, NOT the grade
 pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("∨𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("∨𝕩: 𝕩 cannot have rank 0".into()));
+    }
     // GPU dispatch for rank-1 numeric arrays above threshold
     if let Some(hook) = GPU_SORT_HOOK.get()
         && let Some(result) = hook(arr, false) {
@@ -405,10 +417,36 @@ pub fn sort_down_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     Ok(PrimResult::Array(out))
 }
 
+/// Error unless the cells of `warr` are sorted (ascending, or descending when `!asc`), as CBQN requires of bins 𝕨.
+fn check_bins_w(warr: &BqnArr, xa: Option<&BqnArr>, asc: bool) -> Result<()> {
+    let (name, msg) = if asc { ("⍋", "") } else { ("⍒", " in descending order") };
+    if warr.rank() == 0 {
+        return Err(BqnError::Rank(format!("𝕨{name}𝕩: 𝕨 must have rank≥1")));
+    }
+    // NOTE: CBQN skips the sortedness check when there is nothing to search for
+    if xa.is_some_and(|a| a.ia() == 0) {
+        return Ok(());
+    }
+    let n = warr.shape[0];
+    let cs: usize = warr.shape[1..].iter().product();
+    for i in 1..n {
+        let mut c = 0;
+        for k in 0..cs {
+            c = compare::compare(warr.get((i - 1) * cs + k)?, warr.get(i * cs + k)?);
+            if c != 0 { break; }
+        }
+        if (asc && c > 0) || (!asc && c < 0) {
+            return Err(BqnError::Domain(format!("𝕨{name}𝕩: 𝕨 must be sorted{msg}")));
+        }
+    }
+    Ok(())
+}
+
 // ⍋ dyad: bins (ascending)
 // NOTE: 𝕨 and 𝕩 must be compatible sorted arrays. Elements must be comparable (numbers, chars, arrays).
 pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍋𝕩: 𝕨 must be an array".into()))?;
+    check_bins_w(warr, xa, true)?;
     // Handle atom x: result is rank-0
     if xa.is_none() {
         let w_lead = if warr.rank() > 0 { warr.shape[0] } else { 1 };
@@ -522,6 +560,7 @@ pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
 // ⍒ dyad: bins (descending)
 pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let warr = wa.ok_or_else(|| BqnError::Type("𝕨⍒𝕩: 𝕨 must be an array".into()))?;
+    check_bins_w(warr, xa, false)?;
     // Handle atom x: result is rank-0
     if xa.is_none() {
         let w_lead = if warr.rank() > 0 { warr.shape[0] } else { 1 };

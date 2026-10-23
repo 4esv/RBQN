@@ -265,6 +265,16 @@ fn group_indices_multidim(arr: &BqnArr) -> Result<PrimResult> {
 //   - rank-k 𝕨 (k>1): 𝕨 must have shape prefix of 𝕩; group by ⥊𝕨
 //   - boxed list 𝕨 (depth 2): multi-axis group
 pub fn group_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if xa.is_none() {
+        return Err(BqnError::Type("𝕨⊔𝕩: 𝕩 must be an array".into()));
+    }
+    if let (Some(warr), Some(xarr)) = (wa, xa)
+        && xarr.rank() == 0
+        && warr.rank() >= 1
+        && (warr.el_type() != ElType::B || warr.ia() == 0)
+    {
+        return Err(BqnError::Rank("𝕨⊔𝕩: Rank of simple 𝕨 must be at most rank of 𝕩".into()));
+    }
     // Case: scalar w = n (not an array)
     if w.is_f64() {
         let n = w.to_i32().map_err(|_| BqnError::Domain("𝕨⊔𝕩: scalar 𝕨 must be an integer".into()))?;
@@ -508,6 +518,15 @@ fn group_high_rank_w(warr: &BqnArr, _x: B, xa: Option<&BqnArr>) -> Result<PrimRe
 fn group_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let n_dims = warr.ia();
     if n_dims == 0 {
+        if let Some(a) = xa
+            && a.rank() >= 1
+            && a.shape[0] != 0
+        {
+            return Err(BqnError::Shape(format!(
+                "𝕨⊔𝕩: ≠𝕨 must be either ≠𝕩 or one bigger (0≡≠𝕨, {}≡≠𝕩)",
+                a.shape[0]
+            )));
+        }
         // BQN: ⟨⟩⊔x returns ⟨⟩ (empty result with fill derived from x)
         let fill_b = if let Some(a) = xa {
             let empty_cell = array::typed_arr_from_b_vec(vec![], a.shape.clone(), a.fill);

@@ -297,19 +297,27 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     // Check first element to determine inner shape
     let first = arr.get(0)?;
     if first.is_atom() {
-        // All elements must be atoms, else the element shapes disagree
+        let mut units = Vec::new();
         for i in 1..ia {
-            let e = arr.get(i)?;
-            if !e.is_atom() {
-                let es = get_arr(e).map(|a| a.shape.clone()).unwrap_or_default();
-                return Err(BqnError::Shape(format!(
-                    ">𝕩: Incompatible element shapes (encountered shapes ⟨⟩ and {})",
-                    rbqn_core::error::fmt_shape(&es)
-                )));
+            if let Some(e) = get_arr(arr.get(i)?) {
+                if !e.shape.is_empty() {
+                    return Err(BqnError::Shape(format!(
+                        ">𝕩: Incompatible element shapes (encountered shapes ⟨⟩ and {})",
+                        rbqn_core::error::fmt_shape(&e.shape)
+                    )));
+                }
+                units.push((i, e.get(0)?));
             }
         }
-        // result shape = outer_shape, data is the same
-        return Ok(PrimResult::Array(arr.clone()));
+        if units.is_empty() {
+            // All elements are atoms, result shape = outer_shape, data is the same
+            return Ok(PrimResult::Array(arr.clone()));
+        }
+        let mut data: Vec<B> = (0..ia).map(|i| arr.get(i)).collect::<Result<_>>()?;
+        for (i, v) in units {
+            data[i] = v;
+        }
+        return Ok(PrimResult::Array(typed_arr(data, arr.shape.clone(), None)));
     }
 
     // First element is an array — get its shape
@@ -623,6 +631,10 @@ fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
         let v = warr.get(i)?;
         if v.is_f64() {
             known_dims.push(v.to_usz()?);
+        } else if v.is_arr() || v.is_c32() {
+            return Err(BqnError::Domain(
+                "𝕨⥊𝕩: 𝕨 must consist of natural numbers or ∘ ⌊ ⌽ ↑ (contained array)".into(),
+            ));
         } else {
             // Non-numeric element: this is the computed dimension
             if computed_idx.is_some() {
@@ -1353,10 +1365,7 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
         // array ≍ array → shapes must match
         (Some(warr), Some(xarr)) => {
             if warr.shape != xarr.shape {
-                return Err(BqnError::Shape(format!(
-                    "𝕨≍𝕩: 𝕨 and 𝕩 must have equal shapes ({:?} ≡ ≢𝕨, {:?} ≡ ≢𝕩)",
-                    warr.shape, xarr.shape
-                )));
+                return Err(couple_shape_err(&warr.shape, &xarr.shape));
             }
             let wia = warr.ia();
             let xia = xarr.ia();
@@ -1371,39 +1380,28 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             new_shape.extend_from_slice(&warr.shape);
             Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
         }
-        // atom ≍ array → broadcast atom to match array shape, then couple
+        // atom ≍ array: an atom has shape ⟨⟩, so only a unit array matches
         (None, Some(xarr)) => {
-            let xia = xarr.ia();
-            let mut result = Vec::with_capacity(xia + xia);
-            // First row: atom broadcast to fill xarr.shape
-            for _ in 0..xia {
-                result.push(w);
+            if !xarr.shape.is_empty() {
+                return Err(couple_shape_err(&[], &xarr.shape));
             }
-            // Second row: array elements
-            for i in 0..xia {
-                result.push(xarr.get(i)?);
-            }
-            let mut new_shape = vec![2];
-            new_shape.extend_from_slice(&xarr.shape);
-            Ok(PrimResult::Array(typed_arr(result, new_shape, xarr.fill)))
+            Ok(PrimResult::Array(BqnArr::new_vec_b(vec![w, xarr.get(0)?])))
         }
-        // array ≍ atom → broadcast atom to match array shape, then couple
         (Some(warr), None) => {
-            let wia = warr.ia();
-            let mut result = Vec::with_capacity(wia + wia);
-            // First row: array elements
-            for i in 0..wia {
-                result.push(warr.get(i)?);
+            if !warr.shape.is_empty() {
+                return Err(couple_shape_err(&warr.shape, &[]));
             }
-            // Second row: atom broadcast to fill warr.shape
-            for _ in 0..wia {
-                result.push(x);
-            }
-            let mut new_shape = vec![2];
-            new_shape.extend_from_slice(&warr.shape);
-            Ok(PrimResult::Array(typed_arr(result, new_shape, warr.fill)))
+            Ok(PrimResult::Array(BqnArr::new_vec_b(vec![warr.get(0)?, x])))
         }
     }
+}
+
+fn couple_shape_err(w: &[usize], x: &[usize]) -> BqnError {
+    BqnError::Shape(format!(
+        "𝕨≍𝕩: 𝕨 and 𝕩 must have equal shapes ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+        rbqn_core::error::fmt_shape(w),
+        rbqn_core::error::fmt_shape(x)
+    ))
 }
 
 // ⋈ monad: enclose in list (⟨x⟩)
@@ -1882,6 +1880,9 @@ pub fn windows_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         }
     let n = w.to_usz()?;
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨↕𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("𝕨↕𝕩: Length of 𝕨 must be at most rank of 𝕩".into()));
+    }
 
     let first_dim = leading_dim(arr);
 
@@ -2012,10 +2013,39 @@ fn windows_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRe
     Ok(PrimResult::Array(typed_arr(result, result_shape, arr.fill)))
 }
 
+/// Validate 𝕨 against 𝕩 for « and »: 𝕩 not a unit, =𝕨 is =𝕩 or ¯1+=𝕩, trailing lengths match.
+fn shift_check(name: &str, wa: Option<&BqnArr>, arr: &BqnArr) -> Result<()> {
+    use rbqn_core::error::fmt_shape;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank(format!("𝕨{name}𝕩: 𝕩 cannot be a unit")));
+    }
+    let xr = arr.rank() as usize;
+    let (wr, wsh): (usize, &[usize]) = match wa {
+        Some(w) => (w.rank() as usize, &w.shape),
+        None => (0, &[]),
+    };
+    if wr != xr && wr + 1 != xr {
+        return Err(BqnError::Rank(format!(
+            "𝕨{name}𝕩: =𝕨 must be =𝕩 or ¯1+=𝕩 ({wr}≡=𝕨, {xr}≡=𝕩)"
+        )));
+    }
+    let wcell = if wr == xr { &wsh[1..] } else { wsh };
+    if wcell != &arr.shape[1..] {
+        return Err(BqnError::Shape(format!(
+            "𝕨{name}𝕩: Lengths not matchable ({} ≡ ≢𝕨, {} ≡ ≢𝕩)",
+            fmt_shape(wsh), fmt_shape(&arr.shape)
+        )));
+    }
+    Ok(())
+}
+
 // « monad: shift after (shift left, fill from right with type fill)
 // «⟨1,2,3⟩ → ⟨2,3,0⟩
 pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("«𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("«𝕩: 𝕩 cannot be a unit".into()));
+    }
     let ia = arr.ia();
     if ia == 0 {
         return Ok(PrimResult::Array(arr.clone()));
@@ -2050,6 +2080,7 @@ pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // « dyad: shift after
 pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨«𝕩: 𝕩 must be an array".into()))?;
+    shift_check("«", wa, arr)?;
 
     if let Some(warr) = wa {
         let wr = warr.rank();
@@ -2149,6 +2180,9 @@ pub fn shifta_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
 // »⟨1,2,3⟩ → ⟨0,1,2⟩
 pub fn shiftb_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("»𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("»𝕩: 𝕩 cannot be a unit".into()));
+    }
     let ia = arr.ia();
     if ia == 0 {
         return Ok(PrimResult::Array(arr.clone()));
@@ -2183,6 +2217,7 @@ pub fn shiftb_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // » dyad: shift before
 pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨»𝕩: 𝕩 must be an array".into()))?;
+    shift_check("»", wa, arr)?;
 
     // Validate w rank: must be x.rank (multi-cell shift) or x.rank-1 (single cell) or atom
     if let Some(warr) = wa {
@@ -2311,6 +2346,9 @@ pub fn reverse_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 // When 𝕨 is a number: rotate first axis by that amount.
 // When 𝕨 is an array: must have length equal to rank of 𝕩; each element rotates that axis.
 pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
+    if wa.is_none() && xa.is_none_or(|a| a.rank() == 0) {
+        return Err(BqnError::Rank("𝕨⌽𝕩: 𝕩 must have rank at least 1 for atom 𝕨".into()));
+    }
     // Handle atom x (rank-0): must have empty or zero w
     if x.is_atom() {
         if let Some(warr) = wa {
@@ -2625,10 +2663,10 @@ pub fn reorder_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         } else if let Some(warr) = wa {
             warr.ia()
         } else {
-            0
+            1
         };
         if perm_len != 0 {
-            return Err(BqnError::Rank("𝕨⍉𝕩: 𝕨 must be empty for rank-0 𝕩".into()));
+            return Err(BqnError::Rank("𝕨⍉𝕩: Length of 𝕨 must be at most rank of 𝕩".into()));
         }
         return Ok(PrimResult::Array(arr.clone()));
     }

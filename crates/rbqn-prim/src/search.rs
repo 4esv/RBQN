@@ -322,6 +322,9 @@ pub fn mark_firsts_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 pub fn member_of_c2(w_raw: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨∊𝕩: 𝕩 must be an array".into()))?;
     let x_rank = xarr.rank() as usize;
+    if x_rank == 0 {
+        return Err(BqnError::Rank("𝕨∊𝕩: 𝕩 cannot have rank 0".into()));
+    }
 
     // Cell shape of x (what each query must match)
     let x_cell_rank = if x_rank > 0 { x_rank - 1 } else { 0 };
