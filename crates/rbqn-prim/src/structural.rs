@@ -297,7 +297,18 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     // Check first element to determine inner shape
     let first = arr.get(0)?;
     if first.is_atom() {
-        // All elements are atoms, result shape = outer_shape, data is the same
+        // All elements must be atoms, else the element shapes disagree
+        for i in 1..ia {
+            let e = arr.get(i)?;
+            if !e.is_atom() {
+                let es = get_arr(e).map(|a| a.shape.clone()).unwrap_or_default();
+                return Err(BqnError::Shape(format!(
+                    ">𝕩: Incompatible element shapes (encountered shapes ⟨⟩ and {})",
+                    rbqn_core::error::fmt_shape(&es)
+                )));
+            }
+        }
+        // result shape = outer_shape, data is the same
         return Ok(PrimResult::Array(arr.clone()));
     }
 

@@ -329,6 +329,24 @@ fn pfmod(a: f64, b: f64) -> f64 {
     }
 }
 
+/// Character arithmetic takes integer offsets only (CBQN: "Expected integer, got N").
+fn check_int_offset(v: B, va: Option<&BqnArr>) -> Result<()> {
+    let bad = |n: f64| -> Result<()> {
+        if n.fract() != 0.0 || !n.is_finite() {
+            Err(BqnError::Domain(format!("Expected integer, got {}", n)))
+        } else {
+            Ok(())
+        }
+    };
+    match va {
+        None => bad(v.to_f64()?),
+        Some(a) => {
+            for n in a.f64_iter()?.iter() { bad(*n)?; }
+            Ok(())
+        }
+    }
+}
+
 /// Helper: shift a character code point by a number, returning a char B value.
 fn char_add(c: u32, n: f64) -> Result<B> {
     let r = c as i64 + n as i64;
@@ -404,6 +422,7 @@ pub fn add_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
 
     // char + num → char  or  num + char → char
     if (wk == 'c' && xk == 'n') || (wk == 'n' && xk == 'c') {
+        if wk == 'c' { check_int_offset(x, xa)?; } else { check_int_offset(w, wa)?; }
         return pervasive_char_add(w, wa, x, xa, wk == 'c');
     }
 
@@ -770,6 +789,7 @@ pub fn sub_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
 
     // char - num → char
     if wk == 'c' && xk == 'n' {
+        check_int_offset(x, xa)?;
         return pervasive_char_sub_num(w, wa, x, xa);
     }
 
@@ -781,6 +801,11 @@ pub fn sub_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
     // Boxed/nested arrays: recurse element-wise, preserving char arithmetic
     if wk == 'o' || xk == 'o' {
         return pervasive_mixed_boxed(w, wa, x, xa, sub_c2);
+    }
+
+    // empty array - char: nothing to subtract from
+    if let Some(a) = wa && wk == 'n' && xk == 'c' && a.ia() == 0 {
+        return Ok(PrimResult::Array(a.clone()));
     }
 
     // num - char is a type error in BQN
@@ -872,7 +897,12 @@ pub fn not_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<Pr
     if wk == 'c' && xk == 'n' {
         // char¬num: w_cp + 1 - x = char shifted by (1-x)
         // = char_add(w, 1.0 - x)
+        check_int_offset(x, xa)?;
         return not_char_num(w, wa, x, xa);
+    }
+
+    if wk == 'o' || xk == 'o' {
+        return pervasive_mixed_boxed(w, wa, x, xa, not_c2);
     }
 
     if w.is_f64() && x.is_f64() {
