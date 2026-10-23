@@ -8,3 +8,4 @@ Cargo.lock
 /src/preprocessed/
 .test-results/run-*
 /bench/probes/target/
+__pycache__/
