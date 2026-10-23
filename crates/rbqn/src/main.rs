@@ -144,11 +144,11 @@ fn interp_main(mut t: std::time::Instant) {
             cli::Action::File(path, _) => path.clone(),
         };
         let result = match action {
-            cli::Action::Eval(code) => exec_string(&rt, code).map(|_| ()),
-            cli::Action::Print(code) => exec_string(&rt, code).map(|r| {
+            cli::Action::Eval(code) => exec_string(&rt, code, 0).map(|_| ()),
+            cli::Action::Print(code) => exec_string(&rt, code, 1).map(|r| {
                 println!("{}", format_result(&rt, &r));
             }),
-            cli::Action::Output(code) => exec_string(&rt, code).and_then(|r| {
+            cli::Action::Output(code) => exec_string(&rt, code, 1).and_then(|r| {
                 output_raw(&r)
             }),
             cli::Action::File(path, file_args) => {
@@ -157,7 +157,7 @@ fn interp_main(mut t: std::time::Instant) {
                     rbqn_vm::derive::set_sys_path("");
                     rbqn_vm::derive::set_sys_args(file_args);
                     let code = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
-                    exec_string(&rt, &code).map(|_| ())
+                    exec_string(&rt, &code, 0).map(|_| ())
                 } else {
                     // Set •path to absolute path, •name to basename, •args to file args
                     let abs_path = std::fs::canonicalize(path)
@@ -166,7 +166,7 @@ fn interp_main(mut t: std::time::Instant) {
                     rbqn_vm::derive::set_sys_path(&abs_path);
                     rbqn_vm::derive::set_sys_args(file_args);
                     match std::fs::read_to_string(path) {
-                        Ok(code) => exec_string(&rt, &code).map(|_| ()),
+                        Ok(code) => exec_string(&rt, &code, 0).map(|_| ()),
                         Err(e) => Err(BqnError::Domain(format!("cannot read {path}: {e}"))),
                     }
                 }
@@ -380,7 +380,8 @@ fn exec_repl_line_inner(
         src_b2,
         B::SENTINEL,
         None,
-        0,
+        // NOTE: top-level `⇐` shows the value, as in CBQN; reads stay VARO.
+        rbqn_vm::compiler::NS_RESULT_REPL,
     );
 
     let body = block.bodies[0].clone();

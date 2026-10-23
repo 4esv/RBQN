@@ -332,9 +332,12 @@ pub fn compiler_output_to_owned(
     }
 }
 
+/// `ns_result` 1: top-level `⇐` yields the last value, not a namespace
+/// (CBQN's `-p` and REPL); 0: a normal program.
 pub fn exec_string(
     rt: &bootstrap::Runtime,
     code: &str,
+    ns_result: i32,
 ) -> rbqn_core::Result<B> {
     if rt.compiler.q_n() || rt.compiler.0 == B::SENTINEL.0 {
         return Err(BqnError::Nyi(
@@ -344,7 +347,7 @@ pub fn exec_string(
 
     // Wrap in catch_unwind: BQN errors use panic-based throw()
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        exec_string_inner(rt, code)
+        exec_string_inner(rt, code, ns_result)
     })) {
         Ok(result) => result,
         Err(panic) => Err(panic_to_bqn_error(panic)),
@@ -354,6 +357,7 @@ pub fn exec_string(
 pub fn exec_string_inner(
     rt: &bootstrap::Runtime,
     code: &str,
+    ns_result: i32,
 ) -> rbqn_core::Result<B> {
     // Build compiler arguments: ⟨runtime, •BQN_SYS, varNames, varDepths⟩
     let rt_arr = tag_arr(BqnArr::from_b_vec(rt.runtime.clone()));
@@ -433,7 +437,7 @@ pub fn exec_string_inner(
         src_b2,
         B::SENTINEL,
         None,
-        0,
+        ns_result,
     );
 
     let body = block.bodies[0].clone();
