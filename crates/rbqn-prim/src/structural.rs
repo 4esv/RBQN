@@ -769,20 +769,19 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
     if arr.rank() > 1 {
         // NOTE: Monadic ∾ on rank-n outer: BQN block-matrix join.
-        // Result shape[k] = sum of element.shape[k] over all outer positions along axis k.
-        // Elements at the same outer-axis-k position must have the same inner size along axis k.
-
-        if arr.el_type() != ElType::B {
-            return Err(BqnError::Type("∾𝕩: Empty array 𝕩 cannot have an atom fill element".into()));
-        }
         let outer_rank = arr.rank() as usize;
         let outer_shape = arr.shape.clone();
         let outer_ia = arr.ia();
 
         if outer_ia == 0 {
-            // NOTE: an empty outer array whose fill is an atom has no array elements to join.
-            if arr.fill.is_some_and(|f| !f.is_arr()) {
-                return Err(BqnError::Type("∾𝕩: Empty array 𝕩 cannot have an atom fill element".into()));
+            match arr.fill {
+                Some(f) if !f.is_arr() => return Err(BqnError::Rank(
+                    "∾𝕩: Empty array 𝕩 cannot have an atom fill element".into())),
+                Some(f) if get_arr(f).is_some_and(|fa| (fa.rank() as usize) < outer_rank) => return Err(BqnError::Rank(
+                    "∾𝕩: Empty array 𝕩 fill rank must be at least rank of 𝕩".into())),
+                // NOTE: no fill: fill rank =𝕩 is assumed and the result is 𝕩 (spec).
+                None => return Ok(PrimResult::Array(arr.clone())),
+                _ => {}
             }
             let fill_shape: Vec<usize> = if let Some(fill) = arr.fill {
                 if let Some(fa) = get_arr(fill) {
@@ -802,181 +801,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             }));
         }
 
-        // Get inner rank from first element
-        let first_elem = arr.get(0)?;
-        let inner_rank = if first_elem.is_atom() {
-            if outer_rank > 1 {
-                return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
-            }
-            0usize
-        } else if let Some(fa) = get_arr(first_elem) {
-            fa.rank() as usize
-        } else {
-            return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
-        };
-
-        // NOTE: For outer_rank > 1, elements must have rank >= outer_rank (full block-matrix).
-        // For outer_rank == 1, atoms (rank 0) are allowed as individual elements.
-        if outer_rank > 1 {
-            if inner_rank < outer_rank {
-                return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
-            }
-        } else if inner_rank < outer_rank.saturating_sub(1) {
-            return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
-        }
-
-        let _trailing_rank = inner_rank.saturating_sub(outer_rank);
-
-        // Compute outer strides
-        let outer_strides = strides_from_shape(&outer_shape);
-
-        // For each outer axis k and each position p along that axis:
-        // axis_sizes[k][p] = inner_shape[k] for all elements at outer position iₖ = p.
-        // We require consistency: all elements in the same outer-axis-k slice must agree.
-        // Compute by gathering from all outer elements.
-        let mut axis_sizes: Vec<Vec<usize>> = (0..outer_rank)
-            .map(|k| vec![0usize; outer_shape[k]])
-            .collect();
-
-        let mut trailing_shape: Vec<usize> = vec![];
-        let mut fill_val: Option<B> = arr.fill;
-
-        for outer_flat in 0..outer_ia {
-            let elem = arr.get(outer_flat)?;
-            let inner_arr = if let Some(ia) = get_arr(elem) { ia }
-            else {
-                // Atom: rank 0, only valid if inner_rank == 0
-                continue;
-            };
-
-            if let Some(f) = inner_arr.fill { fill_val = fill_val.or(Some(f)); }
-
-            let inner_shape = &inner_arr.shape;
-            let inner_r = inner_arr.rank() as usize;
-
-            let min_inner_rank = if outer_rank > 1 { outer_rank } else { outer_rank.saturating_sub(1) };
-            if inner_r < min_inner_rank {
-                return Err(BqnError::Rank("∾𝕩: Ranks of argument items too small".into()));
-            }
-
-            // Decode outer_flat to outer multi-index
-            let mut outer_idx: Vec<usize> = vec![0; outer_rank];
-            let mut rem = outer_flat;
-            for k in 0..outer_rank {
-                outer_idx[k] = rem / outer_strides[k];
-                rem %= outer_strides[k];
-            }
-
-            // Record per-axis sizes
-            for k in 0..outer_rank {
-                let sz = if k < inner_shape.len() { inner_shape[k] } else { 0 };
-                let p = outer_idx[k];
-                if axis_sizes[k][p] == 0 {
-                    axis_sizes[k][p] = sz;
-                }
-                // else: already set (should match)
-            }
-
-            // Trailing shape: inner dims beyond outer_rank
-            if trailing_shape.is_empty() && inner_r >= outer_rank {
-                trailing_shape = inner_shape[outer_rank..].to_vec();
-            }
-        }
-
-        // Compute per-axis offsets (prefix sums)
-        let axis_offsets: Vec<Vec<usize>> = axis_sizes.iter()
-            .map(|sizes| {
-                let mut offsets = vec![0usize; sizes.len() + 1];
-                for i in 0..sizes.len() {
-                    offsets[i + 1] = offsets[i] + sizes[i];
-                }
-                offsets
-            })
-            .collect();
-
-        // Result shape
-        let mut result_shape: Vec<usize> = (0..outer_rank)
-            .map(|k| *axis_offsets[k].last().unwrap_or(&0))
-            .collect();
-        result_shape.extend_from_slice(&trailing_shape);
-
-        let result_ia: usize = result_shape.iter().product();
-        let _trailing_size: usize = trailing_shape.iter().product::<usize>().max(1);
-
-        // Result strides
-        let result_strides = strides_from_shape(&result_shape);
-
-        let mut result: Vec<B> = vec![B::SENTINEL; result_ia];
-
-        // Place each inner array into the result
-        for outer_flat in 0..outer_ia {
-            let elem = arr.get(outer_flat)?;
-            let inner_arr = if let Some(ia) = get_arr(elem) { ia }
-            else {
-                // Atom: place as single element
-                let mut rem = outer_flat;
-                let mut rf = 0;
-                for k in 0..outer_rank {
-                    let ik = rem / outer_strides[k];
-                    rem %= outer_strides[k];
-                    rf += axis_offsets[k][ik] * result_strides[k];
-                }
-                if rf < result.len() { result[rf] = elem; }
-                continue;
-            };
-
-            let inner_shape = &inner_arr.shape;
-            let inner_ia = inner_arr.ia();
-            if inner_ia == 0 { continue; }
-
-            // Decode outer_flat to outer multi-index
-            let mut outer_idx: Vec<usize> = vec![0; outer_rank];
-            let mut rem = outer_flat;
-            for k in 0..outer_rank {
-                outer_idx[k] = rem / outer_strides[k];
-                rem %= outer_strides[k];
-            }
-
-            // Base offset in result
-            let mut result_base = 0usize;
-            for k in 0..outer_rank {
-                result_base += axis_offsets[k][outer_idx[k]] * result_strides[k];
-            }
-
-            // Inner strides
-            let inner_strides = strides_from_shape(inner_shape);
-
-            for inner_flat in 0..inner_ia {
-                let v = inner_arr.get(inner_flat)?;
-
-                // Decode inner_flat to inner multi-index
-                let mut inner_idx: Vec<usize> = vec![0; inner_shape.len()];
-                let mut rem2 = inner_flat;
-                for k in 0..inner_shape.len() {
-                    inner_idx[k] = rem2 / inner_strides[k];
-                    rem2 %= inner_strides[k];
-                }
-
-                // Compute result flat index
-                let mut rf = result_base;
-                // First outer_rank dims of inner → outer_rank dims of result
-                for k in 0..outer_rank.min(inner_shape.len()) {
-                    rf += inner_idx[k] * result_strides[k];
-                }
-                // Trailing inner dims → trailing result dims
-                for k in outer_rank..inner_shape.len() {
-                    if k < result_strides.len() {
-                        rf += inner_idx[k] * result_strides[k];
-                    }
-                }
-
-                if rf < result.len() {
-                    result[rf] = v;
-                }
-            }
-        }
-
-        return Ok(PrimResult::Array(array::typed_arr_from_b_vec(result, result_shape, fill_val)));
+        return join_blocks(arr);
     }
 
     let outer_len = arr.ia();
@@ -2314,15 +2139,94 @@ pub fn shiftb_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
     Ok(PrimResult::Array(typed_arr(result, arr.shape.clone(), arr.fill)))
 }
 
+/// ∾𝕩 for rank≥2 nonempty 𝕩 (block join), following Join in
+/// spec/reference.bqn: along each axis, each position either has the axis or
+/// omits it (length 1), and atoms are units.
+fn join_blocks(arr: &BqnArr) -> Result<PrimResult> {
+    let r = arr.rank() as usize;
+    let osh = arr.shape.clone();
+    let ostr = strides_from_shape(&osh);
+    let n = arr.ia();
+    let mut elems: Vec<B> = Vec::with_capacity(n);
+    let mut shapes: Vec<Vec<usize>> = Vec::with_capacity(n);
+    for i in 0..n {
+        let e = arr.get(i)?;
+        shapes.push(get_arr(e).map_or_else(Vec::new, |a| a.shape.clone()));
+        elems.push(e);
+    }
+    let bad_step = || BqnError::Rank("∾𝕩: Item ranks along an axis can differ by at most one".into());
+    let bad_rank = || BqnError::Rank("∾𝕩: Ranks of argument items too small".into());
+    let bad_shape = || BqnError::Shape("∾𝕩: Incompatible item shapes".into());
+    // has[k][p]: position p along axis k has the axis (skeleton: index 0 elsewhere).
+    let mut has: Vec<Vec<bool>> = Vec::with_capacity(r);
+    for k in 0..r {
+        let ranks: Vec<usize> = (0..osh[k]).map(|p| shapes[p * ostr[k]].len()).collect();
+        let mx = ranks.iter().copied().max().unwrap_or(0);
+        if ranks.iter().any(|&q| q + 1 < mx) { return Err(bad_step()); }
+        has.push(ranks.iter().map(|&q| q == mx).collect());
+    }
+    // Axis k sits at position off[k] in the first item; the rest are trailing.
+    let mut off = vec![0usize; r + 1];
+    for k in 0..r { off[k + 1] = off[k] + has[k][0] as usize; }
+    if shapes[0].len() < off[r] { return Err(bad_rank()); }
+    let trail: Vec<usize> = shapes[0][off[r]..].to_vec();
+    let mut len: Vec<Vec<usize>> = Vec::with_capacity(r);
+    for k in 0..r {
+        len.push((0..osh[k]).map(|p| {
+            if has[k][p] { shapes[p * ostr[k]].get(off[k]).copied().unwrap_or(0) } else { 1 }
+        }).collect());
+    }
+    // Every item's shape must be its has-axes' lengths followed by the trailing shape.
+    for (i, sh) in shapes.iter().enumerate() {
+        let mut want = Vec::with_capacity(r + trail.len());
+        for k in 0..r {
+            let p = (i / ostr[k]) % osh[k];
+            if has[k][p] { want.push(len[k][p]); }
+        }
+        want.extend_from_slice(&trail);
+        if *sh != want { return Err(bad_shape()); }
+    }
+    let starts: Vec<Vec<usize>> = len.iter().map(|l| {
+        let mut st = vec![0usize; l.len()];
+        for p in 1..l.len() { st[p] = st[p - 1] + l[p - 1]; }
+        st
+    }).collect();
+    let mut rsh: Vec<usize> = len.iter().map(|l| l.iter().sum()).collect();
+    rsh.extend_from_slice(&trail);
+    let rstr = strides_from_shape(&rsh);
+    let tn: usize = trail.iter().product();
+    let mut out = vec![B::SENTINEL; rsh.iter().product()];
+    let mut fill = arr.fill;
+    for (i, e) in elems.iter().enumerate() {
+        let ea = get_arr(*e);
+        if let Some(a) = &ea { fill = fill.or(a.fill); }
+        // Block for item i: per-axis lengths (1 where omitted), then trailing.
+        let pos: Vec<usize> = (0..r).map(|k| (i / ostr[k]) % osh[k]).collect();
+        let bl: Vec<usize> = (0..r).map(|k| len[k][pos[k]]).collect();
+        let bn: usize = bl.iter().product();
+        let bstr = strides_from_shape(&bl);
+        for b in 0..bn {
+            let mut base = 0;
+            for k in 0..r { base += (starts[k][pos[k]] + (b / bstr[k]) % bl[k]) * rstr[k]; }
+            for t in 0..tn {
+                let v = match &ea { Some(a) => a.get(b * tn + t)?, None => *e };
+                // Trailing axes are contiguous at the end of the result.
+                out[base + t] = v;
+            }
+        }
+    }
+    Ok(PrimResult::Array(array::typed_arr_from_b_vec(out, rsh, fill)))
+}
+
 // ⌽ monad: reverse (along first axis)
 pub fn reverse_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     // NOTE: ⌽ on atoms (chars, numbers) errors; on rank-0 arrays errors.
     if x.is_atom() {
-        return Err(BqnError::Type("⌽𝕩: 𝕩 must be an array of rank 1 or higher".into()));
+        return Err(BqnError::Type("⌽𝕩: 𝕩 cannot be a unit".into()));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⌽𝕩: 𝕩 must be an array".into()))?;
     if arr.rank() == 0 {
-        return Err(BqnError::Rank("⌽𝕩: 𝕩 must have rank 1 or higher".into()));
+        return Err(BqnError::Rank("⌽𝕩: 𝕩 cannot be a unit".into()));
     }
 
     if arr.rank() == 1 {

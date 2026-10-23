@@ -2097,6 +2097,8 @@ fn sys_fn_name(sys_idx: u32) -> &'static str {
         168 => "•term.ErrRaw",
         170 => "•HashMap",
         200 => "•_nativeRepr_",
+        // NOTE: •ReBQN evaluators display as "(REPL)", matching CBQN.
+        i if i >= REBQN_BASE => "(REPL)",
         _   => "(system function)",
     }
 }

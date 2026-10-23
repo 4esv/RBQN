@@ -124,6 +124,11 @@ fn build_all_var_gids(
     gids
 }
 
+/// `ns_result` for a REPL line: like 1 (top-level `⇐` returns the value), and
+/// top-level reads stay VARO, since the REPL scope outlives the line and a
+/// last-use VARU would clear a variable later lines still read.
+pub const NS_RESULT_REPL: i32 = 2;
+
 #[allow(clippy::too_many_arguments)]
 pub fn compile_all(
     bc_arr: &[i32],
@@ -464,6 +469,10 @@ fn compile_block(
                                     };
                                 }
                             }
+
+                        if ns_result == NS_RESULT_REPL && depth == 0 && ins == Op::VARU as u32 {
+                            ins = Op::VARO as u32;
+                        }
 
                         if remap_args && cpos < arg_am && cdepth == 0 {
                             cpos += vam as i32;
