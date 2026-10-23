@@ -119,13 +119,6 @@ pub fn native_md1_c1(prim_idx: usize, operand: B, _self_val: B, x: B) -> B {
     }
 }
 
-fn is_join_prim(f: B) -> bool {
-    f.is_fun() && matches!(
-        crate::derive::get_derived((f.0 & 0xFFFFFFFFFFFF) >> 3).kind,
-        crate::derive::DerivedKind::NativeFn { prim_idx: 23 }
-    )
-}
-
 /// Atom or rank-0 array → one-element list of its element; other arrays unchanged.
 fn unit_list(w: B) -> B {
     let elem = if w.is_arr() {
@@ -309,47 +302,6 @@ fn merge_cells_result(results: Vec<B>, lead_shape: Vec<usize>) -> B {
 fn arr_of(x: B) -> std::sync::Arc<BqnArr> {
     crate::vm::get_arr(x)
         .unwrap_or_else(|| rbqn_core::error::throw("Expected array argument"))
-}
-
-/// Normalize a scan cell result to match the expected cell_shape.
-/// BQN scan always produces an array with the same shape as the input.
-/// When F returns a scalar for a cell operation, replicate it cell_size times.
-/// When F returns an array matching cell_shape, leave it as-is.
-/// Otherwise leave as-is (will be boxed by merge_cells_result).
-fn normalize_cell_result(result: B, cell_shape: &[usize], cell_size: usize) -> B {
-    if cell_size <= 1 {
-        return result;
-    }
-    // If result matches expected cell shape, nothing to do
-    if result.is_arr() {
-        let rarr = crate::vm::get_arr(result);
-        if let Some(a) = rarr
-            && a.shape == cell_shape {
-                return result;
-            }
-        return result;
-    }
-    // Result is a scalar — replicate it to fill cell_shape
-    if result.is_f64() || result.is_c32() || result.is_atom() {
-        let vals: Vec<B> = std::iter::repeat_n(result, cell_size).collect();
-        if result.is_f64() {
-            let fvals: Vec<f64> = vals.iter().map(|b| b.o2f()).collect();
-            let mut out = rbqn_core::array::BqnArr::new_vec_f64(fvals);
-            out.shape = cell_shape.to_vec();
-            return crate::vm::tag_arr(rbqn_core::array::squeeze_num(out));
-        }
-        if result.is_c32() {
-            let cvals: Vec<u32> = vals.iter().map(|b| b.0 as u32).collect();
-            let mut out = rbqn_core::array::BqnArr::new_vec_c32(cvals);
-            out.shape = cell_shape.to_vec();
-            return crate::vm::tag_arr(out);
-        }
-        // Generic boxed scalar
-        let mut out = BqnArr::new_vec_b(vals);
-        out.shape = cell_shape.to_vec();
-        return crate::vm::tag_arr(out);
-    }
-    result
 }
 
 fn get_elem(arr: &BqnArr, i: usize) -> B {
