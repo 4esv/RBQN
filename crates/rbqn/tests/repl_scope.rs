@@ -38,3 +38,10 @@ fn namespace_destructuring_alias_over_earlier_lines() {
     assert!(out.trim_end().ends_with("7"), "{out}");
     assert!(!out.contains("Error"), "{out}");
 }
+
+#[test]
+fn variable_read_on_defining_line_survives_to_next_line() {
+    let out = repl("F←+ ⋄ ≡f\n≡ ⟨'c',f,2⟩\n");
+    assert!(out.trim_end().ends_with("0\n1"), "{out}");
+    assert!(!out.contains("Error"), "{out}");
+}

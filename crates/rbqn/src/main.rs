@@ -328,7 +328,20 @@ fn exec_repl_line_inner(
 
     let bc_arr = get_arr(bc_b)
         .ok_or_else(|| BqnError::Domain("compiler bc is not an array".into()))?;
-    let bc: Vec<i32> = bc_arr.i32_iter().map_err(|e| BqnError::Domain(e.to_string()))?;
+    let mut bc: Vec<i32> = bc_arr.i32_iter().map_err(|e| BqnError::Domain(e.to_string()))?;
+    // The compiler marks a variable's last read VARU (read, then unset). Session
+    // variables outlive the line, so read them plainly (#87).
+    {
+        use rbqn_vm::bytecode::{bc_len, Op};
+        let mut pc = 0;
+        while pc < bc.len() {
+            let Some(op) = Op::from_u32(bc[pc] as u32) else { break };
+            if op == Op::VARU {
+                bc[pc] = Op::VARO as i32;
+            }
+            pc += bc_len(op) as usize;
+        }
+    }
 
     let objs: Vec<B> = if let Some(objs_arr) = get_arr(objs_b) {
         (0..objs_arr.ia()).map(|i| objs_arr.get(i).unwrap_or(B::SENTINEL)).collect()
