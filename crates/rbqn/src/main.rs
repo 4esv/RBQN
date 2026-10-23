@@ -203,14 +203,15 @@ pub(crate) fn print_error(e: &BqnError, default_name: &str) {
 /// REPL state: accumulated variable names and values across REPL lines.
 pub(crate) struct ReplState {
     pub var_names: Vec<String>,
-    pub var_values: Vec<B>,
+    /// One scope shared by every line and the closures they create.
+    pub scope: Option<std::rc::Rc<Scope>>,
 }
 
 impl ReplState {
     pub fn new() -> Self {
         ReplState {
             var_names: Vec::new(),
-            var_values: Vec::new(),
+            scope: None,
         }
     }
 }
@@ -371,34 +372,25 @@ fn exec_repl_line_inner(
     let body = block.bodies[0].clone();
     let var_am = body.var_am;
 
-    // Pre-populate scope with accumulated variable values.
-    // Positions 0..prev_var_count-1 get old values (compiler preserves positions
-    // for names it received in varNames). New variables get NO_VAR.
-    let mut init_vars = Vec::with_capacity(var_am as usize);
-    for i in 0..var_am as usize {
-        if i < state.var_values.len() {
-            init_vars.push(state.var_values[i]);
-        } else {
-            init_vars.push(B::NO_VAR);
+    // One persistent scope: grow it in place so closures from earlier lines
+    // see later assignments. Slots for this line's new names start unset
+    // (a prior failed line may have written there).
+    let exec_scope = match &state.scope {
+        Some(sc) => sc.clone(),
+        None => {
+            let sc = std::rc::Rc::new(Scope::new(body.clone(), None, 0, &[]));
+            state.scope = Some(sc.clone());
+            sc
         }
-    }
-
-    // Execute directly with eval_bc so we retain scope access afterwards.
-    // The root block is ty=0, imm=true. exec_block would create a child scope
-    // and we'd lose the variable values. Instead we call eval_bc with our scope.
-    let exec_scope = std::rc::Rc::new(Scope::new(body.clone(), None, var_am, &init_vars));
-    let result = rbqn_vm::vm::eval_bc(&body, exec_scope.clone(), &block);
-
-    // Read back variable values from exec_scope
-    let mut new_values = Vec::with_capacity(var_am as usize);
+    };
     {
-        let vars = exec_scope.vars.borrow_mut();
-        for i in 0..var_am as usize {
-            if i < vars.len() {
-                new_values.push(vars[i]);
-            }
+        let mut vars = exec_scope.vars.borrow_mut();
+        vars.grow(var_am as usize);
+        for i in prev_var_count..var_am as usize {
+            vars[i] = B::NO_VAR;
         }
     }
+    let result = rbqn_vm::vm::eval_bc(&body, exec_scope.clone(), &block);
 
     // Build updated variable names list.
     // Positions 0..prev_var_count-1 keep their names.
@@ -420,7 +412,6 @@ fn exec_repl_line_inner(
     }
 
     state.var_names = new_names;
-    state.var_values = new_values;
 
     Ok(result)
 }
