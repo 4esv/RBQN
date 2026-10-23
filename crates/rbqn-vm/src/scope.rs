@@ -205,7 +205,9 @@ impl Scope {
 }
 
 pub fn v_check_bad_read(x: B) -> bool {
-    (x.0 >> 47) == (((rbqn_core::TAG_TAG as u64) << 1) | 1)
+    // NOTE: the old bit-47 mask never matched NO_VAR/OPT_OUT (both 0x7FF2…0n), so reads of
+    // not-yet-defined variables from nested blocks returned the sentinel silently.
+    x.0 == B::NO_VAR.0 || x.0 == B::OPT_OUT.0
 }
 
 pub fn v_check_bad_write(x: B) -> bool {

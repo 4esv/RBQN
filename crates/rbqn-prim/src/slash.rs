@@ -114,6 +114,12 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
     // NOTE: BQN allows atom 𝕩: treat scalar as rank-1 length-1 array ⟨𝕩⟩.
     // This handles cases like `⟨⟩⊸/ 'a'` and `<⊸/3‿2‿1`.
     if x.is_atom() {
+        let simple = w.is_f64() || wa.is_some_and(|a| {
+            a.el_type() != ElType::B || (a.rank() == 0 && a.get(0).is_ok_and(|v| v.is_f64()))
+        });
+        if simple {
+            return Err(BqnError::Rank("𝕨/𝕩: 𝕩 must have rank at least 1 for simple 𝕨".into()));
+        }
         // Determine count: 𝕨 for a length-1 target must be length 1 or scalar
         let count = if w.is_f64() {
             w.to_i32()?

@@ -145,6 +145,9 @@ fn typed_fill(arr: &BqnArr) -> Option<B> {
 // 𝕨 must not be rank-0 (enclosed) or rank>1 non-boxed.
 pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊏𝕩: 𝕩 must be an array".into()))?;
+    if arr.rank() == 0 {
+        return Err(BqnError::Rank("𝕨⊏𝕩: 𝕩 cannot be a unit".into()));
+    }
     // NOTE: BQN ⊏ selects along the first axis
     let first_dim = if arr.shape.is_empty() { arr.ia() } else { arr.shape[0] };
     let cell_shape: &[usize] = if arr.shape.len() > 1 { &arr.shape[1..] } else { &[] };
@@ -478,8 +481,8 @@ pub fn first_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if w.is_f64() {
         // Scalar pick: x must be rank-1
-        if x.is_atom() { return Ok(PrimResult::Scalar(x)); }
-        let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
+        let arr = xa.ok_or_else(|| BqnError::Rank(
+            "𝕨⊑𝕩: 𝕩 must be a list when 𝕨 is a number (⟨⟩ ≡ ≢𝕩)".into()))?;
         if arr.rank() != 1 {
             return Err(BqnError::Rank(format!(
                 "𝕨⊑𝕩: 𝕩 must be a list when 𝕨 is a number ({:?} ≡ ≢𝕩)", arr.shape
@@ -538,8 +541,13 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
 
     // rank-1+ NUMERIC: multi-axis index (single pick)
     if warr.el_type() != ElType::B {
-        let arr = xa.ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
         let indices = warr.i32_iter()?;
+        let Some(arr) = xa else {
+            if warr.rank() == 1 && indices.is_empty() { return Ok(PrimResult::Scalar(x)); }
+            return Err(BqnError::Rank(format!(
+                "𝕨⊑𝕩: Picking item at wrong rank (index {:?} in array of shape ⟨⟩)", indices
+            )));
+        };
         if warr.rank() == 1 {
             if indices.len() != arr.rank() as usize {
                 return Err(BqnError::Rank(format!(
@@ -627,8 +635,8 @@ fn pick_elem(idx: B, x: B) -> Result<B> {
     if idx.is_f64() {
         // Scalar: pick from rank-1 (or first axis of higher-rank)
         if x.is_atom() {
-            // Any index into an atom = the atom itself (BQN: index into enclosed scalar)
-            return Ok(x);
+            return Err(BqnError::Rank(
+                "𝕨⊑𝕩: 𝕩 must be a list when 𝕨 is a number (⟨⟩ ≡ ≢𝕩)".into()));
         }
         let arr = get_arr(x)
             .ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
@@ -703,7 +711,13 @@ fn pick_elem(idx: B, x: B) -> Result<B> {
         }
 
         // Numeric array: multi-axis index
-        if x.is_atom() { return Ok(x); }
+        if x.is_atom() {
+            if idx_arr.ia() == 0 { return Ok(x); }
+            return Err(BqnError::Rank(format!(
+                "𝕨⊑𝕩: Picking item at wrong rank (index {:?} in array of shape ⟨⟩)",
+                idx_arr.i32_iter()?
+            )));
+        }
         let arr = get_arr(x).ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be array".into()))?;
         let indices = idx_arr.i32_iter()?;
         if indices.len() != arr.rank() as usize {
