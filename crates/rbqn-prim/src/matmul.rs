@@ -266,6 +266,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "rayon's crossbeam-epoch trips Stacked Borrows (dependency, not this crate)")]
     fn parallel_matches_naive() {
         par::init(4);
         let mut s = 3u64;
