@@ -1,4 +1,20 @@
-# Grid cells where RBQN and CBQN differ on purpose. Format: <expression> | <reason>
-# Any other mismatch from grid.py fails the parity job.
-@ - 0‿1‿1 | #89: CBQN contradicts itself on character minus over a mixed-shape list; RBQN follows the spec
-@ ¬ 1 | #89: CBQN accepts a character as 𝕨 of ¬ (𝕨 is a number in the spec); RBQN follows the spec
+# Differences between RBQN and CBQN that the parity job tolerates. Format: <key> | <reason>
+# The key is the text after "--- " in docs_diff.py / grid.py output. Any other difference fails the job.
+@ - 0‿1‿1 | #89: CBQN returns a string with negative code points while its own @-1 errors; RBQN errors
+@ ¬ 1 | #89: CBQN's scalar path errors on the intermediate @-1; RBQN returns @
+fill.md: 3↑⟨⟩  # Fill unknown | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+@ ¬ 0‿1‿1 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+1 ↑ ⟨⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+¯2 ↑ ⟨⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+1‿2‿3 ↑ ⟨⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+1‿2‿3 ↑ ⟨1,"a",⟨2⟩⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+<5 ↑ ⟨⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+<5 ↑ ⟨1,"a",⟨2⟩⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+« ⟨1,"a",⟨2⟩⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+» ⟨1,"a",⟨2⟩⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾˘ 1‿0⥊0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾∘⌽ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾○⌽ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾⊸⌽ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾⌾⌽ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
