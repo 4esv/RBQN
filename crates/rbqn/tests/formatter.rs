@@ -187,3 +187,20 @@ fn namespace_formats_as_exported_names() {
     assert_output("{a ⇐ 5}", "{a⇐}");
     assert_output("{a ⇐ 5}.a", "5");
 }
+
+// System function values print their CBQN names (#134).
+#[test]
+fn system_function_display_names() {
+    for (expr, expected) in [
+        ("•math.Sin", "•math.Sin"),
+        ("•Type •math.Sin", "•Type•math.Sin"),
+        ("•file.Lines", "(file).Lines"),
+        ("•FLines", "(file).Lines"),
+        ("•MakeRand", "•MakeRand"),
+        ("•rand.Range", "(rand).Range"),
+        ("•ReBQN {repl⇐\"loose\"}", "(REPL)"),
+        ("•Show", "•Show"),
+    ] {
+        assert_output(expr, expected);
+    }
+}
