@@ -160,6 +160,8 @@ jobs:
           MIRIFLAGS: -Zmiri-ignore-leaks
         run: cargo miri test -p rbqn-vm
 
+  # NOTE: The spec is the target and CBQN is the floor. This job is a regression floor so rbqn never falls
+  # below CBQN; deliberate divergences beyond CBQN are recorded, with a spec citation, in bench/stranger/known_divergences.txt.
   parity:
     runs-on: ubuntu-latest
     timeout-minutes: 40
