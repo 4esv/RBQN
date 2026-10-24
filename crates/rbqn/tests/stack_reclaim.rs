@@ -42,6 +42,33 @@ fn stack_temporaries_are_reclaimed_and_survivors_stay_readable() {
     grown_mod(10);
     let (small, big) = (grown_mod(1000), grown_mod(5000));
     assert!(big - small < 400, "4000 more modifier calls grew live arrays by {}", big - small);
+    // Scope slots own their arrays (#161): a local variable and a block argument are
+    // freed when the block returns, if nothing captured the scope.
+    let grown_local = |n: usize| {
+        let before = live_arrays();
+        assert_eq!(fmt(&b, &format!("{{𝕊: a ← 1↑ +⌜˜ ↕100 ⋄ b ← a ⋄ ⊑ b}}¨ ↕{n} ⋄ 0")), "0");
+        live_arrays() - before
+    };
+    grown_local(10);
+    let (small, big) = (grown_local(1000), grown_local(5000));
+    assert!(big - small < 400, "4000 more locals grew live arrays by {}", big - small);
+    // The result list holds one array per call; the argument `{𝕩+1}` receives is freed.
+    let grown_arg = |n: usize| {
+        let before = live_arrays();
+        assert_eq!(fmt(&b, &format!("{{𝕊: {{𝕩+1}} 1↑ +⌜˜ ↕100}}¨ ↕{n} ⋄ 0")), "0");
+        live_arrays() - before
+    };
+    grown_arg(10);
+    let (small, big) = (grown_arg(1000), grown_arg(5000));
+    assert!(big - small < 4400, "4000 more argument calls grew live arrays by {}", big - small);
+    // A scope that a closure or namespace captured keeps its slots (leaked, still readable).
+    assert_eq!(fmt(&b, "G ← {𝕩 ⋄ a ← ↕3 ⋄ {𝕩 ⋄ a}} ⋄ ({𝕏 0} G 0) ≡ {𝕏 1} G 0"), "1");
+    assert_eq!(fmt(&b, "n ← {x ⇐ 1↓↕4 ⋄ y ⇐ x}  ⋄ n.x ≡ n.y"), "1");
+    assert_eq!(fmt(&b, "o ← 0 ⋄ {𝕩 ⋄ a ← ↕3 ⋄ {𝕩 ⋄ o ↩ a}0 ⋄ 0}0 ⋄ o"), "⟨ 0 1 2 ⟩");
+    assert_eq!(fmt(&b, "{𝕩 ⋄ a ← ↕3 ⋄ a}0"), "⟨ 0 1 2 ⟩");
+    assert_eq!(fmt(&b, "{a ← 𝕩 ⋄ a} ↕3"), "⟨ 0 1 2 ⟩");
+    assert_eq!(fmt(&b, "{𝕩 ⋄ a ← ↕3 ⋄ ⟨a, a⟩}0"), "⟨ ⟨ 0 1 2 ⟩ ⟨ 0 1 2 ⟩ ⟩");
+    assert_eq!(fmt(&b, "v ← {𝕩 ⋄ a ← ↕3 ⋄ a ⋈ a}0 ⋄ v"), "⟨ ⟨ 0 1 2 ⟩ ⟨ 0 1 2 ⟩ ⟩");
     // A returned array is the only reference: reading it after the call stays valid,
     // also when it came through a variable, an argument or a closure.
     assert_eq!(fmt(&b, "{𝕩 ⋄ ↕3} 0"), "⟨ 0 1 2 ⟩");
