@@ -1,0 +1,4 @@
+# Grid cells where RBQN and CBQN differ on purpose. Format: <expression> | <reason>
+# Any other mismatch from grid.py fails the parity job.
+@ - 0‿1‿1 | #89: CBQN contradicts itself on character minus over a mixed-shape list; RBQN follows the spec
+@ ¬ 1 | #89: CBQN accepts a character as 𝕨 of ¬ (𝕨 is a number in the spec); RBQN follows the spec
