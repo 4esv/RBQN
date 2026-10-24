@@ -77,14 +77,14 @@ print()
 print("Explicit row: exactly one `[gpu] upload` line; the sum is read back as one scalar (readbacks=1 in the summary), so there is no `[gpu] download` line. The f32 sum is not guaranteed equal to the exact one.")
 
 # GPU rows where the device can win (#146): sort, matmul, row sums, each at three sizes.
-# CBQN has no •math.MatMul, so its matmul cell is the BQN expression `w +˝∘× ⎉1‿∞ x`; its •rand stream
+# CBQN has no •math.MatMul, so its matmul cell is the BQN expression `w +˝∘× ⎉1‿∞ x` (rbqn runs the same kernel for both spellings, #166); its •rand stream
 # differs from rbqn's, so only the three rbqn columns are compared for agreement.
 print()
-print("| workload | CBQN | rbqn CPU (`RBQN_GPU=off`) | rbqn GPU (`RBQN_GPU=force`) | rbqn default | default ran on | model gpu / cpu ms | rbqn modes agree |")
-print("|---|---|---|---|---|---|---|---|")
+print("| workload | CBQN | rbqn CPU `-t 1` (`RBQN_GPU=off`) | rbqn CPU (`RBQN_GPU=off`) | rbqn GPU (`RBQN_GPU=force`) | rbqn default | default ran on | model gpu / cpu ms | rbqn modes agree |")
+print("|---|---|---|---|---|---|---|---|---|")
 grows = [("sort `∧` 1e6 i32", "sort", "1e6", 3), ("sort `∧` 1e7 i32", "sort", "1e7", 3), ("sort `∧` 1e8 i32", "sort", "1e8", 3),
          ("`•math.MatMul` 1000² (entries below 10)", "matmul", "1000", 3), ("`•math.MatMul` 2000²", "matmul", "2000", 3),
-         ("`•math.MatMul` 4096²", "matmul", "4096", 1),
+         ("`•math.MatMul` 4096²", "matmul", "4096", 3),
          ("`+´˘` 1e3×1e3 i32", "rows", "1000", 3), ("`+´˘` 3e3×3e3 i32", "rows", "3000", 3), ("`+´˘` 1e4×1e4 i32", "rows", "1e4", 3)]
 def gmed(cmd, w, arg, env, reps):
     ts, walls, val = [], [], None
@@ -110,10 +110,11 @@ def gdebug(w, arg):
     return ("GPU" if disp > 0 else "CPU"), model
 for label, w, arg, off_reps in grows:
     cells, vals = [], []
-    for name, cmd, env, reps in [("cb", [cb], {}, 3), ("off", [rb], {"RBQN_GPU": "off"}, off_reps),
+    for name, cmd, env, reps in [("cb", [cb], {}, 3), ("t1", [rb, "-t", "1"], {"RBQN_GPU": "off"}, off_reps),
+                                 ("off", [rb], {"RBQN_GPU": "off"}, off_reps),
                                  ("force", [rb], {"RBQN_GPU": "force"}, 3), ("def", [rb], {}, 3)]:
         t, o = gmed(cmd, w, arg, env, reps)
-        cells.append(f"{t:.3f} s" + (" (1 run)" if name == "off" and off_reps == 1 else "") if t is not None else f"error: {o}")
+        cells.append(f"{t:.3f} s" + (" (1 run)" if name in ("off", "t1") and off_reps == 1 else "") if t is not None else f"error: {o}")
         if name != "cb": vals.append(o)
     ran, model = gdebug(w, arg)
     print(f"| {label} | " + " | ".join(cells) + f" | {ran} | {model} | {'yes' if len(set(vals)) == 1 else 'NO'} |")

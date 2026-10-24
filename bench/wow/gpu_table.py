@@ -14,8 +14,8 @@ for l in res[start:]:
         break
     rows.append([c.strip() for c in l.strip("|").split("|")])
 assert all(r[-1] in ("yes", "rbqn modes agree", "---") for r in rows), "a row does not agree"
-out = ["| " + " | ".join(r[:6]) + " |" for r in rows]
-out[1] = "|---|---|---|---|---|---|"
+out = ["| " + " | ".join(r[:7]) + " |" for r in rows]
+out[1] = "|---|---|---|---|---|---|---|"
 text = open("README.md", encoding="utf-8").read()
 text = re.sub(r"(<!-- gpu-table -->\n).*?(\n<!-- /gpu-table -->)", lambda m: m.group(1) + "\n".join(out) + m.group(2), text, flags=re.S)
 open("README.md", "w", encoding="utf-8").write(text)
