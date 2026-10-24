@@ -419,6 +419,21 @@ fn test_hashmap_matches_cbqn() {
     }
 }
 
+// -- •ns --
+
+#[test]
+fn sys_ns_get_has_keys_order() {
+    for (expr, want) in [
+        (r#"{a⇐1} •ns.Get "a""#, "1"),
+        (r#"{a⇐1} •ns.Has "a""#, "1"),
+        (r#"{a⇐1} •ns.Has "b""#, "0"),
+        ("•ns.Keys {a⇐1,b⇐2}", r#"⟨ "a" "b" ⟩"#),
+    ] {
+        let (out, err, code) = run_print(expr);
+        assert_eq!((out.as_str(), code), (want, 0), "{expr}: {err}");
+    }
+}
+
 #[test]
 fn test_hashmap_scale() {
     // 1e5 inserts, lookups and 5e4 deletes by array key must stay linear.
@@ -429,4 +444,17 @@ fn test_hashmap_scale() {
     let dt = t.elapsed();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "⟨ 4999950000 50000 0 1 ⟩");
     assert!(dt.as_secs_f64() < 1.0, "1e5 hashmap ops took {dt:?}");
+}
+
+#[test]
+fn sys_ns_errors_match_cbqn() {
+    for (expr, want) in [
+        ("•ns.Get {a⇐1}", "This function can't be called monadically"),
+        ("•ns.Has {a⇐1}", "This function can't be called monadically"),
+        (r#"{a⇐1} •ns.Get "b""#, r#"Field named "b" not found"#),
+    ] {
+        let (out, err, code) = run_print(expr);
+        assert_ne!(code, 0, "{expr}");
+        assert!(format!("{out}{err}").contains(want), "{expr}: {out}{err}");
+    }
 }
