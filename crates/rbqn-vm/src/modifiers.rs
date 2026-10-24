@@ -246,7 +246,7 @@ pub fn native_md2_c2(prim_idx: usize, f: B, g: B, _self_val: B, w: B, x: B) -> B
         MD2_UNDER => under_c2(f, g, w, x),
         MD2_VAL => c2(g, w, x),
         MD2_COND => choose_c2(f, g, w, x),
-        MD2_RANK => rank_c2(f, g, w, x),
+        MD2_RANK => crate::derive::matmul_idiom(f, g, w, x).unwrap_or_else(|| rank_c2(f, g, w, x)),
         MD2_DEPTH => depth_c2(f, g, w, x),
         MD2_REPEAT => repeat_c2(f, g, w, x),
         MD2_CATCH => catch_c2(f, g, w, x),

@@ -4039,24 +4039,6 @@ fn f64_arr(shape: Vec<usize>, vals: Vec<f64>) -> B {
     })
 }
 
-/// Validated MatMul arguments: (w values, x values, m, k, n). `name` prefixes errors.
-fn matmul_args(w: B, x: B, name: &str) -> (Vec<f64>, Vec<f64>, usize, usize, usize) {
-    let wa = crate::vm::get_arr(w).unwrap_or_else(|| rbqn_core::error::throw(format!("{name}: left argument must be a rank-2 array")));
-    let xa = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw(format!("{name}: right argument must be a rank-2 array")));
-    if wa.rank() != 2 { rbqn_core::error::throw(format!("{name}: left argument must be rank-2")); }
-    if xa.rank() != 2 { rbqn_core::error::throw(format!("{name}: right argument must be rank-2")); }
-    let m = wa.shape[0];
-    let k = wa.shape[1];
-    let kx = xa.shape[0];
-    let n = xa.shape[1];
-    if k != kx {
-        rbqn_core::error::throw(format!("{name}: inner dimensions must match: {}≠{}", k, kx));
-    }
-    let w_vals = num_arr_f64(&wa, &format!("{name}: left argument"));
-    let x_vals = num_arr_f64(&xa, &format!("{name}: right argument"));
-    (w_vals, x_vals, m, k, n)
-}
-
 /// CPU fallback softmax: numerically stable via max subtraction.
 fn math_softmax_cpu(x: B) -> B {
     let arr = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw("•math.Softmax: argument must be a numeric array"));
@@ -4073,21 +4055,79 @@ fn math_softmax_cpu(x: B) -> B {
     f64_arr(vec![n], probs)
 }
 
-/// CPU fallback matmul: naive triple-loop for rank-2 arrays.
-fn math_matmul_cpu(w: B, x: B) -> B {
-    let (w_vals, x_vals, m, k, n) = matmul_args(w, x, "•math.MatMul");
-    // Naive triple-loop matmul
-    let mut result = vec![0.0f64; m * n];
-    for i in 0..m {
-        for j in 0..n {
-            let mut acc = 0.0f64;
-            for l in 0..k {
-                acc += w_vals[i * k + l] * x_vals[l * n + j];
-            }
-            result[i * n + j] = acc;
+/// A numeric array as a matmul operand: typed slices are packed without an f64 copy
+/// (bit arrays are the one case that widens first, into `tmp`).
+fn mat_operand<'a>(arr: &'a rbqn_core::array::BqnArr, tmp: &'a mut Vec<f64>, what: &str) -> rbqn_prim::matmul::Mat<'a> {
+    use rbqn_core::array::ArrData;
+    use rbqn_prim::matmul::Mat;
+    match &arr.data {
+        ArrData::F64(v) => Mat::F64(v),
+        ArrData::I32(v) => Mat::I32(v),
+        ArrData::I16(v) => Mat::I16(v),
+        ArrData::I8(v) => Mat::I8(v),
+        _ => {
+            *tmp = num_arr_f64(arr, what);
+            Mat::F64(tmp)
         }
     }
-    f64_arr(vec![m, n], result)
+}
+
+/// CPU matmul for rank-2 arrays: the blocked parallel kernel (issue #166).
+/// Also the target of the `+˝∘×⎉1‿∞` idiom.
+pub fn math_matmul_cpu(w: B, x: B) -> B {
+    matmul_checked(w, x, "•math.MatMul", false)
+}
+
+fn matmul_checked(w: B, x: B, name: &str, seed_first: bool) -> B {
+    let wa = crate::vm::get_arr(w).unwrap_or_else(|| rbqn_core::error::throw(format!("{name}: left argument must be a rank-2 array")));
+    let xa = crate::vm::get_arr(x).unwrap_or_else(|| rbqn_core::error::throw(format!("{name}: right argument must be a rank-2 array")));
+    if wa.rank() != 2 { rbqn_core::error::throw(format!("{name}: left argument must be rank-2")); }
+    if xa.rank() != 2 { rbqn_core::error::throw(format!("{name}: right argument must be rank-2")); }
+    let (m, k, kx, n) = (wa.shape[0], wa.shape[1], xa.shape[0], xa.shape[1]);
+    if k != kx {
+        rbqn_core::error::throw(format!("{name}: inner dimensions must match: {}≠{}", k, kx));
+    }
+    let (mut t1, mut t2) = (Vec::new(), Vec::new());
+    let wm = mat_operand(&wa, &mut t1, &format!("{name}: left argument"));
+    let xm = mat_operand(&xa, &mut t2, &format!("{name}: right argument"));
+    f64_arr(vec![m, n], rbqn_prim::matmul::matmul(wm, xm, m, k, n, seed_first))
+}
+
+/// `w +˝∘×⎉1‿∞ x` for non-empty rank-2 numeric `w` and `x` with matching inner length:
+/// the same blocked parallel kernel as `•math.MatMul` (issue #166). `f` and `g` are the
+/// operands of `⎉` (`+˝∘×` and `1‿∞`); None when the pattern or the arguments do not fit, and
+/// the generic rank path runs. The sum starts from the first product like `+˝`, and the
+/// result is squeezed like the generic path's arithmetic result.
+pub fn matmul_idiom(f: B, g: B, w: B, x: B) -> Option<B> {
+    use rbqn_core::array::ArrData;
+    // g = 1‿∞
+    if !g.is_arr() { return None; }
+    let ga = crate::vm::get_arr(g)?;
+    let spec = match &ga.data { ArrData::F64(v) => v.clone(), ArrData::I32(v) => v.iter().map(|&e| e as f64).collect(), ArrData::I16(v) => v.iter().map(|&e| e as f64).collect(), ArrData::I8(v) => v.iter().map(|&e| e as f64).collect(), _ => return None };
+    if spec.as_slice() != [1.0, f64::INFINITY] { return None; }
+    // f = (+˝)∘×
+    let md2d = |v: B| -> Option<std::rc::Rc<Derived>> {
+        if !v.is_fun() { return None; }
+        let d = get_derived((v.0 & 0xFFFFFFFFFFFF) >> 3);
+        (d.kind == DerivedKind::Md2D).then_some(d)
+    };
+    let atop = md2d(f)?;
+    if native_md_idx(atop.g) != Some(53) || native_prim_idx(atop.h) != Some(2) { return None; }
+    if !atop.f.is_fun() { return None; }
+    let fold = get_derived((atop.f.0 & 0xFFFFFFFFFFFF) >> 3);
+    if fold.kind != DerivedKind::Md1D || native_md_idx(fold.g) != Some(51) || native_prim_idx(fold.f) != Some(0) { return None; }
+    let (wa, xa) = (crate::vm::get_arr(w)?, crate::vm::get_arr(x)?);
+    if wa.rank() != 2 || xa.rank() != 2 { return None; }
+    let (m, k, kx, n) = (wa.shape[0], wa.shape[1], xa.shape[0], xa.shape[1]);
+    if k != kx || m == 0 || k == 0 || n == 0 { return None; }
+    let numeric = |a: &rbqn_core::array::BqnArr| matches!(a.data, ArrData::F64(_) | ArrData::I32(_) | ArrData::I16(_) | ArrData::I8(_) | ArrData::Bit(_));
+    if !numeric(&wa) || !numeric(&xa) { return None; }
+    let (mut t1, mut t2) = (Vec::new(), Vec::new());
+    let wm = mat_operand(&wa, &mut t1, "");
+    let xm = mat_operand(&xa, &mut t2, "");
+    let vals = rbqn_prim::matmul::matmul(wm, xm, m, k, n, true);
+    let out = rbqn_core::array::squeeze_num(rbqn_core::array::BqnArr { shape: vec![m, n], data: ArrData::F64(vals), fill: Some(B::m_f64(0.0)) });
+    Some(crate::vm::tag_arr(out))
 }
 
 // =============================================================================

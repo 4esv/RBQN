@@ -1437,7 +1437,7 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
         if gpu_mode() != GpuMode::Force && m * k + k * n < 50_000 { return None; }
         if !gpu_possible() { return None; }
         let init = exposed_init_ms();
-        let (g, c) = (rbqn_gpu::dispatch::matmul_gpu_ms(m, k, n, init), rbqn_gpu::dispatch::matmul_cpu_ms(m, k, n));
+        let (g, c) = (rbqn_gpu::dispatch::matmul_gpu_ms(m, k, n, init), rbqn_gpu::dispatch::matmul_cpu_ms(m, k, n, rbqn_prim::par::threads()));
         if !decide_ms(&format!("matmul {m}x{k}x{n}"), g, c, init) { return None; }
         let gpu = get()?;
 

@@ -71,12 +71,19 @@ pub const CPU_SORT_NS: f64 = 22.0;
 
 // Matmul (`•math.MatMul`, mode `matmul`, entries below 10 so the f32 kernel is exact).
 // gpu 68/543/4673 ms for 1000/2000/4096 = 0.067-0.068 ns per multiply-add at every size.
-// cpu 1456/35615/739910 ms = 1.46/4.45/10.8 ns per multiply-add: the host loop streams the
-// k×n right operand once per row of the left, so it steps up as k×n leaves cache.
+// cpu (blocked packed kernel of #166, `RBQN_THREADS=1`, `RBQN_GPU=off`): 1000/2000/4096 took
+// 102/864/8807 ms = 0.102/0.108/0.128 ns per multiply-add (the step up is the packed right operand
+// leaving L2). With t threads the same runs took 55/786/5199 ms at 2, 31/297/3183 ms at 4 and
+// 28/190/2202 ms at 12, a speedup of about t^0.8 (1.7/3.0/7.3 predicted for 2/4/12); the machine
+// was shared (load 6-9 on 12 cores), so this under-states an idle host.
+// The old naive loop was 1.46/4.45/10.8 ns per multiply-add; against it the GPU always won, now it
+// only wins where the host has few threads.
 /// GPU per multiply-add, transfers and the f64/f32 conversions included.
 pub const GPU_MATMUL_NS_PER_MAC: f64 = 0.067;
-/// Host per multiply-add by size of the right operand (k×n elements): (largest k×n, ns).
-pub const CPU_MATMUL_NS_PER_MAC: [(usize, f64); 3] = [(1_500_000, 1.5), (8_000_000, 4.5), (usize::MAX, 10.8)];
+/// Host per multiply-add on one thread (the 4096² figure; smaller sizes are up to 20% faster).
+pub const CPU_MATMUL_NS_PER_MAC: f64 = 0.128;
+/// Host multicore speedup exponent: `threads ^ 0.8`.
+pub const CPU_MATMUL_THREAD_EXP: f64 = 0.8;
 
 /// What a decision point is about to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,10 +160,9 @@ pub fn matmul_gpu_ms(m: usize, k: usize, n: usize, exposed_init_ms: f64) -> f64 
     exposed_init_ms + GPU_FIXED_MS + (m as f64) * (k as f64) * (n as f64) * GPU_MATMUL_NS_PER_MAC * 1e-6
 }
 
-/// Modelled host time of an m×k by k×n matmul.
-pub fn matmul_cpu_ms(m: usize, k: usize, n: usize) -> f64 {
-    let kn = k.saturating_mul(n);
-    let ns = CPU_MATMUL_NS_PER_MAC.iter().find(|(lim, _)| kn <= *lim).map_or(10.8, |&(_, ns)| ns);
+/// Modelled host time of an m×k by k×n matmul on `threads` threads.
+pub fn matmul_cpu_ms(m: usize, k: usize, n: usize, threads: usize) -> f64 {
+    let ns = CPU_MATMUL_NS_PER_MAC / (threads.max(1) as f64).powf(CPU_MATMUL_THREAD_EXP);
     (m as f64) * (k as f64) * (n as f64) * ns * 1e-6
 }
 

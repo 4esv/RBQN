@@ -78,7 +78,7 @@ pub fn go_int_fold(n: usize) -> bool {
 }
 
 /// Run a parallel region; a panic in a worker becomes a thrown BqnError.
-fn guarded<R>(f: impl FnOnce() -> R) -> R {
+pub(crate) fn guarded<R>(f: impl FnOnce() -> R) -> R {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(r) => r,
         Err(p) => {

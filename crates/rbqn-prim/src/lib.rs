@@ -10,6 +10,7 @@ pub mod sort;
 pub mod group;
 pub mod fold;
 pub mod par;
+pub mod matmul;
 pub mod md1;
 pub mod md2;
 pub mod inverse;

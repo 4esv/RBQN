@@ -81,20 +81,20 @@ Two layers, kept separate so that nothing outside `•gpu` ever changes a result
 The device is used only when the cost model expects it to win, and results are identical either way. The model's constants were fitted from `bench/wow/gpu.bqn` sweeps on this table's device (method in the comment above them in `crates/rbqn-gpu/src/dispatch.rs`), so on another GPU they are a starting point. Median of 3 in-process seconds on an AMD Radeon Pro 5300M (Metal), from `bench/wow/results/2026-10-24-bench-gpu-rows-radeon5300m.md` (`bench/wow/run.sh`; that file records the load and foreign CPU of the run, which was shared with other builds: foreign CPU peaked at 974%, so the large ratios are the evidence, not the small ones):
 
 <!-- gpu-table -->
-| workload | CBQN | rbqn CPU (`RBQN_GPU=off`) | rbqn GPU (`RBQN_GPU=force`) | rbqn default | default ran on |
-|---|---|---|---|---|---|
-| sort `∧` 1e6 i32 | 0.010 s | 0.020 s | 0.035 s | 0.021 s | CPU |
-| sort `∧` 1e7 i32 | 0.106 s | 0.241 s | 0.303 s | 0.228 s | CPU |
-| sort `∧` 1e8 i32 | 1.071 s | 2.783 s | 3.401 s | 2.553 s | CPU |
-| `•math.MatMul` 1000² (entries below 10) | 0.197 s | 1.906 s | 0.073 s | 0.075 s | GPU |
-| `•math.MatMul` 2000² | 1.689 s | 36.224 s | 0.580 s | 0.665 s | GPU |
-| `•math.MatMul` 4096² | 23.537 s | 704.351 s (1 run) | 4.431 s | 4.448 s | GPU |
-| `+´˘` 1e3×1e3 i32 | 0.000 s | 0.001 s | 0.337 s | 0.002 s | CPU |
-| `+´˘` 3e3×3e3 i32 | 0.001 s | 0.011 s | 1.362 s | 0.013 s | CPU |
-| `+´˘` 1e4×1e4 i32 | 0.014 s | 0.143 s | 5.119 s | 0.144 s | CPU |
+| workload | CBQN | rbqn CPU `-t 1` (`RBQN_GPU=off`) | rbqn CPU (`RBQN_GPU=off`) | rbqn GPU (`RBQN_GPU=force`) | rbqn default | default ran on |
+|---|---|---|---|---|---|---|
+| sort `∧` 1e6 i32 | 0.016 s | 0.033 s | 0.035 s | 0.046 s | 0.035 s | CPU |
+| sort `∧` 1e7 i32 | 0.173 s | 0.474 s | 0.510 s | 0.472 s | 0.479 s | CPU |
+| sort `∧` 1e8 i32 | 2.462 s | 6.003 s | 5.583 s | 5.310 s | 5.568 s | CPU |
+| `•math.MatMul` 1000² (entries below 10) | 0.490 s | 0.198 s | 0.054 s | 0.107 s | 0.056 s | CPU |
+| `•math.MatMul` 2000² | 5.575 s | 1.869 s | 0.295 s | 0.805 s | 0.331 s | CPU |
+| `•math.MatMul` 4096² | 42.774 s | 15.590 s | 2.569 s | 5.834 s | 2.919 s | CPU |
+| `+´˘` 1e3×1e3 i32 | 0.000 s | 0.003 s | 0.003 s | 1.584 s | 0.003 s | CPU |
+| `+´˘` 3e3×3e3 i32 | 0.003 s | 0.022 s | 0.019 s | 5.289 s | 0.024 s | CPU |
+| `+´˘` 1e4×1e4 i32 | 0.028 s | 0.250 s | 0.254 s | 19.261 s | 0.268 s | CPU |
 <!-- /gpu-table -->
 
-`•math.MatMul` is where the device wins: 4096² goes from 704 s on the host loop (one run) to 4.4 s, and CBQN, which has no `•math.MatMul`, takes 23.5 s on the equal BQN expression. Sort and row sums stay on the CPU here. The GPU sort is 1.2-1.8x slower than the host radix sort from 1e6 to 1e8 (upload and download included), and CBQN's own sort is faster than both (1.07 s at 1e8). There is no batched row-reduce kernel, so a forced `+´˘` runs one reduction per row and is 36x slower than the host. `RBQN_GPU=force` produces those GPU numbers and `RBQN_GPU_DEBUG=1` prints the model's predicted times next to each decision.
+`•math.MatMul` and the idiom `+˝∘×⎉1‿∞` run a blocked, packed, multicore f64 kernel on the host (#166): 4096² takes 15.6 s at `-t 1` and 2.6 s on 12 threads against 42.8 s for CBQN's `+˝∘×⎉1‿∞` (a heavily loaded machine; see the results file), up from 704 s for the earlier naive loop. The cost model now keeps these sizes on the host; the exact-integer GPU kernel (4096² in 5.8 s when forced here) is chosen only where the model predicts it faster, for example with few host threads. Sort and row sums stay on the CPU here. The GPU sort is 1.2-1.8x slower than the host radix sort from 1e6 to 1e8 (upload and download included), and CBQN's own sort is faster than both (1.07 s at 1e8). There is no batched row-reduce kernel, so a forced `+´˘` runs one reduction per row and is 36x slower than the host. `RBQN_GPU=force` produces those GPU numbers and `RBQN_GPU_DEBUG=1` prints the model's predicted times next to each decision.
 
 **`•gpu`.** Explicit f32 kernels and device-resident arrays, for code that accepts f32 rounding in exchange for speed.
 
