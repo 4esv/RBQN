@@ -3856,7 +3856,8 @@ fn rand_range_c2(g: Option<usize>, w: B, x: B) -> B {
         // w is a scalar: produce array of length w
         let len = w.o2f().round() as usize;
         let vals: Vec<f64> = (0..len).map(|_| (rand_draw(g) % n.max(1)) as f64).collect();
-        let arr = rbqn_core::array::BqnArr::new_vec_f64(vals);
+        // NOTE: squeezed like CBQN (i32arr), so the GPU sort/grade gates see integer-typed data.
+        let arr = rbqn_core::array::squeeze_num(rbqn_core::array::BqnArr::new_vec_f64(vals));
         return crate::vm::tag_arr(arr);
     }
     // w is a shape array: produce shaped array
@@ -3871,7 +3872,7 @@ fn rand_range_c2(g: Option<usize>, w: B, x: B) -> B {
     let vals: Vec<f64> = (0..total).map(|_| (rand_draw(g) % n.max(1)) as f64).collect();
     let mut arr = rbqn_core::array::BqnArr::new_vec_f64(vals);
     arr.shape = shape;
-    crate::vm::tag_arr(arr)
+    crate::vm::tag_arr(rbqn_core::array::squeeze_num(arr))
 }
 
 fn rand_deal_c1(g: Option<usize>, x: B) -> B {
