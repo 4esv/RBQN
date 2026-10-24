@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Gate for the CI parity job: gate.py DOCS_OUT GRID_OUT KNOWN.
+The spec is the target and CBQN is the floor: this gate is a regression floor so rbqn never falls below CBQN, and a deliberate divergence beyond CBQN is recorded in KNOWN as `expr | reason | spec citation`, not fixed. The old two-field `expr | reason` form still parses.
 Fails (exit 1) if docs_diff.py or grid.py reports a difference not listed in KNOWN, a timeout, or a panic. Prints the offending lines."""
 import re, sys
 

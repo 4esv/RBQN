@@ -27,6 +27,9 @@ class Gate(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write("# c\n@ ¬ 1 | why\n")
         self.assertEqual(gate.known(f.name), {"@ ¬ 1"})
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("# c\n@ ¬ 1 | why | docs/spec/primitive.md#not\n⌽ 5 | old two-field\n\n")
+        self.assertEqual(gate.known(f.name), {"@ ¬ 1", "⌽ 5"})
         # NOTE: the shipped file may be empty once every divergence is fixed; it must still parse.
         self.assertIsInstance(gate.known(os.path.join(os.path.dirname(__file__), "known_divergences.txt")), set)
 
