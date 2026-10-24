@@ -3839,6 +3839,8 @@ fn erf_approx(x: f64) -> f64 {
     sign * y
 }
 
+// SAFETY: these are the C99 libm prototypes (pure f64 -> f64 by value, no pointers, no
+// global state beyond errno), declared once; every call site passes any f64.
 unsafe extern "C" {
     #[link_name = "erfc"]
     fn c_erfc(x: f64) -> f64;

@@ -2,14 +2,15 @@
 # Per-crate census of `unsafe` occurrences vs `// SAFETY:` comments.
 # unsafe = sites outside // comments: `unsafe {`, `unsafe impl`, `unsafe fn`, `unsafe extern "C" {`
 # (fn-pointer types like `unsafe extern "C" fn()` are not sites);
-# SAFETY = lines with `SAFETY:` in a comment. Prints a markdown table and a README sentence.
+# SAFETY = lines with `SAFETY:` in a comment, or a `/// # Safety` doc heading (the unsafe fn contract).
+# Covers what clippy::undocumented_unsafe_blocks cannot: unsafe fn, unsafe extern, unsafe impl. Prints a markdown table and a README sentence.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tu=0; ts=0; rows=""
 for d in crates/*/; do
   c=$(basename "$d")
   u=$(grep -rhE --include='*.rs' 'unsafe[[:space:]]*(\{|impl|fn |extern "C" \{)' "$d" 2>/dev/null | grep -vcE '^[[:space:]]*//' || true)
-  s=$(grep -rh --include='*.rs' 'SAFETY:' "$d" 2>/dev/null | grep -c '//' || true)
+  s=$(grep -rhE --include='*.rs' 'SAFETY:|^[[:space:]]*///[[:space:]]*#[[:space:]]*Safety' "$d" 2>/dev/null | grep -c '//' || true)
   rows+="| $c | $u | $s |"$'\n'
   tu=$((tu+u)); ts=$((ts+s))
 done
