@@ -339,3 +339,94 @@ fn rebqn_primitives_and_repl_match_cbqn() {
         assert_eq!(&stdout, want, "{expr}");
     }
 }
+
+// ============================================================
+// •HashMap (#131): expected values are CBQN's own output for the same expression
+// ============================================================
+
+#[test]
+fn test_hashmap_matches_cbqn() {
+    let cases: &[(&str, &str, bool)] = &[
+        ("h ← ⟨\"ab\",⟨1,2⟩⟩ •HashMap 10‿20 ⋄ ⟨h.Get \"ab\", h.Get 1‿2, h.Has ⟨1,2⟩, h.Count @⟩",
+         "⟨ 10 20 1 2 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ h.Count @",
+         "6", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ h.Keys @",
+         "⟨ \"ab\" ⟨ 1 2 ⟩ 3 'a' ⟨⟩ 0 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ h.Values @",
+         "⟨ 10 20 30 40 50 60 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ ⟨h.Has \"zz\", h.Has ¯0, h.Get ¯0, h.Has 'a', h.Has \"a\"⟩",
+         "⟨ 0 1 60 1 0 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ 99 h.Get \"zz\"",
+         "99", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ s ← 7‿8 h.Set 9 ⋄ ⟨h.Count @, h.Get 7‿8, s.Count @⟩",
+         "⟨ 7 9 7 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ s ← \"ab\" h.Set 5 ⋄ ⟨h.Get \"ab\", h.Count @⟩",
+         "⟨ 5 6 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ s ← \"ab\" h.Set 5 ⋄ h.Keys @",
+         "⟨ \"ab\" ⟨ 1 2 ⟩ 3 'a' ⟨⟩ 0 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ d ← h.Delete \"ab\" ⋄ d.Keys @",
+         "⟨ ⟨ 1 2 ⟩ 3 'a' ⟨⟩ 0 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ d ← h.Delete \"ab\" ⋄ s ← \"ab\" h.Set 1 ⋄ d.Values @",
+         "⟨ 20 30 40 50 60 1 ⟩", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ d ← h.Delete ⟨1,2⟩ ⋄ d.Count @",
+         "5", true),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ h.Get \"nope\"",
+         "Error: (hashmap).Get: key not found", false),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ h.Delete \"nope\"",
+         "Error: (hashmap).Delete: key not found", false),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ h.Set 1",
+         "Error: This function can't be called monadically", false),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ 1 h.Delete 2",
+         "Error: This function can't be called dyadically", false),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ 1 h.Count 2",
+         "Error: This function can't be called dyadically", false),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ 1 h.Keys 2",
+         "Error: This function can't be called dyadically", false),
+        ("h ← ⟨\"ab\",⟨1,2⟩,3,'a',⟨⟩,0⟩ •HashMap 10‿20‿30‿40‿50‿60 ⋄ 1 h.Has 2",
+         "Error: This function can't be called dyadically", false),
+        ("⟨1,1,2⟩ •HashMap 5‿6‿7",
+         "Error: •HashMap: 𝕨 contained duplicate keys", false),
+        ("1 •HashMap 2",
+         "Error: 𝕨 •HashMap 𝕩: Arguments must be lists (⟨⟩≡≢𝕨, ⟨⟩≡≢𝕩)", false),
+        ("1‿2 •HashMap 3‿4‿5",
+         "Error: 𝕨 •HashMap 𝕩: 𝕨 and 𝕩 must have the same length (2≡≠𝕨, 3≡≠𝕩)", false),
+        ("1‿2 •HashMap 2‿2⥊0",
+         "Error: 𝕨 •HashMap 𝕩: Arguments must be lists (⟨2⟩≡≢𝕨, 2‿2≡≢𝕩)", false),
+        ("•HashMap 1‿2",
+         "Error: This function can't be called monadically", false),
+        ("h ← ⟨⟩ •HashMap ⟨⟩ ⋄ ⟨h.Count @, h.Keys @, h.Has 0⟩",
+         "⟨ 0 ⟨⟩ 0 ⟩", true),
+        ("f ← ⊑⟨+⟩ ⋄ h ← ⟨f,⊑⟨-⟩⟩ •HashMap 1‿2 ⋄ ⟨h.Get f, h.Get ⊑⟨-⟩, h.Has ⊑⟨×⟩⟩",
+         "⟨ 1 2 0 ⟩", true),
+        ("h ← ⟨⟩ •HashMap ⟨⟩ ⋄ s ← 1‿2 h.Set 3 ⋄ s ↩ (<2‿3) h.Set 4 ⋄ ⟨h.Get 1‿2, h.Get <2‿3, h.Has 1‿2‿3, h.Has (2‿1⥊1)⟩",
+         "⟨ 3 4 0 0 ⟩", true),
+        ("h ← ⟨0, ⟨0⟩⟩ •HashMap 1‿2 ⋄ n ← 0×¯1 ⋄ ⟨h.Get n, h.Get ⟨n⟩, 1÷n⟩",
+         "⟨ 1 2 ∞ ⟩", true),
+        ("a ← ⟨⟩ •HashMap ⟨⟩ ⋄ b ← ⟨⟩ •HashMap ⟨⟩ ⋄ s ← 1 a.Set 2 ⋄ ⟨a.Count @, b.Count @⟩",
+         "⟨ 1 0 ⟩", true),
+        ("h ← ⟨⟩ •HashMap ⟨⟩ ⋄ s ← {𝕩 h.Set 𝕩×2}¨ ↕1000 ⋄ d ← {h.Delete 𝕩}¨ 2×↕500 ⋄ ⟨h.Count @, h.Has 4, h.Has 5, 3↑h.Keys @, h.Get 999⟩",
+         "⟨ 500 0 1 ⟨ 1 3 5 ⟩ 1998 ⟩", true),
+    ];
+    for (expr, want, ok) in cases {
+        let out = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-p", expr]).output().unwrap();
+        let (text, first_err) = (
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("").to_string(),
+        );
+        assert_eq!(out.status.success(), *ok, "{expr}: {first_err}");
+        assert_eq!(if *ok { &text } else { &first_err }, want, "{expr}");
+    }
+}
+
+#[test]
+fn test_hashmap_scale() {
+    // 1e5 inserts, lookups and 5e4 deletes by array key must stay linear.
+    let expr = "h ← ⟨⟩ •HashMap ⟨⟩ ⋄ s ← {⟨𝕩,\"k\"⟩ h.Set 𝕩}¨ ↕100000 ⋄ \
+                a ← +´ {h.Get ⟨𝕩,\"k\"⟩}¨ ↕100000 ⋄ d ← {h.Delete ⟨𝕩,\"k\"⟩}¨ 2×↕50000 ⋄ ⟨a, h.Count @, h.Has ⟨2,\"k\"⟩, h.Has ⟨3,\"k\"⟩⟩";
+    let t = std::time::Instant::now();
+    let out = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-p", expr]).output().unwrap();
+    let dt = t.elapsed();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "⟨ 4999950000 50000 0 1 ⟩");
+    assert!(dt.as_secs_f64() < 1.0, "1e5 hashmap ops took {dt:?}");
+}
