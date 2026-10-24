@@ -211,6 +211,16 @@ fn decide(kind: Kind, w: &Work, wide: bool) -> bool {
     gpu
 }
 
+/// A model decision for ops that have their own cost functions (sort, matmul): force mode
+/// always says GPU; otherwise GPU when its modelled time beats the host's. Logs under debug.
+fn decide_ms(what: &str, g: f64, c: f64, init: f64) -> bool {
+    let gpu = gpu_mode() == GpuMode::Force || g < c;
+    if debug_enabled() {
+        eprintln!("[gpu] decide {what} gpu={g:.2}ms cpu={c:.2}ms (init {init:.1}ms) → {}", if gpu { "gpu" } else { "cpu" });
+    }
+    gpu
+}
+
 /// `get()` after a GPU decision, logging how long the init thread was waited for.
 fn get_decided() -> Option<&'static GpuRuntime> {
     if !debug_enabled() || GPU_RUNTIME.get().is_some() {
@@ -343,7 +353,8 @@ pub fn gpu_safe_arr(arr: &BqnArr) -> bool {
 /// sort, which the GPU beats from ~3e6 elements with device init already
 /// exposed (1e7: 122 ms CPU vs 60-78 GPU; 2e6: equal). Default mode starts
 /// device init at the first large array, so SORT_MIN sits above the
-/// measured crossover. Force mode keeps its own size gate.
+/// measured crossover. Force mode keeps its own size gate. i32 keys that pass
+/// are then decided by the modelled times (#146): the host radix sort wins on the Radeon.
 fn sort_on_gpu(arr: &BqnArr) -> bool {
     let n = arr.ia();
     if gpu_mode() == GpuMode::Force {
@@ -365,7 +376,13 @@ fn sort_on_gpu(arr: &BqnArr) -> bool {
         }
         _ => return false, // Bit/I8/I16: range ≤ 2^16, always counted on the CPU
     };
-    hi - lo + 1.0 > n.max(1 << 16) as f64
+    if hi - lo + 1.0 <= n.max(1 << 16) as f64 { return false; }
+    // NOTE: i32 keys: the host radix sort is modelled against the GPU sort (#146); F64 keys keep the gate above.
+    if matches!(arr.data, ArrData::I32(_)) {
+        let init = exposed_init_ms();
+        return decide_ms(&format!("sort n={:e}", n as f64), rbqn_gpu::dispatch::sort_gpu_ms(n, init), rbqn_gpu::dispatch::sort_cpu_ms(n), init);
+    }
+    true
 }
 
 /// Transfer BqnArr to a GPU i32 buffer.
@@ -1406,6 +1423,10 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
         // NOTE: Threshold check — dispatch to GPU for larger matrices.
         // For small matrices, CPU is faster due to transfer overhead.
         if gpu_mode() != GpuMode::Force && m * k + k * n < 50_000 { return None; }
+        if !gpu_possible() { return None; }
+        let init = exposed_init_ms();
+        let (g, c) = (rbqn_gpu::dispatch::matmul_gpu_ms(m, k, n, init), rbqn_gpu::dispatch::matmul_cpu_ms(m, k, n));
+        if !decide_ms(&format!("matmul {m}x{k}x{n}"), g, c, init) { return None; }
         let gpu = get()?;
 
         // Extract f64 data from arrays; skip if char/boxed

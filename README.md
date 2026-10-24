@@ -78,6 +78,24 @@ Two layers, kept separate so that nothing outside `•gpu` ever changes a result
 
 **Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path; f64 arithmetic stays on the CPU (Metal has no f64). A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper; `RBQN_GPU_DEBUG=1` prints each decision. `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`). `make gpu-parity` runs the stranger docs corpus and grid with `RBQN_GPU=force` and `RBQN_GPU=off` on the same binary and requires identical reports; it needs `CBQN_BIN` and `BQN_SRC`, and is run on a machine with a GPU, not in CI. The CBQN parity job in CI is a regression floor, not the goal: the spec is the target, and deliberate divergences beyond CBQN are recorded with a spec citation in `bench/stranger/known_divergences.txt`.
 
+The device is used only when the cost model expects it to win, and results are identical either way. The model's constants were fitted from `bench/wow/gpu.bqn` sweeps on this table's device (method in the comment above them in `crates/rbqn-gpu/src/dispatch.rs`), so on another GPU they are a starting point. Median of 3 in-process seconds on an AMD Radeon Pro 5300M (Metal), from `bench/wow/results/2026-10-24-bench-gpu-rows-radeon5300m.md` (`bench/wow/run.sh`; that file records the load and foreign CPU of the run, which was shared with other builds: foreign CPU peaked at 974%, so the large ratios are the evidence, not the small ones):
+
+<!-- gpu-table -->
+| workload | CBQN | rbqn CPU (`RBQN_GPU=off`) | rbqn GPU (`RBQN_GPU=force`) | rbqn default | default ran on |
+|---|---|---|---|---|---|
+| sort `∧` 1e6 i32 | 0.010 s | 0.020 s | 0.035 s | 0.021 s | CPU |
+| sort `∧` 1e7 i32 | 0.106 s | 0.241 s | 0.303 s | 0.228 s | CPU |
+| sort `∧` 1e8 i32 | 1.071 s | 2.783 s | 3.401 s | 2.553 s | CPU |
+| `•math.MatMul` 1000² (entries below 10) | 0.197 s | 1.906 s | 0.073 s | 0.075 s | GPU |
+| `•math.MatMul` 2000² | 1.689 s | 36.224 s | 0.580 s | 0.665 s | GPU |
+| `•math.MatMul` 4096² | 23.537 s | 704.351 s (1 run) | 4.431 s | 4.448 s | GPU |
+| `+´˘` 1e3×1e3 i32 | 0.000 s | 0.001 s | 0.337 s | 0.002 s | CPU |
+| `+´˘` 3e3×3e3 i32 | 0.001 s | 0.011 s | 1.362 s | 0.013 s | CPU |
+| `+´˘` 1e4×1e4 i32 | 0.014 s | 0.143 s | 5.119 s | 0.144 s | CPU |
+<!-- /gpu-table -->
+
+`•math.MatMul` is where the device wins: 4096² goes from 704 s on the host loop (one run) to 4.4 s, and CBQN, which has no `•math.MatMul`, takes 23.5 s on the equal BQN expression. Sort and row sums stay on the CPU here. The GPU sort is 1.2-1.8x slower than the host radix sort from 1e6 to 1e8 (upload and download included), and CBQN's own sort is faster than both (1.07 s at 1e8). There is no batched row-reduce kernel, so a forced `+´˘` runs one reduction per row and is 36x slower than the host. `RBQN_GPU=force` produces those GPU numbers and `RBQN_GPU_DEBUG=1` prints the model's predicted times next to each decision.
+
 **`•gpu`.** Explicit f32 kernels and device-resident arrays, for code that accepts f32 rounding in exchange for speed.
 
 | function | does |
