@@ -65,3 +65,14 @@ pub fn reset_run() {
     reset();
     DEVICE_INIT_US.store(init, Relaxed);
 }
+
+/// Put the counters back to `s`, keeping the device init time: the cost-model calibration runs
+/// its own dispatches and must not show in the program's counters (#167).
+pub fn restore(s: &GpuStats) {
+    DISPATCHES.store(s.dispatches, Relaxed);
+    SUBMITS.store(s.submits, Relaxed);
+    READBACKS.store(s.readbacks, Relaxed);
+    BYTES_UP.store(s.bytes_up, Relaxed);
+    BYTES_DOWN.store(s.bytes_down, Relaxed);
+    PIPELINE_COMPILES.store(s.pipeline_compiles, Relaxed);
+}
