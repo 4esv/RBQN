@@ -1288,6 +1288,9 @@ pub fn prefixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Err(BqnError::Type("↑𝕩: 𝕩 must be an array".into()));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("↑𝕩: 𝕩 must be an array".into()))?;
+    if arr.shape.is_empty() {
+        return Err(BqnError::Rank("↑𝕩: 𝕩 must have rank at least 1".into()));
+    }
 
     let first_dim = leading_dim(arr);
     let cell_shape = &arr.shape[1..];
@@ -1523,6 +1526,9 @@ pub fn suffixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Err(BqnError::Type("↓𝕩: 𝕩 must be an array".into()));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("↓𝕩: 𝕩 must be an array".into()))?;
+    if arr.shape.is_empty() {
+        return Err(BqnError::Rank("↓𝕩: 𝕩 must have rank at least 1".into()));
+    }
 
     let first_dim = leading_dim(arr);
     let cell_shape = &arr.shape[1..];
