@@ -12,9 +12,10 @@ readme = "../../README.md"
 
 [features]
 default = ["gpu"]
-# gpu: wgpu backend. Off (--no-default-features) gives a CPU-only binary that
-# does not link Metal/QuartzCore, so dyld skips them at launch (issue #21).
-gpu = ["dep:rbqn-gpu"]
+# gpu: wgpu backends. Off (--no-default-features) gives a CPU-only binary that
+# does not link Metal/QuartzCore, so dyld skips them at launch (issue #21). The lazy
+# expression graph and its host-side fusion are compiled in either way (issue #137).
+gpu = ["rbqn-gpu/backends"]
 # gen-tools: enables the rbqn-gen binary for regenerating embedded .bin files.
 # NOT in default features — not compiled during normal cargo build or cargo install.
 gen-tools = []
@@ -24,14 +25,14 @@ libc = "0.2"
 rbqn-core.workspace = true
 rbqn-vm.workspace = true
 rbqn-prim.workspace = true
-rbqn-gpu = { workspace = true, optional = true }
+rbqn-gpu.workspace = true
 rustyline = { version = "15", features = ["buffer-redux"] }
 pollster = "0.4"
 
 [dev-dependencies]
 criterion.workspace = true
 pollster.workspace = true
-wgpu.workspace = true
+wgpu = { workspace = true, features = ["metal", "dx12", "webgpu"] }
 
 [[bin]]
 name = "rbqn-gen"

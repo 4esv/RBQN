@@ -9,6 +9,13 @@ rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = ["backends"]
+# backends: the native wgpu backends (Metal, DX12, WebGPU). Without it the crate still
+# provides the lazy expression graph and cost model, but no adapter is ever found, so
+# a CPU-only binary runs the host-fused path without linking Metal (issues #21, #137).
+backends = ["wgpu/metal", "wgpu/dx12", "wgpu/webgpu"]
+
 [dependencies]
 rbqn-core.workspace = true
 wgpu.workspace = true

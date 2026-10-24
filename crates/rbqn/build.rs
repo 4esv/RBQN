@@ -35,4 +35,12 @@ fn main() {
         println!("cargo:rerun-if-changed={bqn_src}");
     }
     println!("cargo:rerun-if-env-changed=BQN_SRC");
+
+    // NOTE: a CPU-only build (--no-default-features) still compiles the lazy expression graph,
+    // which names wgpu types, so wgpu's Metal link request ends up in the binary.
+    // -dead_strip_dylibs drops frameworks nothing references, so that build keeps skipping
+    // Metal at launch (#21, #137).
+    if env::var("CARGO_CFG_TARGET_VENDOR").as_deref() == Ok("apple") {
+        println!("cargo:rustc-link-arg-bins=-Wl,-dead_strip_dylibs");
+    }
 }

@@ -1,3 +1,6 @@
+// NOTE: a CPU-only build (no `gpu` feature) never reaches the device-only entry points (#137).
+#![cfg_attr(not(feature = "gpu"), allow(dead_code))]
+
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -96,6 +99,8 @@ impl Drop for SummaryGuard {
 /// Create the context and cache. Pure device work: it never touches the
 /// interpreter's thread-local registries.
 fn build_runtime() -> Option<GpuRuntime> {
+    // NOTE: constant-folds away the device code in a CPU-only build, so the linker can drop Metal (#21).
+    if !cfg!(feature = "gpu") { return None; }
     let t_init = std::time::Instant::now();
     let ctx = pollster::block_on(GpuContext::new())?;
     rbqn_gpu::stats::DEVICE_INIT_US.store(t_init.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -137,7 +142,8 @@ pub fn init(no_gpu: bool) {
     if std::env::var("RBQN_GPU_DEBUG").is_ok() {
         GPU_DEBUG.store(true, Ordering::Relaxed);
     }
-    if no_gpu || gpu_mode() == GpuMode::Off {
+    // NOTE: a CPU-only build has no adapter to find, so it is permanently "off".
+    if no_gpu || gpu_mode() == GpuMode::Off || !cfg!(feature = "gpu") {
         GPU_DISABLED.store(true, Ordering::Relaxed);
         return;
     }
@@ -215,12 +221,14 @@ fn get_decided() -> Option<&'static GpuRuntime> {
 /// Adapter name for the REPL header: the device name, or `off` when the GPU is
 /// disabled or no adapter exists. Creates the device, so interactive use only.
 pub fn adapter_label() -> Option<String> {
+    if !cfg!(feature = "gpu") { return None; }
     Some(get().map_or_else(|| "off".to_string(), |rt| rt.ctx.adapter_info.name.clone()))
 }
 
 /// `--version` gpu line: `off` when disabled (`--no-gpu`, `RBQN_GPU=off`), `none` when no
 /// adapter exists, else the adapter name. Creates the device, so only for `--version`.
 pub fn version_label(no_gpu: bool) -> String {
+    if !cfg!(feature = "gpu") { return "none".to_string(); }
     if no_gpu || gpu_mode() == GpuMode::Off {
         return "off".to_string();
     }
@@ -425,14 +433,14 @@ pub fn gpu_i32_to_arr(gpu: &GpuRuntime, buf: &GpuBuffer, shape: Vec<usize>, fill
 /// Check whether an operation on `len` elements should use the GPU.
 pub fn should_dispatch(op: &str, len: usize) -> bool {
     match gpu_mode() {
-        GpuMode::Off => false,
         GpuMode::Force => {
             if !rbqn_gpu::stats::program_started() {
                 return rbqn_gpu::dispatch::should_use_gpu(op, len);
             }
             len >= 1
         }
-        GpuMode::Default => rbqn_gpu::dispatch::should_use_gpu(op, len),
+        // NOTE: Off keeps the Default gate: lazy graphs and host fusion stay on, only the device is off (#137).
+        GpuMode::Default | GpuMode::Off => rbqn_gpu::dispatch::should_use_gpu(op, len),
     }
 }
 
@@ -944,7 +952,6 @@ pub fn gpu_arith_binary(op: &str, w: B, x: B) -> Option<B> {
     if peek_resident(w).is_some() || peek_resident(x).is_some() {
         return resident_arith(op, w, x);
     }
-    if gpu_mode() == GpuMode::Off || !gpu_possible() { return None; }
     if !w.is_arr() { return gpu_arith_scalar(op, w.o2f(), true, x); }
     if !x.is_arr() { return gpu_arith_scalar(op, x.o2f(), false, w); }
     if !matches!(op, "add" | "sub" | "mul") { return None; }
@@ -1016,8 +1023,7 @@ fn gpu_arith_scalar(op: &str, s: f64, scalar_left: bool, a: B) -> Option<B> {
 // NOTE: GpuArr holds Rc/RefCell (thread-local); Arc is required by tag_device's Arc<dyn DeviceValue>.
 #[allow(clippy::arc_with_non_send_sync)]
 pub fn gpu_iota(n: usize) -> Option<B> {
-    if gpu_mode() == GpuMode::Off || GPU_DISABLED.load(Ordering::Relaxed) { return None; }
-    if n == 0 || n >= i32::MAX as usize || !should_dispatch("arith", n) || !gpu_possible() { return None; }
+    if n == 0 || n >= i32::MAX as usize || !should_dispatch("arith", n) { return None; }
     let b = (n - 1) as f64;
     Some(tag_device(Arc::new(GpuArr::lazy(Rc::new(Expr::Iota), vec![n], Some(B::m_i32(0)), b, b, false))))
 }
@@ -1153,7 +1159,6 @@ pub fn gpu_fold(f: B, x: B) -> Option<B> {
     if let Some(r) = resident_fold(f, x) {
         return Some(r);
     }
-    if gpu_mode() == GpuMode::Off { return None; }
     guarded("fold", || gpu_fold_inner(f, x))
 }
 
@@ -1276,7 +1281,7 @@ fn fused_fold(gpu: &GpuRuntime, g: &GpuArr, op: &str, n: usize, rb: f64) -> Opti
 /// partial sum fits, else i64 while < 2^53, else None for the CPU).
 /// Returns None for unsupported ops or if GPU dispatch is unavailable.
 pub fn gpu_scan(f: B, x: B) -> Option<B> {
-    if gpu_mode() == GpuMode::Off || !x.is_arr() { return None; }
+    if !x.is_arr() { return None; }
     guarded("scan", || gpu_scan_inner(f, x))
 }
 

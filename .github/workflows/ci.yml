@@ -107,6 +107,22 @@ jobs:
       - name: Test
         run: cargo test --release --workspace
 
+      # NOTE: #137: a CPU-only build must take the host-fused path (unfused: ~0.3 s at 1e7 here,
+      # ~4 s at 1e8; fused: ~0.01 s). The budget covers build-less startup plus a slow runner.
+      - name: CPU-only build, fused pipeline under budget
+        run: |
+          cargo build --release -p rbqn --no-default-features --target-dir target/cpu-only
+          cat > pipeline.bqn <<'EOF'
+          x ← 1e7 ⥊ 1‿2‿3‿4
+          t ← •MonoTime@
+          •Show +´ (x×x) + 2×x
+          •Out "t=" ∾ •Repr (•MonoTime@) - t
+          EOF
+          out=$(timeout 10 target/cpu-only/release/rbqn pipeline.bqn)
+          echo "$out"
+          test "$(echo "$out" | head -1)" = 125000000
+          RBQN_GPU_DEBUG=1 timeout 10 target/cpu-only/release/rbqn pipeline.bqn 2>&1 | grep -q "host fold_add"
+
       - name: Gate script tests
         run: python3 -I bench/stranger/test_gate.py
 

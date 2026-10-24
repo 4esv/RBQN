@@ -24,8 +24,8 @@ undocumented_unsafe_blocks = "deny"
 rbqn-core = { version = "0.1.0", path = "crates/rbqn-core" }
 rbqn-vm = { version = "0.1.0", path = "crates/rbqn-vm" }
 rbqn-prim = { version = "0.1.0", path = "crates/rbqn-prim" }
-rbqn-gpu = { version = "0.1.0", path = "crates/rbqn-gpu" }
-wgpu = "24"
+rbqn-gpu = { version = "0.1.0", path = "crates/rbqn-gpu", default-features = false }
+wgpu = { version = "24", default-features = false, features = ["wgsl"] }
 bytemuck = { version = "1", features = ["derive"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 pollster = "0.4"
