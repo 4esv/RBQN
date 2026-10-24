@@ -127,12 +127,16 @@ jobs:
       - name: Miri setup
         run: cargo miri setup
 
+      # NOTE: -Zmiri-ignore-leaks: array handles are `Arc` pointers whose strong count is
+      # intentionally never released (#124), and the interpreter's pools are thread-local
+      # ManuallyDrop, so Miri's leak check would fail every test that tags an array or
+      # evaluates BQN.
       - name: Miri (rbqn-core, rbqn-prim)
+        env:
+          MIRIFLAGS: -Zmiri-ignore-leaks
         run: cargo miri test -p rbqn-core -p rbqn-prim
 
-      # NOTE: -Zmiri-ignore-leaks: the interpreter's value stores and pools are
-      # thread-local ManuallyDrop and intentionally never freed, so Miri's end-of-thread
-      # leak check would fail every test that evaluates BQN. It is not an allowlist for
+      # NOTE: same flag, same reason, for rbqn-vm. It is not an allowlist for
       # UB: all other checks (aliasing, uninit, bounds, validity) stay on. Isolation stays
       # on; tests needing the host (getcwd) are `#[cfg_attr(miri, ignore = ...)]`.
       - name: Miri (rbqn-vm)

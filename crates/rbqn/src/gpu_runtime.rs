@@ -711,7 +711,7 @@ impl DeviceValue for GpuArr {
 }
 
 // Recent host->device uploads keyed by the array's B bits (ids are never reused,
-// since ARR_STORE never frees), so `a+a` and repeated uses of `a` upload once.
+// since arrays are never freed (#124)), so `a+a` and repeated uses of `a` upload once.
 const UPLOAD_CACHE_LEN: usize = 4;
 std::thread_local! {
     static UPLOAD_CACHE: RefCell<Vec<(u64, Arc<GpuBuffer>, f64)>> = const { RefCell::new(Vec::new()) };
