@@ -117,14 +117,41 @@ pub fn quarantine_enabled() -> bool {
     *QUARANTINE
 }
 
-/// Set once a GPU runtime may exist: its caches are keyed by handle bits, so an
-/// address reused after a free could hit a stale entry. From then on `Val` drops
-/// release nothing (arrays leak, as before stage 2).
-static NO_FREE: AtomicBool = AtomicBool::new(false);
+/// Freed-address queue (#163). Caches keyed by handle bits (the GPU upload
+/// caches) must forget an address when its array is freed, or a reused address
+/// would hit a stale entry. When tracking is on, `Val::drop` queues the address
+/// of an array it is about to free; the cache owner drains it with `take_freed`
+/// before every lookup. Global, so a free on any thread is seen.
+static TRACK_FREES: AtomicBool = AtomicBool::new(false);
+static FREED_PENDING: AtomicBool = AtomicBool::new(false);
+static FREED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
-/// Stop freeing arrays for the rest of the process (see `NO_FREE`).
-pub fn disable_free() {
-    NO_FREE.store(true, Ordering::Relaxed);
+/// Start queueing freed addresses (see `FREED`).
+pub fn track_frees() {
+    TRACK_FREES.store(true, Ordering::Relaxed);
+}
+
+/// Addresses freed since the last call (empty fast path: one atomic load).
+#[inline]
+pub fn take_freed() -> Vec<u64> {
+    if !FREED_PENDING.load(Ordering::Acquire) {
+        return Vec::new();
+    }
+    let mut q = FREED.lock().unwrap_or_else(|e| e.into_inner());
+    FREED_PENDING.store(false, Ordering::Release);
+    std::mem::take(&mut *q)
+}
+
+/// True when cache key `key` (host handle bits, flags allowed) names a freed address.
+#[inline]
+pub fn key_freed(key: u64, freed: &[u64]) -> bool {
+    key & 2 == 0 && freed.contains(&(key & PTR_MASK))
+}
+
+fn queue_freed(addr: usize) {
+    let mut q = FREED.lock().unwrap_or_else(|e| e.into_inner());
+    q.push(addr as u64);
+    FREED_PENDING.store(true, Ordering::Release);
 }
 
 #[cold]
@@ -284,13 +311,13 @@ impl Clone for Val {
 impl Drop for Val {
     fn drop(&mut self) {
         if is_host_arr(self.0) {
-            if NO_FREE.load(Ordering::Relaxed) {
-                return;
-            }
             if *QUARANTINE {
                 // SAFETY: as below; the adopted count is parked, not released.
                 let arc = unsafe { Arc::from_raw(host_ptr(self.0)) };
                 if Arc::strong_count(&arc) == 1 {
+                    if TRACK_FREES.load(Ordering::Relaxed) {
+                        queue_freed(host_ptr(self.0) as usize);
+                    }
                     DEAD.lock().unwrap_or_else(|e| e.into_inner()).insert(host_ptr(self.0) as usize);
                     LIVE_ARRAYS.fetch_sub(1, Ordering::Relaxed);
                     GRAVE.lock().unwrap_or_else(|e| e.into_inner()).push(arc);
@@ -302,6 +329,11 @@ impl Drop for Val {
             // releasing it. `into_inner` returns the array only when this was the
             // last count (atomically), so the counter drops exactly when it frees.
             let arc = unsafe { Arc::from_raw(host_ptr(self.0)) };
+            // NOTE: queue before the release, so no thread sees the address reused
+            // before the queue names it. A failed `into_inner` only evicts early.
+            if TRACK_FREES.load(Ordering::Relaxed) && Arc::strong_count(&arc) == 1 {
+                queue_freed(host_ptr(self.0) as usize);
+            }
             if let Some(arr) = Arc::into_inner(arc) {
                 LIVE_ARRAYS.fetch_sub(1, Ordering::Relaxed);
                 drop(arr);
@@ -514,6 +546,21 @@ mod tests {
         assert_eq!(get_arr(w.b()).unwrap().shape, vec![5]);
         drop(a);
         drop(w); // last count: frees
+    }
+
+    #[test]
+    fn freed_address_is_queued_when_tracking() {
+        track_frees();
+        let v = tag_arr_owned(nums(2));
+        let b = v.b();
+        drop(v);
+        let freed = take_freed();
+        assert!(key_freed(b.0, &freed));
+        assert!(!key_freed(tag_device_bits_for_test(), &freed));
+    }
+
+    fn tag_device_bits_for_test() -> u64 {
+        (7 << 3) | 2
     }
 
     #[test]
