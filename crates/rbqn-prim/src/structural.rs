@@ -136,6 +136,25 @@ fn prototype_of_arr(arr: &BqnArr) -> B {
     }
 }
 
+// NOTE: Fill element of an array when one is known. Typed numeric/char data always has one;
+// a Boxed array has one only if it carries an explicit fill (empty list literals and mixed
+// lists do not). Operations that need padding use this and fail like CBQN when it is None.
+fn known_fill(arr: &BqnArr) -> Option<B> {
+    if arr.fill.is_some() {
+        return arr.fill;
+    }
+    match &arr.data {
+        ArrData::Boxed(_) => None,
+        _ => Some(arr_fill(arr)),
+    }
+}
+
+fn needed_fill(arr: &BqnArr, msg: &str) -> Result<B> {
+    known_fill(arr).ok_or_else(|| BqnError::Domain(msg.into()))
+}
+
+const TAKE_NEEDS_FILL: &str = "𝕨↑𝕩: Fill element of 𝕩 needed for overtaking";
+
 // NOTE: Compute a fill value for an array. For Boxed arrays (arrays of arrays),
 // the fill is derived from the prototype of the first element.
 // For numeric/char arrays, use 0 or ' '.
@@ -812,6 +831,10 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
     let outer_len = arr.ia();
     if outer_len == 0 {
+        // NOTE: an empty vector whose fill is a number or char cannot be joined.
+        if arr.fill.is_some_and(|f| !f.is_arr()) || !matches!(arr.data, ArrData::Boxed(_)) {
+            return Err(BqnError::Rank("∾𝕩: Empty array 𝕩 cannot have an atom fill element".into()));
+        }
         return Ok(PrimResult::Array(BqnArr::empty_vec()));
     }
 
@@ -1320,7 +1343,8 @@ pub fn take_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
 
     let first_dim = leading_dim(&arr);
 
-    let fill_val = arr_fill(&arr);
+    let overtakes = (n.unsigned_abs() as usize) > first_dim;
+    let fill_val = if overtakes { needed_fill(&arr, TAKE_NEEDS_FILL)? } else { arr_fill(&arr) };
 
     if arr.rank() <= 1 {
         // Vector take
@@ -1426,7 +1450,14 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
         xa.ok_or_else(|| BqnError::Type("𝕨↑𝕩: 𝕩 must be an array".into()))?
     };
 
-    let fill_val = arr_fill(arr);
+    let overtakes = axes.iter().enumerate().any(|(a, &n)| {
+        let dim = if arr.shape.len() >= axes.len() { arr.shape.get(a).copied() } else {
+            let pad = axes.len() - arr.shape.len();
+            if a < pad { Some(1) } else { arr.shape.get(a - pad).copied() }
+        };
+        dim.is_some_and(|d| (n.unsigned_abs() as usize) > d)
+    });
+    let fill_val = if overtakes { needed_fill(arr, TAKE_NEEDS_FILL)? } else { arr_fill(arr) };
     let mut current_data: Vec<B> = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
     let mut current_shape = arr.shape.clone();
     // NOTE: If w has more axes than rank of x, prepend 1s to x's shape.
@@ -1888,7 +1919,7 @@ pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if ia == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
-    let fill_val = arr_fill(arr);
+    let fill_val = needed_fill(arr, "«𝕩: Fill element of 𝕩 not known")?;
 
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];
@@ -2025,7 +2056,7 @@ pub fn shiftb_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if ia == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
-    let fill_val = arr_fill(arr);
+    let fill_val = needed_fill(arr, "»𝕩: Fill element of 𝕩 not known")?;
 
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];

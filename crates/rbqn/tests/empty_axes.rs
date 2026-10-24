@@ -11,19 +11,26 @@ fn p(expr: &str) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+fn run_ok(expr: &str) -> bool {
+    Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-p", expr]).output().expect("failed to execute rbqn").status.success()
+}
+
 #[test]
 fn case_00() {
-    assert_eq!(p("3↑⟨⟩"), "⟨ 0 0 0 ⟩\n");
+    // NOTE: #103: ⟨⟩ has no fill element, so overtaking errors (CBQN b62079a).
+    assert!(!run_ok("3↑⟨⟩"));
 }
 
 #[test]
 fn case_01() {
-    assert_eq!(p("1↑⟨⟩"), "⟨ 0 ⟩\n");
+    // NOTE: #103: ⟨⟩ has no fill element, so overtaking errors (CBQN b62079a).
+    assert!(!run_ok("1↑⟨⟩"));
 }
 
 #[test]
 fn case_02() {
-    assert_eq!(p("¯2↑⟨⟩"), "⟨ 0 0 ⟩\n");
+    // NOTE: #103: ⟨⟩ has no fill element, so overtaking errors (CBQN b62079a).
+    assert!(!run_ok("¯2↑⟨⟩"));
 }
 
 #[test]
