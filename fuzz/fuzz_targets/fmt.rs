@@ -4,6 +4,7 @@ use libfuzzer_sys::fuzz_target;
 use rbqn_fuzz::*;
 
 fuzz_target!(|data: &[u8]| {
+    rbqn_fuzz::tick();
     let mut c = Cursor(data, 0);
     let b = bqn();
     let rank = c.next() % 3;

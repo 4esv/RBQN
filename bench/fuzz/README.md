@@ -20,10 +20,12 @@ bench/fuzz/run.sh expr 86400 2>&1 | grep --line-buffered -v NEW_FUNC > bench/fuz
 ```
 
 `run.sh` uses `-fork=1`: every eval leaks about 1 MB (the interpreter does not free what the
-self-hosted compiler allocates) and costs about 40 ms, so a single process reaches the 2 GB limit
-after about 2000 execs. Fork mode restarts the child between jobs. It also means an `oom-*` file
-can be a leak and not a bug: replay it alone (`fuzz/target/*/release/expr oom-...`); only one
-that still fails alone is real.
+self-hosted compiler allocates) and costs about 15 ms to 40 ms, so one process would reach the 2 GB
+limit after about 2000 execs. Each target calls `tick()`, and with `RBQN_FUZZ_MAX_EXECS=1200` (set by
+`run.sh`) the process exits with status 0 after 1200 inputs; fork mode then starts a fresh child on
+the grown corpus. Without that, a child that hit the RSS limit made the parent exit (twice in the first
+long run, even with `-ignore_ooms=1`). An `oom-*` file can therefore still be a leak and not a bug:
+replay it alone (`fuzz/target/*/release/expr oom-...`); only one that still fails alone is real.
 
 Crash artifacts land in `fuzz/artifacts/<target>/`. Minimise with
 `cargo +nightly fuzz tmin <target> <file>`, fix at the root or file an issue with the minimised

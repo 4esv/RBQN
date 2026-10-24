@@ -36,6 +36,21 @@ pub fn bqn() -> &'static Bqn {
     BQN.with(|b| *b)
 }
 
+/// Call once per input. Every eval leaks about 1 MB, so with `RBQN_FUZZ_MAX_EXECS=n` the process
+/// exits cleanly (status 0) after n inputs; under `-fork=1` the parent starts a fresh child
+/// with the grown corpus instead of the child dying at the RSS limit. Unset or 0: never exits.
+pub fn tick() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    static N: AtomicU64 = AtomicU64::new(0);
+    static MAX: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let max = *MAX.get_or_init(|| {
+        std::env::var("RBQN_FUZZ_MAX_EXECS").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
+    });
+    if max > 0 && N.fetch_add(1, Relaxed) + 1 >= max {
+        std::process::exit(0);
+    }
+}
+
 /// A compiled BQN function, evaluated once per process (each `eval` costs a compiler run).
 pub fn func(src: &str) -> rbqn::Value<'static> {
     thread_local! {

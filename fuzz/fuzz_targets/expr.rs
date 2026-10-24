@@ -35,6 +35,7 @@ fn expr(c: &mut Cursor, depth: u8) -> String {
 }
 
 fuzz_target!(|data: &[u8]| {
+    rbqn_fuzz::tick();
     let mut c = Cursor(data, 0);
     let mut stmts = Vec::new();
     // One to three statements, so state from earlier ones can matter.
