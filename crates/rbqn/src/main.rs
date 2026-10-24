@@ -559,7 +559,7 @@ fn format_arr(arr: &BqnArr) -> String {
 
 #[cfg(test)]
 mod tests {
-    use rbqn_core::{get_arr, live_arrays, tag_arr_owned};
+    use rbqn_core::{get_arr, live_arrays, tag_arr_owned, BqnArr, B};
 
     /// Stage 1 of #124: the mechanism and counter only; no interpreter path owns a `Val` yet.
     #[test]
