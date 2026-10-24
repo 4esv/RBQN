@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
-    branches: [issue-115] # TEMP
 
 env:
   CARGO_TERM_COLOR: always
