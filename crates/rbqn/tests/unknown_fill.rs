@@ -69,3 +69,11 @@ fn still_fine() {
     gives("1↑↕0", "⟨ 0 ⟩\n");
     gives("2↑⟨⟨1⟩,⟨2⟩⟩", "⟨ ⟨ 1 ⟩ ⟨ 2 ⟩ ⟩\n");
 }
+
+// BQN test suite `fill` lines: Enclose, Pair and ⍉ on atoms carry fills.
+#[test]
+fn suite_fill_enclose_pair_transpose() {
+    gives("∧´ (< ≡○(2⊸↑) ⋈)¨ ⟨'y', ↕0, ≍˘⟨2‿1,↕4‿2⟩⟩", "1\n");
+    gives("((2⥊<) ≡○(3⊸↑) ⋈˜) ⟨\"ab\"‿⟨↕4⟩,2⟩", "1\n");
+    gives("\"c  \" ≡ 3↑⍉'c'", "1\n");
+}

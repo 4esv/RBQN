@@ -1202,7 +1202,7 @@ pub fn solo_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             out.shape = new_shape;
             Ok(PrimResult::Array(out))
         }
-        None => Ok(PrimResult::Array(typed_arr(vec![x], vec![1], None))),
+        None => Ok(PrimResult::Array(typed_arr(vec![x], vec![1], Some(prototype_of(x))))),
     }
 }
 
@@ -1217,7 +1217,7 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             if w.is_f64() && x.is_f64() {
                 Ok(PrimResult::Array(BqnArr::new_vec_f64(vec![w.o2f(), x.o2f()])))
             } else {
-                Ok(PrimResult::Array(BqnArr::new_vec_b(vec![w, x])))
+                Ok(PrimResult::Array(typed_arr(vec![w, x], vec![2], Some(prototype_of(w)))))
             }
         }
         // array ≍ array → shapes must match
@@ -1243,13 +1243,14 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             if !xarr.shape.is_empty() {
                 return Err(couple_shape_err(&[], &xarr.shape));
             }
-            Ok(PrimResult::Array(BqnArr::new_vec_b(vec![w, xarr.get(0)?])))
+            Ok(PrimResult::Array(typed_arr(vec![w, xarr.get(0)?], vec![2], Some(prototype_of(w)))))
         }
         (Some(warr), None) => {
             if !warr.shape.is_empty() {
                 return Err(couple_shape_err(&warr.shape, &[]));
             }
-            Ok(PrimResult::Array(BqnArr::new_vec_b(vec![warr.get(0)?, x])))
+            let w0 = warr.get(0)?;
+            Ok(PrimResult::Array(typed_arr(vec![w0, x], vec![2], Some(prototype_of(w0)))))
         }
     }
 }
@@ -1269,13 +1270,15 @@ pub fn pair_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
     Ok(PrimResult::Array(BqnArr {
         shape: vec![1],
         data: ArrData::Boxed(vec![x]),
-        fill: None,
+        // spec/inferred.md fill table: monadic ⋈ has fill 𝕩 (as a valid fill, its prototype)
+        fill: Some(prototype_of(x)),
     }))
 }
 
 // ⋈ dyad: pair
 pub fn pair_c2(w: B, _wa: Option<&BqnArr>, x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
-    Ok(PrimResult::Array(typed_arr(vec![w, x], vec![2], None)))
+    // spec: dyadic ⋈ fill is specified only if it matches the one from 𝕨; use 𝕨's prototype
+    Ok(PrimResult::Array(typed_arr(vec![w, x], vec![2], Some(prototype_of(w)))))
 }
 
 // ↑ monad: prefixes
@@ -2459,7 +2462,8 @@ pub fn transpose_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Ok(PrimResult::Array(BqnArr {
             shape: vec![],
             data: ArrData::Boxed(vec![x]),
-            fill: None,
+            // spec: monadic ⍉ fill is ⊢ (the argument's fill); an atom's is its prototype
+            fill: Some(prototype_of(x)),
         }));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⍉𝕩: 𝕩 must be an array".into()))?;
