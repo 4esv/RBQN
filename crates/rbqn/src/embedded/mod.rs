@@ -9,9 +9,9 @@ use std::io::Read;
 #[allow(dead_code)]
 pub enum ObjectEntry {
     Provide(usize),
-    /// Reference to runtime[N] (used by compiler, formatter)
+    /// Reference to runtime\[N\] (used by compiler, formatter)
     Runtime(usize),
-    /// Reference to runtime_0[N] (used by runtime1)
+    /// Reference to runtime_0\[N\] (used by runtime1)
     RuntimePrev(usize),
     Float(f64),
     Char(u32),
@@ -90,8 +90,8 @@ pub fn bytecode_source_tag() -> String {
 ///   [tag_len: u16] [tag: bytes]
 ///   [bc_len: u32] [bc: i32 × bc_len]
 ///   [iarrs_count: u32] for each: [len: u32] [data: i32 × len]
-///   [objs_count: u32] for each: [tag: u8] [payload]
-///   [blocks_count: u32] for each: [tag: u8] [payload]
+///   [objs_count: u32] for each: [tag: u8] \[payload\]
+///   [blocks_count: u32] for each: [tag: u8] \[payload\]
 ///   [bodies_count: u32] [data: u32 × bodies_count]
 pub fn encode_owned_bytecode(obc: &OwnedBytecode, source_tag: &str) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
