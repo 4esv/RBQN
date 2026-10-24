@@ -5,6 +5,13 @@
 //! The `tag_arr(` calls left here build *nested elements* (a `B` stored inside a
 //! parent array, or a recursion helper whose `B` result becomes such an element),
 //! so their owner is the parent array, not the primitive. Stage 2b/2c retire them.
+//!
+//! #161 stage 2b: a boxed array can own its elements (`ArrData::Boxed`, `BqnArr.owns`),
+//! but only a builder that can hand over one count per element may set it, and these
+//! sites cannot: they produce raw handles from arguments' elements (or fresh leaked
+//! helpers) with no ownership information. They stay leaked, which is safe because the VM
+//! keeps every argument that such a result may reference alive (`call_slots`, rule 4).
+//! The VM-owned builders (`build_owned_list`, `¨` results, `<`/`⋈` adoption) take the invariant.
 //! Adding a new `tag_arr(` to rbqn-prim fails this test until it is listed with a reason.
 
 use std::fs;

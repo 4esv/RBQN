@@ -52,7 +52,8 @@ fn stack_temporaries_are_reclaimed_and_survivors_stay_readable() {
     grown_local(10);
     let (small, big) = (grown_local(1000), grown_local(5000));
     assert!(big - small < 400, "4000 more locals grew live arrays by {}", big - small);
-    // The result list holds one array per call; the argument `{𝕩+1}` receives is freed.
+    // The argument `{𝕩+1}` receives is freed, and so are the result arrays: the `¨` result
+    // list owns its elements and goes when the statement is dropped (nested_reclaim.rs).
     let grown_arg = |n: usize| {
         let before = live_arrays();
         assert_eq!(fmt(&b, &format!("{{𝕊: {{𝕩+1}} 1↑ +⌜˜ ↕100}}¨ ↕{n} ⋄ 0")), "0");
@@ -60,7 +61,7 @@ fn stack_temporaries_are_reclaimed_and_survivors_stay_readable() {
     };
     grown_arg(10);
     let (small, big) = (grown_arg(1000), grown_arg(5000));
-    assert!(big - small < 4400, "4000 more argument calls grew live arrays by {}", big - small);
+    assert!(big - small < 400, "4000 more argument calls grew live arrays by {}", big - small);
     // A scope that a closure or namespace captured keeps its slots (leaked, still readable).
     assert_eq!(fmt(&b, "G ← {𝕩 ⋄ a ← ↕3 ⋄ {𝕩 ⋄ a}} ⋄ ({𝕏 0} G 0) ≡ {𝕏 1} G 0"), "1");
     assert_eq!(fmt(&b, "n ← {x ⇐ 1↓↕4 ⋄ y ⇐ x}  ⋄ n.x ≡ n.y"), "1");

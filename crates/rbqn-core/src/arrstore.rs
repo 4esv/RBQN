@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use crate::array::BqnArr;
+use crate::array::{ArrData, BqnArr};
 use crate::value::{B, ARR_TAG, tagu64};
 
 /// Fast hasher for u64/u128 keys: a splitmix64 finalizer instead of SipHash.
@@ -318,6 +318,38 @@ pub unsafe fn share(b: B) -> Val {
         unsafe { Arc::increment_strong_count(host_ptr(b)) };
     }
     Val(b)
+}
+
+/// Make the fresh boxed array `r` own its elements when every host-array element of it
+/// is an array `is_arg` accepts (an argument of the call that built it, so alive for
+/// the call) and a host-array fill is one `fill_ok` accepts (made during that call,
+/// referenced by nothing else, so it stays leaked): each such element gets a count of its own
+/// (`pin`) and `r.owns` is set (#161). Returns false, changing nothing, when `r` is not
+/// uniquely held, not boxed, already owning, or holds anything else (then the caller
+/// must keep the arguments alive forever, as before).
+pub fn adopt_args(r: B, is_arg: impl Fn(B) -> bool, fill_ok: impl Fn(B) -> bool) -> bool {
+    if !is_host_arr(r) {
+        return false;
+    }
+    // SAFETY: `r` is a live host handle; ManuallyDrop keeps this from touching the count.
+    let mut arc = std::mem::ManuallyDrop::new(unsafe { Arc::from_raw(host_ptr(r)) });
+    let Some(a) = Arc::get_mut(&mut arc) else { return false };
+    if a.owns || a.fill.is_some_and(|f| is_host_arr(f) && !fill_ok(f)) {
+        return false;
+    }
+    let ArrData::Boxed(v) = &a.data else { return false };
+    if !v.iter().all(|&e| !is_host_arr(e) || is_arg(e)) {
+        return false;
+    }
+    let mut any = false;
+    for &e in v {
+        if is_host_arr(e) {
+            pin(e);
+            any = true;
+        }
+    }
+    a.owns = any;
+    true
 }
 
 /// True for a host array handle (the kind `pin` and `Val` act on).

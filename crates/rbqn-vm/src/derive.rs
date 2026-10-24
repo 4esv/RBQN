@@ -864,10 +864,37 @@ fn call_impure(f: B, w: Option<Slot>, x: Slot) -> Slot {
             return r;
         }
     }
+    if is_native_each(f) {
+        // `¨`/`⌜` assemble their result list after the last user call returned: when it
+        // was created during this call, nothing else references it (#161).
+        let span = BirthSpan(rbqn_core::arrstore::births_mark());
+        let r = match wb {
+            Some(wb) => c2(f, wb, xb),
+            None => c1(f, xb),
+        };
+        let fresh = rbqn_core::arrstore::is_host_handle(r) && rbqn_core::arrstore::born_since(span.0, r);
+        drop(span);
+        if fresh {
+            // SAFETY: see above; the list's only handle is `r`, its count is ours.
+            return Slot::Owned(unsafe { rbqn_core::Val::from_b_owned(r) });
+        }
+        return Slot::Borrowed(r);
+    }
     Slot::Borrowed(match wb {
         Some(wb) => c2(f, wb, xb),
         None => c1(f, xb),
     })
+}
+
+/// `f` is `𝔽¨` (or monadic `𝔽⌜`) derived from the native each: its result is the list
+/// that `each_c1`/`each_c2` assembled.
+fn is_native_each(f: B) -> bool {
+    if !f.is_fun() {
+        return false;
+    }
+    let d = get_derived((f.0 & 0xFFFFFFFFFFFF) >> 3);
+    d.kind == DerivedKind::Md1D
+        && native_md_idx(d.g).is_some_and(|i| i == crate::modifiers::MD1_EACH || i == crate::modifiers::MD1_TBL)
 }
 
 /// Calls of user-defined block functions (plain, or derived by a block modifier)
@@ -959,12 +986,20 @@ fn call_slots(f: B, w: Option<Slot>, x: Slot) -> Slot {
         None => c1(f, xb),
     };
     let fresh = rbqn_core::arrstore::is_host_handle(r) && born_since(span.0, r);
+    // A created array could hold an argument's handle (boxed result). When all it holds
+    // are the arguments themselves (`<x`, `w⋈x`) and a fill made during the call, it takes
+    // a count of each and the arguments drop normally (#161); otherwise they are leaked.
+    let hold = fresh
+        && may_hold_handles(r)
+        && !rbqn_core::arrstore::adopt_args(
+            r,
+            |e| [w.as_deref(), Some(&*x)].into_iter().flatten().any(|a| same_array(a.b(), e)),
+            |f| born_since(span.0, f),
+        );
     drop(span);
     let x = std::mem::ManuallyDrop::into_inner(x);
     let w = w.map(std::mem::ManuallyDrop::into_inner);
     if fresh {
-        // A created array could hold an argument's handle (boxed result): leak those.
-        let hold = may_hold_handles(r);
         for arg in [w, Some(x)].into_iter().flatten() {
             if hold {
                 arg.leak();
@@ -975,6 +1010,13 @@ fn call_slots(f: B, w: Option<Slot>, x: Slot) -> Slot {
         return Slot::Owned(unsafe { rbqn_core::Val::from_b_owned(r) });
     }
     let mut result: Option<Slot> = None;
+    // The result is an existing array that is no argument itself: an element read out of
+    // an argument (`⊑`, `⊏`, ...), or a constant. An owning argument releases its elements
+    // when it drops below, so the result takes a count of its own first (#161).
+    let aliases_arg = [w.as_ref(), Some(&x)].into_iter().flatten().any(|a| same_array(a.b(), r));
+    if !aliases_arg && [w.as_ref(), Some(&x)].into_iter().flatten().any(|a| matches!(a, Slot::Owned(_))) {
+        result = Some(Slot::read(r));
+    }
     for arg in [w, Some(x)].into_iter().flatten() {
         match arg {
             Slot::Owned(v) if result.is_none() && same_array(v.b(), r) => result = Some(Slot::Owned(v)),

@@ -63,8 +63,8 @@ fn get_rt_depth() -> Option<B> {
 const MD1_CONST: usize = 44;  // ˙
 const MD1_SWAP: usize = 45;   // ˜
 const MD1_CELL: usize = 46;   // ˘
-const MD1_EACH: usize = 47;   // ¨
-const MD1_TBL: usize = 48;    // ⌜
+pub(crate) const MD1_EACH: usize = 47;   // ¨
+pub(crate) const MD1_TBL: usize = 48;    // ⌜
 const MD1_UNDO: usize = 49;   // ⁼
 const MD1_FOLD: usize = 50;   // ´
 const MD1_INSERT: usize = 51; // ˝
@@ -286,6 +286,15 @@ fn results_to_arr_fill(results: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> B
     crate::vm::tag_arr(out)
 }
 
+/// As `results_to_arr`, for results that each hold a count (`vm::counted`): the boxed
+/// array owns them (#161), so freeing it frees results nobody else holds.
+fn counted_results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
+    let mut out = rbqn_core::array::typed_arr_from_b_vec(results, shape, None);
+    out.fill = None;
+    out.seal_counted();
+    crate::vm::tag_arr(out)
+}
+
 /// Merge cell results into a higher-rank array.
 /// Used by ˘ (cells) where results from each cell are combined with
 /// shape = leading_shape ∾ cell_result_shape.
@@ -405,7 +414,7 @@ fn each_c1(f: B, x: B) -> B {
                 ArrData::Boxed(v) => each(bl, body, psc, f, v.iter().copied(), r),
                 _ => each(bl, body, psc, f, (0..n).map(|i| get_elem(&arr, i)), r),
             }
-            return results_to_arr(results, arr.shape.clone());
+            return counted_results_to_arr(results, arr.shape.clone());
         }
     }
     for i in 0..n {
