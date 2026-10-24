@@ -1531,7 +1531,20 @@ fn take_under(f: B, k: B, x: B, drop: bool) -> B {
             ));
         }
         let join_fn = crate::derive::m_native_fn(23); // ∾
-        if drop {
+        if k_val < 0.0 {
+            // Negative k selects from the end: the untouched part is the other side.
+            if drop {
+                let selected = c2(drop_fn, k, x);
+                let modified = c1(f, selected);
+                let suffix = c2(take_fn, k, x);
+                c2(join_fn, modified, suffix)
+            } else {
+                let prefix = c2(drop_fn, k, x);
+                let selected = c2(take_fn, k, x);
+                let modified = c1(f, selected);
+                c2(join_fn, prefix, modified)
+            }
+        } else if drop {
             let prefix = c2(take_fn, k, x);
             let selected = c2(drop_fn, k, x);
             let modified = c1(f, selected);
