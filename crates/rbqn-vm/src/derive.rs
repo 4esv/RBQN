@@ -1667,9 +1667,9 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         // NOTE: •ns.Values — return exported field values of a namespace
         181 => ns_values_c1(x),
         // NOTE: •ns.Has — monadic: 𝕩 is ⟨ns, name⟩ pair → returns 0 or 1
-        182 => ns_has_c1(x),
+        182 => ns_monadic_err(x),
         // NOTE: •ns.Get — monadic: 𝕩 is ⟨ns, name⟩ pair → returns value
-        183 => ns_get_c1(x),
+        183 => ns_monadic_err(x),
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c1)")),
     }
 }
@@ -1925,9 +1925,9 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         }
         // NOTE: •FFI dyadic — load library and return callable function
         160 => crate::ffi::ffi_load(w, x),
-        // NOTE: •ns.Has dyadic: name •ns.Has ns → 0 or 1
+        // NOTE: •ns.Has dyadic: ns •ns.Has name → 0 or 1
         182 => ns_has_c2(w, x),
-        // NOTE: •ns.Get dyadic: name •ns.Get ns → value
+        // NOTE: •ns.Get dyadic: ns •ns.Get name → value
         183 => ns_get_c2(w, x),
         // NOTE: •HashMap constructor: keys •HashMap vals
         170 => make_hashmap_instance(w, x),
@@ -4065,51 +4065,33 @@ fn ns_values_c1(x: B) -> B {
     crate::vm::b_vec_to_arr(values)
 }
 
-/// •ns.Has monadic: 𝕩 is ⟨ns, name_string⟩ → returns 0 or 1
-fn ns_has_c1(x: B) -> B {
-    // When called as ns.Has name, BQN binds self → monadic gets ⟨self, name⟩ or just name
-    // In practice the dyadic form is used: name •ns.Has ns
-    // Monadic stub: treat x as a namespace, check if it has any fields
-    if x.is_nsp() {
-        let ns = crate::namespace::get_ns(x);
-        B::m_i32(if ns.desc.exp_gids.is_empty() { 0 } else { 1 })
-    } else {
-        B::m_i32(0)
-    }
+/// •ns.Has / •ns.Get monadic: CBQN rejects the monadic call
+fn ns_monadic_err(_x: B) -> B {
+    rbqn_core::error::throw("This function can't be called monadically")
 }
 
-/// •ns.Has dyadic: name •ns.Has ns → 0 or 1
+/// ns •ns.Has name → 0 or 1
 fn ns_has_c2(w: B, x: B) -> B {
-    if !x.is_nsp() {
-        rbqn_core::error::throw("•ns.Has: 𝕩 must be a namespace");
+    if !w.is_nsp() {
+        rbqn_core::error::throw("•ns.Has: 𝕨 must be a namespace");
     }
-    let name = b_to_string(w);
+    let name = b_to_string(x);
     let gid = crate::namespace::str2gid(&name);
-    let ns = crate::namespace::get_ns(x);
-    let has = ns.desc.exp_gids.contains(&gid);
-    B::m_i32(if has { 1 } else { 0 })
+    let ns = crate::namespace::get_ns(w);
+    B::m_i32(if ns.desc.exp_gids.contains(&gid) { 1 } else { 0 })
 }
 
-/// •ns.Get monadic: stub — throw for now
-fn ns_get_c1(x: B) -> B {
-    if x.is_nsp() {
-        // Can't know which field to get without w
-        rbqn_core::error::throw("•ns.Get: dyadic form required (name •ns.Get ns)");
-    }
-    rbqn_core::error::throw("•ns.Get: 𝕩 must be a namespace")
-}
-
-/// •ns.Get dyadic: name •ns.Get ns → value
+/// ns •ns.Get name → value
 fn ns_get_c2(w: B, x: B) -> B {
-    if !x.is_nsp() {
-        rbqn_core::error::throw("•ns.Get: 𝕩 must be a namespace");
+    if !w.is_nsp() {
+        rbqn_core::error::throw("•ns.Get: 𝕨 must be a namespace");
     }
-    let name = b_to_string(w);
+    let name = b_to_string(x);
     let gid = crate::namespace::str2gid(&name);
-    let ns = crate::namespace::get_ns(x);
+    let ns = crate::namespace::get_ns(w);
     match ns.get_by_gid(gid) {
         Some(v) => v,
-        None => rbqn_core::error::throw(format!("•ns.Get: field '{}' not found in namespace", name)),
+        None => rbqn_core::error::throw(format!("Field named \"{}\" not found", name)),
     }
 }
 
