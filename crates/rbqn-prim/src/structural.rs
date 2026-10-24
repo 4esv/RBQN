@@ -136,6 +136,25 @@ fn prototype_of_arr(arr: &BqnArr) -> B {
     }
 }
 
+// NOTE: Fill element of an array when one is known. Typed numeric/char data always has one;
+// a Boxed array has one only if it carries an explicit fill (empty list literals and mixed
+// lists do not). Operations that need padding use this and fail like CBQN when it is None.
+fn known_fill(arr: &BqnArr) -> Option<B> {
+    if arr.fill.is_some() {
+        return arr.fill;
+    }
+    match &arr.data {
+        ArrData::Boxed(_) => None,
+        _ => Some(arr_fill(arr)),
+    }
+}
+
+fn needed_fill(arr: &BqnArr, msg: &str) -> Result<B> {
+    known_fill(arr).ok_or_else(|| BqnError::Domain(msg.into()))
+}
+
+const TAKE_NEEDS_FILL: &str = "𝕨↑𝕩: Fill element of 𝕩 needed for overtaking";
+
 // NOTE: Compute a fill value for an array. For Boxed arrays (arrays of arrays),
 // the fill is derived from the prototype of the first element.
 // For numeric/char arrays, use 0 or ' '.
@@ -812,6 +831,10 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
 
     let outer_len = arr.ia();
     if outer_len == 0 {
+        // NOTE: an empty vector whose fill is a number or char cannot be joined.
+        if arr.fill.is_some_and(|f| !f.is_arr()) || !matches!(arr.data, ArrData::Boxed(_)) {
+            return Err(BqnError::Rank("∾𝕩: Empty array 𝕩 cannot have an atom fill element".into()));
+        }
         return Ok(PrimResult::Array(BqnArr::empty_vec()));
     }
 
@@ -1179,7 +1202,7 @@ pub fn solo_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             out.shape = new_shape;
             Ok(PrimResult::Array(out))
         }
-        None => Ok(PrimResult::Array(typed_arr(vec![x], vec![1], None))),
+        None => Ok(PrimResult::Array(typed_arr(vec![x], vec![1], Some(prototype_of(x))))),
     }
 }
 
@@ -1194,7 +1217,7 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             if w.is_f64() && x.is_f64() {
                 Ok(PrimResult::Array(BqnArr::new_vec_f64(vec![w.o2f(), x.o2f()])))
             } else {
-                Ok(PrimResult::Array(BqnArr::new_vec_b(vec![w, x])))
+                Ok(PrimResult::Array(typed_arr(vec![w, x], vec![2], Some(prototype_of(w)))))
             }
         }
         // array ≍ array → shapes must match
@@ -1220,13 +1243,14 @@ pub fn couple_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             if !xarr.shape.is_empty() {
                 return Err(couple_shape_err(&[], &xarr.shape));
             }
-            Ok(PrimResult::Array(BqnArr::new_vec_b(vec![w, xarr.get(0)?])))
+            Ok(PrimResult::Array(typed_arr(vec![w, xarr.get(0)?], vec![2], Some(prototype_of(w)))))
         }
         (Some(warr), None) => {
             if !warr.shape.is_empty() {
                 return Err(couple_shape_err(&warr.shape, &[]));
             }
-            Ok(PrimResult::Array(BqnArr::new_vec_b(vec![warr.get(0)?, x])))
+            let w0 = warr.get(0)?;
+            Ok(PrimResult::Array(typed_arr(vec![w0, x], vec![2], Some(prototype_of(w0)))))
         }
     }
 }
@@ -1246,13 +1270,15 @@ pub fn pair_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
     Ok(PrimResult::Array(BqnArr {
         shape: vec![1],
         data: ArrData::Boxed(vec![x]),
-        fill: None,
+        // spec/inferred.md fill table: monadic ⋈ has fill 𝕩 (as a valid fill, its prototype)
+        fill: Some(prototype_of(x)),
     }))
 }
 
 // ⋈ dyad: pair
 pub fn pair_c2(w: B, _wa: Option<&BqnArr>, x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
-    Ok(PrimResult::Array(typed_arr(vec![w, x], vec![2], None)))
+    // spec: dyadic ⋈ fill is specified only if it matches the one from 𝕨; use 𝕨's prototype
+    Ok(PrimResult::Array(typed_arr(vec![w, x], vec![2], Some(prototype_of(w)))))
 }
 
 // ↑ monad: prefixes
@@ -1320,7 +1346,8 @@ pub fn take_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
 
     let first_dim = leading_dim(&arr);
 
-    let fill_val = arr_fill(&arr);
+    let overtakes = (n.unsigned_abs() as usize) > first_dim;
+    let fill_val = if overtakes { needed_fill(&arr, TAKE_NEEDS_FILL)? } else { arr_fill(&arr) };
 
     if arr.rank() <= 1 {
         // Vector take
@@ -1426,7 +1453,16 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
         xa.ok_or_else(|| BqnError::Type("𝕨↑𝕩: 𝕩 must be an array".into()))?
     };
 
-    let fill_val = arr_fill(arr);
+    let overtakes = axes.iter().enumerate().any(|(a, &n)| {
+        let dim = if arr.shape.len() >= axes.len() { arr.shape.get(a).copied() } else {
+            let pad = axes.len() - arr.shape.len();
+            if a < pad { Some(1) } else { arr.shape.get(a - pad).copied() }
+        };
+        dim.is_some_and(|d| (n.unsigned_abs() as usize) > d)
+    });
+    // NOTE: an empty result pads nothing, so no fill is needed (CBQN: 0‿1‿1 ↑ ⟨⟩ is ↕0‿1‿1)
+    let overtakes = overtakes && !axes.contains(&0);
+    let fill_val = if overtakes { needed_fill(arr, TAKE_NEEDS_FILL)? } else { arr_fill(arr) };
     let mut current_data: Vec<B> = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
     let mut current_shape = arr.shape.clone();
     // NOTE: If w has more axes than rank of x, prepend 1s to x's shape.
@@ -1888,7 +1924,7 @@ pub fn shifta_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if ia == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
-    let fill_val = arr_fill(arr);
+    let fill_val = needed_fill(arr, "«𝕩: Fill element of 𝕩 not known")?;
 
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];
@@ -2025,7 +2061,7 @@ pub fn shiftb_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if ia == 0 {
         return Ok(PrimResult::Array(arr.clone()));
     }
-    let fill_val = arr_fill(arr);
+    let fill_val = needed_fill(arr, "»𝕩: Fill element of 𝕩 not known")?;
 
     if arr.rank() > 1 {
         let first_dim = arr.shape[0];
@@ -2428,7 +2464,8 @@ pub fn transpose_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         return Ok(PrimResult::Array(BqnArr {
             shape: vec![],
             data: ArrData::Boxed(vec![x]),
-            fill: None,
+            // spec: monadic ⍉ fill is ⊢ (the argument's fill); an atom's is its prototype
+            fill: Some(prototype_of(x)),
         }));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⍉𝕩: 𝕩 must be an array".into()))?;

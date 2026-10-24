@@ -937,8 +937,8 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
             let c = w.o2c()?;
             let n = x.to_f64()?;
             let r = c as i64 + 1 - n as i64;
-            if r < 0 || r > value::CHR_MAX as i64 {
-                return Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()));
+            if r < 1 || r > value::CHR_MAX as i64 {
+                return Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()));
             }
             Ok(PrimResult::Scalar(B::m_c32(r as u32)))
         }
@@ -947,8 +947,8 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
             let nums = num_view(xa_arr)?;
             let result: std::result::Result<Vec<u32>, _> = nums.iter().map(|&n| {
                 let r = c + 1 - n as i64;
-                if r < 0 || r > value::CHR_MAX as i64 {
-                    Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()))
+                if r < 1 || r > value::CHR_MAX as i64 {
+                    Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
                 } else { Ok(r as u32) }
             }).collect();
             let mut out = BqnArr::new_vec_c32(result?);
@@ -960,8 +960,8 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
             let chars = wa_arr.c32_iter()?;
             let result: std::result::Result<Vec<u32>, _> = chars.iter().map(|&c| {
                 let r = c as i64 + 1 - n;
-                if r < 0 || r > value::CHR_MAX as i64 {
-                    Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()))
+                if r < 1 || r > value::CHR_MAX as i64 {
+                    Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
                 } else { Ok(r as u32) }
             }).collect();
             let mut out = BqnArr::new_vec_c32(result?);
@@ -974,8 +974,8 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
             if wa_arr.shape == xa_arr.shape {
                 let result: std::result::Result<Vec<u32>, _> = chars.iter().zip(nums.iter()).map(|(&c, &n)| {
                     let r = c as i64 + 1 - n as i64;
-                    if r < 0 || r > value::CHR_MAX as i64 {
-                        Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()))
+                    if r < 1 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
                 }).collect();
                 let mut out = BqnArr::new_vec_c32(result?);
@@ -991,8 +991,8 @@ fn not_char_num(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<
                 let result: std::result::Result<Vec<u32>, _> = (0..big.ia()).map(|i| {
                     let (c, n) = if w_short { (chars[i / rep], nums[i]) } else { (chars[i], nums[i / rep]) };
                     let r = c as i64 + 1 - n as i64;
-                    if r < 0 || r > value::CHR_MAX as i64 {
-                        Err(BqnError::Domain("𝕨¬𝕩: Invalid character result".into()))
+                    if r < 1 || r > value::CHR_MAX as i64 {
+                        Err(BqnError::Domain("𝕨-𝕩: Invalid character".into()))
                     } else { Ok(r as u32) }
                 }).collect();
                 let mut out = BqnArr::new_vec_c32(result?);
