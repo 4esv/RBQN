@@ -1,0 +1,41 @@
+[package]
+name = "rbqn-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rbqn = { path = "../crates/rbqn", default-features = false }
+rbqn-core = { path = "../crates/rbqn-core" }
+
+# Not a member of the root workspace (cargo-fuzz needs nightly and its own lockfile).
+[workspace]
+
+[lib]
+name = "rbqn_fuzz"
+path = "src/lib.rs"
+
+[[bin]]
+name = "expr"
+path = "fuzz_targets/expr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fmt"
+path = "fuzz_targets/fmt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bytes"
+path = "fuzz_targets/bytes.rs"
+test = false
+doc = false
+bench = false
