@@ -37,7 +37,7 @@ Status: pre-1.0, complete language, no known divergences from the specification.
 
 ## What works
 
-- **The language.** Every primitive, modifier and combinator; headers, predicates, multiple bodies, namespaces, `⁼` for the invertible primitives, `⌾` and `⚇`. The official test suite passes in full (13 files, 1316 cases, see [Testing](#testing)).
+- **The language.** Every primitive, modifier and combinator; headers, predicates, multiple bodies, namespaces, `⁼` for the invertible primitives, `⌾` and `⚇`. The official test suite passes in full (13 files, 1316 cases, see [Testing](#testing)). The workspace has 31 `unsafe` sites, each with a `// SAFETY:` comment enforced by `clippy::undocumented_unsafe_blocks` (`bench/unsafe_census.sh`); rbqn-core and rbqn-prim pass under Miri in CI.
 - **Self-hosting.** The compiler, runtimes and formatter are compiled by RBQN itself from `c.bqn`, `r0.bqn`, `r1.bqn` and `f.bqn`, embedded as bytecode. A fixpoint check confirms that the compiler compiled by itself produces identical bytecode.
 - **Typed arrays.** Arrays are stored unboxed as bits, i8, i16, i32, f64, or 8/16/32-bit characters, squeezed to the narrowest exact type, with boxed arrays only for nested data; the primitives have specialised paths for each.
 - **GPU dispatch.** Elementwise arithmetic, reductions, scans, sorting, selection, softmax and matrix multiply have wgpu kernels. Arithmetic, folds, scans and `•math.MatMul` dispatch automatically when a cost model says the GPU wins, using exact integer kernels only; the `•gpu` namespace gives explicit f32 kernels and device-resident arrays with lazy fusion. See [GPU](#gpu).
