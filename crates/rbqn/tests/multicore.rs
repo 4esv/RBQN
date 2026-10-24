@@ -99,3 +99,22 @@ fn threads_flag_and_version() {
     let v = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-t", "0", "-p", "1"]).output().unwrap();
     assert!(!v.status.success());
 }
+
+#[test]
+fn version_has_gpu_line() {
+    let gpu = |envs: &[(&str, &str)], args: &[&str]| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_rbqn"));
+        c.args(args).arg("--version");
+        for (k, v) in envs {
+            c.env(k, v);
+        }
+        let o = c.output().unwrap();
+        String::from_utf8_lossy(&o.stdout).lines().find(|l| l.starts_with("gpu: ")).map(String::from)
+    };
+    // Disabled: exactly `gpu: off`, whatever hardware the test runs on.
+    assert_eq!(gpu(&[("RBQN_GPU", "off")], &[]).as_deref(), Some("gpu: off"));
+    assert_eq!(gpu(&[], &["--no-gpu"]).as_deref(), Some("gpu: off"));
+    // Default: an adapter name or `none` (CI has no GPU), never empty.
+    let d = gpu(&[], &[]).expect("gpu line");
+    assert!(d.len() > "gpu: ".len(), "{d}");
+}
