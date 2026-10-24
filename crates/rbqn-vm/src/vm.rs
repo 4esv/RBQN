@@ -1139,8 +1139,12 @@ fn bqn_merge(elems: Vec<B>) -> B {
             }
         }
     }
-    // Mixed or non-conforming: fall back to boxed list
-    tag_arr(BqnArr::from_b_vec(elems))
+    // Mixed or non-conforming: defer to `>` so shape mismatches raise its error
+    let list = tag_arr(BqnArr::from_b_vec(elems));
+    match rbqn_prim::structural::merge_c1(list, get_arr(list).as_deref()) {
+        Ok(r) => r.to_b(),
+        Err(e) => rbqn_core::error::throw_bqn(e),
+    }
 }
 
 pub fn tag_arr(arr: BqnArr) -> B {
