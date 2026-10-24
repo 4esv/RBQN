@@ -88,6 +88,30 @@ const MD2_CATCH: usize = 63;    // ⎊
 pub const MD2_FILL_BY: usize = 64; // •_fillBy_
 // NOTE: •_while_: F _while_ G — apply F while G returns 1
 pub const MD2_WHILE: usize = 65; // •_while_
+// NOTE: •_timed: F •_timed — seconds for one call; w F •_timed x — mean over w calls
+pub const MD1_TIMED: usize = 66;
+
+fn timed_c1(f: B, x: B) -> B {
+    let start = std::time::Instant::now();
+    c1(f, x);
+    B::m_f64(start.elapsed().as_secs_f64())
+}
+
+fn timed_c2(f: B, w: B, x: B) -> B {
+    if !w.is_f64() || w.o2f().fract() != 0.0 {
+        let got = if w.is_f64() { w.o2f().to_string() } else if w.is_arr() { "array".into() } else { "character".into() };
+        rbqn_core::error::throw(format!("Expected integer, got {got}"));
+    }
+    let n = w.o2f() as i64;
+    if n <= 0 {
+        rbqn_core::error::throw("𝕨 𝔽•_timed 𝕩: 𝕨 must be an integer greater than 0");
+    }
+    let start = std::time::Instant::now();
+    for _ in 0..n {
+        c1(f, x);
+    }
+    B::m_f64(start.elapsed().as_secs_f64() / n as f64)
+}
 
 // ============================================================
 // Top-level dispatch
@@ -95,6 +119,7 @@ pub const MD2_WHILE: usize = 65; // •_while_
 
 pub fn native_md1_c1(prim_idx: usize, operand: B, _self_val: B, x: B) -> B {
     match prim_idx {
+        MD1_TIMED => timed_c1(operand, x),
         MD1_CONST => operand,
         MD1_SWAP => c2(operand, x, x),
         MD1_CELL => cells_c1(operand, x),
@@ -133,6 +158,7 @@ fn unit_list(w: B) -> B {
 
 pub fn native_md1_c2(prim_idx: usize, operand: B, _self_val: B, w: B, x: B) -> B {
     match prim_idx {
+        MD1_TIMED => timed_c2(operand, w, x),
         MD1_CONST => operand,
         MD1_SWAP => c2(operand, x, w),
         MD1_CELL => cells_c2(operand, w, x),
