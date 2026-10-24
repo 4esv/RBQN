@@ -24,6 +24,34 @@ fn stack_temporaries_are_reclaimed_and_survivors_stay_readable() {
     // Without reclamation each call leaks 3 arrays (↕100, the table, the take).
     assert!(big - small < 400, "4000 more calls grew live arrays by {}", big - small);
 
+    // Block and function results travel as Owned slots (#161): the result of a block
+    // call is consumed by the next primitive and freed. Without it each call leaks one array.
+    let grown_blocks = |n: usize| {
+        let before = live_arrays();
+        assert_eq!(fmt(&b, &format!("{{𝕊: ⊑ {{1↑ +⌜˜ ↕𝕩}} 100}}¨ ↕{n} ⋄ 0")), "0");
+        live_arrays() - before
+    };
+    grown_blocks(10);
+    let (small, big) = (grown_blocks(1000), grown_blocks(5000));
+    assert!(big - small < 400, "4000 more block calls grew live arrays by {}", big - small);
+    let grown_mod = |n: usize| {
+        let before = live_arrays();
+        assert_eq!(fmt(&b, &format!("_m ← {{𝔽 1↑ +⌜˜ ↕𝕩}} ⋄ {{𝕊: ⊑ ⊢ _m 100}}¨ ↕{n} ⋄ 0")), "0");
+        live_arrays() - before
+    };
+    grown_mod(10);
+    let (small, big) = (grown_mod(1000), grown_mod(5000));
+    assert!(big - small < 400, "4000 more modifier calls grew live arrays by {}", big - small);
+    // A returned array is the only reference: reading it after the call stays valid,
+    // also when it came through a variable, an argument or a closure.
+    assert_eq!(fmt(&b, "{𝕩 ⋄ ↕3} 0"), "⟨ 0 1 2 ⟩");
+    assert_eq!(fmt(&b, "(↕2) {𝕨∾𝕩} ↕3"), "⟨ 0 1 0 1 2 ⟩");
+    assert_eq!(fmt(&b, "{𝕩 ⋄ a←↕3 ⋄ a} 0"), "⟨ 0 1 2 ⟩");
+    assert_eq!(fmt(&b, "{𝕩} ↕3"), "⟨ 0 1 2 ⟩");
+    assert_eq!(fmt(&b, "{⊢𝕩} {1↓𝕩} ↕4"), "⟨ 1 2 3 ⟩");
+    assert_eq!(fmt(&b, "{𝕩 ⋄ t←↕3 ⋄ F ← {t∾𝕩} ⋄ (F 1)≡F 1} 0"), "1");
+    assert_eq!(fmt(&b, "≢ {1‿2⥊𝕩} 2↑ ↕5"), "⟨ 1 2 ⟩");
+
     // Aliasing results move ownership instead of dropping.
     assert_eq!(fmt(&b, "⊢ ↕3"), "⟨ 0 1 2 ⟩");
     assert_eq!(fmt(&b, "1 ⊣ ↕3"), "1");
