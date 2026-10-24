@@ -1733,6 +1733,12 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         1166 => math_map("ErfC", libm_erfc, x),
         1167 => math_map("LogFact", |v| libm_lgamma(v + 1.0), x),
         1168 => math_sum_c1(x),
+        // NOTE: issue #152 — libm-backed Expm1/Log1p/Log2/Log10 (Atan2 is dyadic only)
+        1176 => rbqn_core::error::throw("This function can't be called monadically"),
+        1177 => math_map("Expm1", libm_expm1, x),
+        1178 => math_map("Log1p", libm_log1p, x),
+        1179 => math_map("Log2", libm_log2, x),
+        1180 => math_map("Log10", libm_log10, x),
         1170 => file_size_c1(x),
         1171 => file_time_c1("Created", x),
         1172 => file_time_c1("Modified", x),
@@ -2030,7 +2036,8 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         }
         // NOTE: •math.Softmax — dyadic: not standard, throw error
         1115 => rbqn_core::error::throw("•math.Softmax takes one argument (•math.Softmax x)"),
-        1160..=1168 | 1170..=1175 => rbqn_core::error::throw("This function can't be called dyadically"),
+        1176 => B::m_f64(libm_atan2(x.o2f(), w.o2f())), // w •math.Atan2 x = atan2(x, w), as CBQN
+        1160..=1168 | 1170..=1175 | 1177..=1180 => rbqn_core::error::throw("This function can't be called dyadically"),
         1117 => rbqn_core::error::throw("•gpu.Softmax takes one argument (•gpu.Softmax x)"),
         1118 => rbqn_core::error::throw("•gpu.Available takes one argument (•gpu.Available @)"),
         1119 => rbqn_core::error::throw("•gpu.Tensor takes one argument (•gpu.Tensor x)"),
@@ -2328,6 +2335,11 @@ fn sys_fn_name(sys_idx: u32) -> &'static str {
         1163 => "•math.Asinh",
         1164 => "•math.Acosh",
         1165 => "•math.Atanh",
+        1176 => "•math.Atan2",
+        1177 => "•math.Expm1",
+        1178 => "•math.Log1p",
+        1179 => "•math.Log2",
+        1180 => "•math.Log10",
         1166 => "•math.ErfC",
         1167 => "•math.LogFact",
         1168 => "•math.Sum",
@@ -3681,6 +3693,11 @@ fn make_math_namespace() -> B {
         str2gid("erfc"),   // 23
         str2gid("logfact"),// 24
         str2gid("sum"),    // 25
+        str2gid("atan2"),  // 26
+        str2gid("expm1"),  // 27
+        str2gid("log1p"),  // 28
+        str2gid("log2"),   // 29
+        str2gid("log10"),  // 30
     ];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
@@ -3718,6 +3735,11 @@ fn make_math_namespace() -> B {
             m_sys_fn(1166), // erfc
             m_sys_fn(1167), // logfact
             m_sys_fn(1168), // sum
+            m_sys_fn(1176), // atan2
+            m_sys_fn(1177), // expm1
+            m_sys_fn(1178), // log1p
+            m_sys_fn(1179), // log2
+            m_sys_fn(1180), // log10
         ],
     ));
 
@@ -3770,6 +3792,16 @@ unsafe extern "C" {
     fn c_acosh(x: f64) -> f64;
     #[link_name = "atanh"]
     fn c_atanh(x: f64) -> f64;
+    #[link_name = "expm1"]
+    fn c_expm1(x: f64) -> f64;
+    #[link_name = "log1p"]
+    fn c_log1p(x: f64) -> f64;
+    #[link_name = "log2"]
+    fn c_log2(x: f64) -> f64;
+    #[link_name = "log10"]
+    fn c_log10(x: f64) -> f64;
+    #[link_name = "atan2"]
+    fn c_atan2(y: f64, x: f64) -> f64;
 }
 // NOTE: Rust's own asinh/acosh/atanh differ from C libm by an ulp (e.g. atanh 0.5);
 // CBQN calls libm, so call it too.
@@ -3784,6 +3816,26 @@ fn libm_acosh(x: f64) -> f64 {
 fn libm_atanh(x: f64) -> f64 {
     // SAFETY: libm `atanh` is a pure function of its f64 argument.
     unsafe { c_atanh(x) }
+}
+fn libm_expm1(x: f64) -> f64 {
+    // SAFETY: libm `expm1` is a pure function of its f64 argument.
+    unsafe { c_expm1(x) }
+}
+fn libm_log1p(x: f64) -> f64 {
+    // SAFETY: libm `log1p` is a pure function of its f64 argument.
+    unsafe { c_log1p(x) }
+}
+fn libm_log2(x: f64) -> f64 {
+    // SAFETY: libm `log2` is a pure function of its f64 argument.
+    unsafe { c_log2(x) }
+}
+fn libm_log10(x: f64) -> f64 {
+    // SAFETY: libm `log10` is a pure function of its f64 argument.
+    unsafe { c_log10(x) }
+}
+fn libm_atan2(y: f64, x: f64) -> f64 {
+    // SAFETY: libm `atan2` is a pure function of its f64 arguments.
+    unsafe { c_atan2(y, x) }
 }
 fn libm_erfc(x: f64) -> f64 {
     // SAFETY: libm `erfc` is a pure function of its f64 argument.
