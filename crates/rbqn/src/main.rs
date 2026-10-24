@@ -236,19 +236,62 @@ pub(crate) fn exec_repl_line(
     }
 }
 
+/// True when `b` is a number, char, or an array of them nested (no function,
+/// modifier or namespace anywhere); false when unsure (budget spent).
+fn data_only(b: B, budget: &mut usize) -> bool {
+    if b.is_f64() || b.is_c32() {
+        return true;
+    }
+    if !b.is_arr() {
+        return false;
+    }
+    let Some(arr) = get_arr(b) else { return false };
+    match &arr.data {
+        rbqn_core::ArrData::Boxed(v) => {
+            if *budget < v.len() {
+                return false;
+            }
+            *budget -= v.len();
+            v.iter().all(|&e| data_only(e, budget))
+        }
+        rbqn_core::ArrData::Gpu(_) => false,
+        _ => true,
+    }
+}
+
 /// Take ownership of a REPL line's result so dropping it frees the array, or
 /// `None` (the array stays leaked, as before) unless it is provably unreachable
 /// once printed. All of these must hold:
-/// - the line has no `←` `↩` `⇐` `•` `⍎`, so it stores nothing in the scope and
-///   reaches no system state or nested evaluation that could keep the result;
+/// - the line has no `←` `↩` `⇐` `•` `⍎` `{`, so it stores nothing in the scope and
+///   reaches no system state, nested evaluation or new closure that could keep it;
+/// - the line names no REPL variable that holds a callable (function, modifier,
+///   namespace, or an array containing one): calling an earlier closure could
+///   store the result in its captured scope (this was the `Record 0` parity
+///   failure in lexical.md). Names compare case- and underscore-insensitively,
+///   as substrings, so this only over-leaks;
 /// - the result is a host array handle created while the line ran (not by
 ///   compiling it, not read from a variable or a closure's captures);
 /// - nothing else holds an `Arc` to it (strong count 1 plus our probe).
 ///
 /// Only the result array itself is freed; its elements stay leaked (stage 2).
 pub(crate) fn own_result(code: &str, result: B, state: &ReplState) -> Option<rbqn_core::Val> {
-    if code.chars().any(|c| "←↩⇐•⍎".contains(c)) {
+    if code.chars().any(|c| "←↩⇐•⍎{".contains(c)) {
         return None;
+    }
+    let norm = |t: &str| t.to_lowercase().replace('_', "");
+    let code_n = norm(code);
+    if let Some(sc) = &state.scope {
+        let vars = sc.vars.borrow();
+        for (i, name) in state.var_names.iter().enumerate() {
+            let n = norm(name);
+            if n.is_empty() || !code_n.contains(&n) {
+                continue;
+            }
+            let mut budget = 10_000usize;
+            if !data_only(vars[i], &mut budget) {
+                return None;
+            }
+        }
     }
     if !result.is_arr() || rbqn_core::is_device_tagged(result) || rbqn_core::is_arr_merge(result) {
         return None;
@@ -635,6 +678,7 @@ mod tests {
                 assert_eq!(run(&rt, "a", &mut st), "⟨ 3 4 ⟩");
                 assert_eq!(run(&rt, "+´a", &mut st), "7");
 
+
                 // baseline: the same lines, results leaked
                 let before = rbqn_core::live_arrays();
                 for _ in 0..200 {
@@ -654,6 +698,13 @@ mod tests {
                     let _ = format_result(&rt, &r);
                 }
                 assert_eq!(rbqn_core::live_arrays() - before, alias_loop);
+
+                // lexical.md's Record: a closure storing arrays it returns
+                run(&rt, "list ← ⟨⟩", &mut st);
+                run(&rt, "Rec ← { list ∾↩ 𝕩 ⋄ list }", &mut st);
+                run(&rt, "Rec 0", &mut st);
+                run(&rt, "Rec 1", &mut st);
+                assert_eq!(run(&rt, "Rec 2", &mut st), "⟨ 0 1 2 ⟩");
             })
             .unwrap()
             .join()
