@@ -1534,9 +1534,9 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         1160 => math_map("Sinh", f64::sinh, x),
         1161 => math_map("Cosh", f64::cosh, x),
         1162 => math_map("Tanh", f64::tanh, x),
-        1163 => math_map("Asinh", f64::asinh, x),
-        1164 => math_map("Acosh", f64::acosh, x),
-        1165 => math_map("Atanh", f64::atanh, x),
+        1163 => math_map("Asinh", libm_asinh, x),
+        1164 => math_map("Acosh", libm_acosh, x),
+        1165 => math_map("Atanh", libm_atanh, x),
         1166 => math_map("ErfC", libm_erfc, x),
         1167 => math_map("LogFact", |v| libm_lgamma(v + 1.0), x),
         1168 => math_sum_c1(x),
@@ -3557,6 +3557,26 @@ unsafe extern "C" {
     fn c_erfc(x: f64) -> f64;
     #[link_name = "lgamma"]
     fn c_lgamma(x: f64) -> f64;
+    #[link_name = "asinh"]
+    fn c_asinh(x: f64) -> f64;
+    #[link_name = "acosh"]
+    fn c_acosh(x: f64) -> f64;
+    #[link_name = "atanh"]
+    fn c_atanh(x: f64) -> f64;
+}
+// NOTE: Rust's own asinh/acosh/atanh differ from C libm by an ulp (e.g. atanh 0.5);
+// CBQN calls libm, so call it too.
+fn libm_asinh(x: f64) -> f64 {
+    // SAFETY: libm `asinh` is a pure function of its f64 argument.
+    unsafe { c_asinh(x) }
+}
+fn libm_acosh(x: f64) -> f64 {
+    // SAFETY: libm `acosh` is a pure function of its f64 argument.
+    unsafe { c_acosh(x) }
+}
+fn libm_atanh(x: f64) -> f64 {
+    // SAFETY: libm `atanh` is a pure function of its f64 argument.
+    unsafe { c_atanh(x) }
 }
 fn libm_erfc(x: f64) -> f64 {
     // SAFETY: libm `erfc` is a pure function of its f64 argument.
