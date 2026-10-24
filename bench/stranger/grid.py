@@ -5,7 +5,7 @@ lenient (rbqn gives a value, cbqn errors). Both erroring counts as agreement.
 Env: CBQN_BIN, RBQN_BIN (default target/release/rbqn)."""
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from common import env_bins, run
+from common import env_bins, run, classify
 
 RB, CB = env_bins()
 fns = list("+-×÷⋆√⌊⌈∧∨¬|≤<>≥=≠≡≢⊣⊢⥊∾≍⋈↑↓↕«»⌽⍉/⍋⍒⊏⊑⊐⊒∊⍷⊔!")
@@ -63,14 +63,9 @@ for s in range(0, len(exprs), BATCH):
         if i >= len(rs) or i >= len(cs):
             break
         r, c = rs[i].rstrip(), cs[i].rstrip()
-        if r == c:
-            continue
-        if r == ERR:
-            strict.append((e, c, r))
-        elif c == ERR:
-            lenient.append((e, c, r))
-        else:
-            wrong.append((e, c, r))
+        k = classify(c, r)
+        if k != "same":
+            {"strict": strict, "lenient": lenient, "wrong": wrong}[k].append((e, c, r))
     print(f"batch {s}: done", file=sys.stderr)
 
 print(f"exprs={len(exprs)} wrong={len(wrong)} strict={len(strict)} lenient={len(lenient)} "

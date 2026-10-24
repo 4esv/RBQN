@@ -25,3 +25,25 @@ def run(binary, prog, timeout, cwd=None):
         return None, "TIMEOUT"
     dec = lambda b: ANSI.sub('', b.decode("utf-8", errors="replace"))
     return dec(p.stdout), dec(p.stderr)
+
+
+ERR = "ERR"
+
+
+def is_err(cell):
+    """A cell errored iff its first non-blank line is the ERR marker; trailing echo lines are ignored."""
+    lines = [l.strip() for l in cell.splitlines() if l.strip()]
+    return bool(lines) and lines[0] == ERR
+
+
+def classify(c, r):
+    """Bucket for one cell: 'same', 'strict' (rbqn errs), 'lenient' (cbqn errs) or 'wrong'."""
+    if r.rstrip() == c.rstrip():
+        return "same"
+    if is_err(r) and is_err(c):
+        return "same"
+    if is_err(r):
+        return "strict"
+    if is_err(c):
+        return "lenient"
+    return "wrong"
