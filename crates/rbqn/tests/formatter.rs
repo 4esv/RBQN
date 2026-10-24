@@ -180,3 +180,10 @@ fn fmt_derived_functions_show_derivation() {
     assert_output("=⌾(2⊸⊑)", "=⌾(2⊸⊑)");
     assert_output("{𝕩}˜", "(function block)˜");
 }
+
+#[test]
+fn namespace_formats_as_exported_names() {
+    assert_output("•Fmt {a⇐5, b⇐6}", "\"{a‿b⇐}\"");
+    assert_output("{a ⇐ 5}", "{a⇐}");
+    assert_output("{a ⇐ 5}.a", "5");
+}

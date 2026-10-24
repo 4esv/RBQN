@@ -2121,6 +2121,13 @@ fn dispatch_sys_glyph_c1(x: B) -> B {
             return str_to_b(sys_fn_name(sys_idx));
         }
     }
+    // NOTE: the formatter reaches •Glyph for namespaces; CBQN shows `{a‿b⇐}`.
+    // exp_gids is padded with -1 to length 2 (compiler.rs); skip the padding.
+    if x.is_nsp() {
+        let ns = crate::namespace::get_ns(x);
+        let names: Vec<String> = ns.desc.exp_gids.iter().filter(|&&g| g >= 0).map(|&g| crate::namespace::gid2str(g)).collect();
+        return str_to_b(&format!("{{{}⇐}}", names.join("‿")));
+    }
     // Non-primitive blocks and derived values: return descriptive string matching CBQN
     let desc = if x.is_fun() {
         "(function block)"
