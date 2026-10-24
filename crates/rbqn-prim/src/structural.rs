@@ -352,7 +352,10 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             if elem_arr.shape.is_empty() {
                 result_data.push(elem_arr.get(0)?);
             } else {
-                return Err(BqnError::Shape(">𝕩: element shapes don't match".into()));
+                return Err(BqnError::Shape(format!(
+                    ">𝕩: Incompatible element shapes (encountered shapes {} and {})",
+                    rbqn_core::error::fmt_shape(&inner_shape), rbqn_core::error::fmt_shape(&elem_arr.shape)
+                )));
             }
         }
         if inner_shape.is_empty() {
@@ -389,7 +392,10 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             if inner_shape.is_empty() {
                 result_data.push(elem);
             } else {
-                return Err(BqnError::Shape(">𝕩: element shapes don't match".into()));
+                return Err(BqnError::Shape(format!(
+                    ">𝕩: Incompatible element shapes (encountered shapes {} and {})",
+                    rbqn_core::error::fmt_shape(&inner_shape), rbqn_core::error::fmt_shape(&[])
+                )));
             }
         } else {
             let elem_arr = get_arr(elem)
@@ -400,8 +406,8 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
                     result_data.push(elem_arr.get(0)?);
                 } else {
                     return Err(BqnError::Shape(format!(
-                        ">𝕩: element shapes don't match ({:?} vs {:?})",
-                        elem_arr.shape, inner_shape
+                        ">𝕩: Incompatible element shapes (encountered shapes {} and {})",
+                        rbqn_core::error::fmt_shape(&inner_shape), rbqn_core::error::fmt_shape(&elem_arr.shape)
                     )));
                 }
             } else if inner_shape.is_empty() {
