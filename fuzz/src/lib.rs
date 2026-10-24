@@ -37,7 +37,7 @@ pub fn bqn() -> &'static Bqn {
 }
 
 /// Call once per input. Every eval leaks about 1 MB, so with `RBQN_FUZZ_MAX_EXECS=n` the process
-/// exits cleanly (status 0) after n inputs; under `-fork=1` the parent starts a fresh child
+/// leaves with status 0 after n inputs; under `-fork=1` the parent starts a fresh child
 /// with the grown corpus instead of the child dying at the RSS limit. Unset or 0: never exits.
 pub fn tick() {
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -47,7 +47,12 @@ pub fn tick() {
         std::env::var("RBQN_FUZZ_MAX_EXECS").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
     });
     if max > 0 && N.fetch_add(1, Relaxed) + 1 >= max {
-        std::process::exit(0);
+        // _exit, not exit: libFuzzer interposes exit() and reports "fuzz target exited" as a crash.
+        unsafe extern "C" {
+            fn _exit(code: i32) -> !;
+        }
+        // SAFETY: _exit(2) takes no pointers and never returns; nothing needs flushing here.
+        unsafe { _exit(0) }
     }
 }
 
