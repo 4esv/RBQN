@@ -1197,10 +1197,7 @@ pub fn c2(f: B, w: B, x: B) -> B {
 }
 
 fn prim_result_to_b(r: rbqn_prim::PrimResult) -> B {
-    match r {
-        rbqn_prim::PrimResult::Scalar(b) => b,
-        rbqn_prim::PrimResult::Array(arr) => crate::vm::tag_arr(arr),
-    }
+    r.leak()
 }
 
 /// Unwrap a prim Result, converting errors to BQN panics.

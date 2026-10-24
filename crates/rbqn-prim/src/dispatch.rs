@@ -1,24 +1,54 @@
-use rbqn_core::{B, BqnArr, Result};
+use rbqn_core::{tag_arr_owned, Val, B, BqnArr, Result};
 
 pub type MonadFn = fn(B, Option<&BqnArr>) -> Result<PrimResult>;
 pub type DyadFn = fn(B, Option<&BqnArr>, B, Option<&BqnArr>) -> Result<PrimResult>;
 
+/// What a primitive hands back.
+///
+/// Ownership rule: a primitive may claim ownership only of arrays it created in
+/// this call. `Array` is exactly that case (a fresh `BqnArr` nobody else holds).
+/// `Scalar` carries a plain `B` that is never owned here: a number, char or
+/// function, or an array handle the primitive did not create (a pass-through of
+/// an argument or of an element, or a nested element it built and stored in a
+/// parent). Pass-through must stay borrowed so no second owner of an array the
+/// caller still holds as a `B` is ever created.
 #[derive(Debug)]
 pub enum PrimResult {
     Scalar(B),
     Array(BqnArr),
 }
 
-impl PrimResult {
-    pub fn to_b(&self) -> B {
+/// A `PrimResult` after ownership is resolved: `Owned` holds the strong count of
+/// an array created by the primitive, `Borrowed` is a `B` whose lifetime someone
+/// else decides.
+pub enum Out {
+    Owned(Val),
+    Borrowed(B),
+}
+
+impl Out {
+    /// Give up ownership without freeing (today's behaviour for every result).
+    pub fn leak(self) -> B {
         match self {
-            PrimResult::Scalar(b) => *b,
-            PrimResult::Array(_) => {
-                // In the full implementation this would tag an allocated array.
-                // For now, return a sentinel indicating array result.
-                B::SENTINEL
-            }
+            Out::Owned(v) => v.leak(),
+            Out::Borrowed(b) => b,
         }
+    }
+}
+
+impl PrimResult {
+    /// Resolve ownership: a created array becomes an owned `Val`.
+    pub fn into_out(self) -> Out {
+        match self {
+            PrimResult::Scalar(b) => Out::Borrowed(b),
+            PrimResult::Array(a) => Out::Owned(tag_arr_owned(a)),
+        }
+    }
+
+    /// The single conversion point where primitive results enter the VM.
+    /// Leaks owned results (stage 2a); stage 2b replaces this with `Val` slots.
+    pub fn leak(self) -> B {
+        self.into_out().leak()
     }
 
     pub fn into_arr(self) -> Option<BqnArr> {

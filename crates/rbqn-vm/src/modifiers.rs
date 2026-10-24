@@ -1842,10 +1842,7 @@ fn pick_from(w: B, x: B) -> B {
     let xa = crate::vm::get_arr(x);
     let result = c2_fn(w, wa.as_deref(), x, xa.as_deref())
         .unwrap_or_else(|e| rbqn_core::error::throw(format!("◶: pick failed: {}", e)));
-    match result {
-        rbqn_prim::PrimResult::Scalar(b) => b,
-        rbqn_prim::PrimResult::Array(arr) => crate::vm::tag_arr(arr),
-    }
+    result.leak()
 }
 
 fn choose_c1(f: B, g: B, x: B) -> B {
