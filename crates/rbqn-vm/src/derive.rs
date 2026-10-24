@@ -2210,6 +2210,16 @@ fn dispatch_sys_glyph_c1(x: B) -> B {
         let names: Vec<String> = ns.desc.exp_gids.iter().filter(|&&g| g >= 0).map(|&g| crate::namespace::gid2str(g)).collect();
         return str_to_b(&format!("{{{}⇐}}", names.join("‿")));
     }
+    // System modifiers: return the dotted name like system functions (#154).
+    if x.is_md1() || x.is_md2() {
+        let id = (x.0 & 0xFFFFFFFFFFFF) >> 3;
+        match get_derived(id).kind {
+            DerivedKind::NativeMd1 { prim_idx } if prim_idx == crate::modifiers::MD1_TIMED => return str_to_b("•_timed"),
+            DerivedKind::NativeMd2 { prim_idx } if prim_idx == crate::modifiers::MD2_WHILE => return str_to_b("•_while_"),
+            DerivedKind::NativeMd2 { prim_idx } if prim_idx == crate::modifiers::MD2_FILL_BY => return str_to_b("•_fillBy_"),
+            _ => {}
+        }
+    }
     // Non-primitive blocks and derived values: return descriptive string matching CBQN
     let desc = if x.is_fun() {
         "(function block)"
