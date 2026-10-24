@@ -1,3 +1,5 @@
 # Differences between RBQN and CBQN that the parity job tolerates. The spec is the target and CBQN is the floor: the parity job is a regression floor, and a deliberate divergence beyond CBQN is recorded here, not fixed.
 # Format: <expr> | <reason> | <spec citation (file#section or URL)>  (the old two-field form is still accepted)
 # The key is the text after "--- " in docs_diff.py / grid.py output. Any other difference fails the job.
+•path | spec: directory of the current file with a trailing slash; CBQN omits the slash | spec/system.md#•path
+•file.path | spec: directory of the current file with a trailing slash; CBQN omits the slash | spec/system.md#•path

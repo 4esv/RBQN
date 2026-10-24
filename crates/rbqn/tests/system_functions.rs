@@ -144,17 +144,17 @@ fn sys_wdpath_nonempty() {
 
 // -- •path --
 
+// spec/system.md line 75: "`•path` simply gives the path of the file in which it
+// appears. It includes a trailing slash but not the name of the file itself."
+// -p has no file, so RBQN uses the working directory plus a trailing slash (so
+// `•path∾"data.txt"` works). CBQN returns the cwd without a slash; deliberate.
 #[test]
-#[ignore = "requires CBQN_PATH"]
-fn sys_path_empty_in_p_mode() {
-    let (stdout, _, code) = run_print("•path");
+fn sys_path_is_wdpath_with_slash_in_p_mode() {
+    let (path, _, code) = run_print("•path");
     assert_eq!(code, 0, "•path should succeed");
-    // In -p mode there is no file, so •path is empty (spec: "the path of the file
-    // in which it appears"); the REPL differs and uses the working directory.
-    // In -p mode, •path is empty string "" or ⟨⟩
-    // An empty char array displays as "" or ⟨⟩
-    let is_empty = stdout == "\"\"" || stdout == "⟨⟩" || stdout.is_empty();
-    assert!(is_empty, "•path should be empty in -p mode, got: {}", stdout);
+    let (wd, _, _) = run_print("•wdpath∾\"/\"");
+    assert_eq!(path, wd, "-p •path must be •wdpath plus slash");
+    assert!(path.ends_with("/\""), "got: {path}");
 }
 
 /// Fresh canonical temp dir (macOS /var is a symlink to /private/var).

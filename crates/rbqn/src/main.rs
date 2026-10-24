@@ -45,6 +45,14 @@ fn main() {
     }
 }
 
+/// •path when no file is executing: working directory with trailing slash, •name empty.
+fn set_no_file_path() {
+    match std::env::current_dir() {
+        Ok(wd) => rbqn_vm::derive::set_sys_dir(&wd.to_string_lossy()),
+        Err(_) => rbqn_vm::derive::set_sys_path(""),
+    }
+}
+
 fn interp_main(mut t: std::time::Instant) {
     rbqn::timing::lap(&mut t, "thread spawn");
     let _gpu_summary = gpu_runtime::SummaryGuard;
@@ -119,8 +127,11 @@ fn interp_main(mut t: std::time::Instant) {
     // Set •args to empty for -e/-p mode (file args will override when executing a file)
     rbqn_vm::derive::set_sys_args(&[]);
     rbqn::timing::lap(&mut t, "set_sys_args");
-    // Set •path and •name to empty for -e/-p mode
-    rbqn_vm::derive::set_sys_path("");
+    // -e/-p/stdin/REPL have no file. spec/system.md#•path says •path is the
+    // directory of the file in which it appears, with a trailing slash; with no
+    // file we use the working directory plus slash, so `•path∾"data.txt"` works.
+    // CBQN returns the cwd without a slash here; deliberate divergence.
+    set_no_file_path();
 
     let _ = args.heap_max; // TODO: enforce heap limit
     rbqn::timing::lap(&mut t, "post-bootstrap setup");
@@ -145,8 +156,8 @@ fn interp_main(mut t: std::time::Instant) {
             }),
             cli::Action::File(path, file_args) => {
                 if path == "-" {
-                    // stdin: set path/name to empty
-                    rbqn_vm::derive::set_sys_path("");
+                    // stdin: no file, •path is the working directory
+                    set_no_file_path();
                     rbqn_vm::derive::set_sys_args(file_args);
                     let code = std::io::read_to_string(std::io::stdin()).unwrap_or_default();
                     exec_string(&rt, &code, 0).map(|_| ())
@@ -174,12 +185,6 @@ fn interp_main(mut t: std::time::Instant) {
 
     // REPL if requested or no actions given
     if args.repl {
-        if args.actions.is_empty() {
-            // REPL has no file: •path is the working directory (spec/system.md#•path)
-            if let Ok(wd) = std::env::current_dir() {
-                rbqn_vm::derive::set_sys_dir(&wd.to_string_lossy());
-            }
-        }
         repl::run_repl(&rt, args.silent);
     }
     rbqn::timing::lap(&mut t, "end of interp_main");
