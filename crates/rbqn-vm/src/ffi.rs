@@ -205,6 +205,9 @@ impl Buf {
     fn new(len: usize) -> Buf { Buf(vec![0u64; len.div_ceil(8).max(2) + 1], len) }
     fn bytes(&mut self) -> &mut [u8] {
         let len = self.1;
+        // SAFETY: self.0 holds at least len.div_ceil(8).max(2)+1 u64 words (see `new`), i.e.
+        // >= len initialised bytes; u8 has alignment 1; the &mut self borrow makes the
+        // returned slice the only live view of the allocation.
         unsafe { std::slice::from_raw_parts_mut(self.0.as_mut_ptr() as *mut u8, len) }
     }
     fn ptr(&mut self) -> *mut u8 { self.0.as_mut_ptr() as *mut u8 }
@@ -399,6 +402,10 @@ fn read(c: &Conv, buf: &[u8]) -> B {
                 if addr == 0 { return bytes_to_list(bq, &[]); }
                 let w = size_of(e);
                 let mut n = 0usize;
+                // SAFETY: NOT sound for arbitrary input, by design of •FFI: `addr` is a raw
+                // address the BQN program obtained from C (a pointer result) and the scan
+                // reads until a zero element, as C code would for a C string. Validity is
+                // the caller's contract, same as CBQN's •FFI; see #128.
                 unsafe {
                     while (0..w).any(|i| *((addr + n * w + i) as *const u8) != 0) { n += 1; }
                     return bytes_to_list(bq, std::slice::from_raw_parts(addr as *const u8, n * w));
@@ -470,6 +477,9 @@ pub fn ptr_call(id: usize, op: u8, w: Option<B>, x: B) -> B {
         0 => {
             let e = typed("Read");
             let addr = offset_addr(&p, int_arg(x, "offset"));
+            // SAFETY: NOT sound for arbitrary input, by design of •FFI: `addr` is the pointer
+            // object's address plus a BQN-supplied offset, and the caller must ensure
+            // size_of(elem) readable bytes there (as in CBQN's •FFI); see #128.
             let bytes = unsafe { std::slice::from_raw_parts(addr as *const u8, size_of(&e.ty)) };
             read(&e, bytes)
         }
@@ -482,6 +492,10 @@ pub fn ptr_call(id: usize, op: u8, w: Option<B>, x: B) -> B {
             m.write(&e, x, &mut tmp);
             // NOTE: pointers written into C memory must outlive this call, so leak their buffers.
             std::mem::forget(m);
+            // SAFETY: `tmp` is a live local Vec of tmp.len() bytes. The destination `addr` is
+            // NOT checked: the BQN caller must ensure tmp.len() writable bytes there that
+            // do not overlap `tmp` (a fresh heap allocation, so overlap is impossible for
+            // honest addresses), as in CBQN's •FFI; see #128.
             unsafe { std::ptr::copy_nonoverlapping(tmp.as_ptr(), addr as *mut u8, tmp.len()); }
             x
         }
@@ -564,6 +578,9 @@ fn load_library(path: &str) -> Arc<libloading::Library> {
         #[cfg(not(unix))]
         { throw("•FFI: @ (libc) not supported on this platform") }
     } else {
+        // SAFETY: loading a library runs its initialisers, which is the point of
+        // •FFI; the caller of •FFI chose `path`. Library handles are cached in an Arc
+        // for the process lifetime, so symbols resolved from it never dangle.
         unsafe { libloading::Library::new(path) }
             .unwrap_or_else(|e| throw(format!("•FFI: couldn't load library \"{}\": {}", path, e)))
     };
@@ -655,6 +672,9 @@ pub fn ffi_load(path: B, spec: B) -> B {
     let path_str = resolve_lib_path(&b_to_rust_string(path));
     let lib = load_library(&path_str);
     let mut ffi_spec = parse_spec(spec);
+    // SAFETY: `lib` (an Arc held in FFI_LIBS for the process lifetime) stays loaded, so
+    // the symbol address stays valid. The symbol is read only as an address (*const ());
+    // its real signature is checked, if at all, only by the caller's spec (see ffi_call).
     ffi_spec.func = unsafe {
         let sym: libloading::Symbol<*const ()> = lib.get(ffi_spec.func_name.as_bytes())
             .unwrap_or_else(|e| throw(format!(
@@ -712,6 +732,12 @@ pub fn ffi_call(spec_id: usize, w: Option<B>, x: B) -> B {
     );
     let mut ret = Buf::new(spec.ret.as_ref().map_or(8, |c| size_of(&c.ty)).max(16));
     let mut ptrs: Vec<*mut std::ffi::c_void> = bufs.iter_mut().map(|b| b.ptr() as *mut _).collect();
+    // SAFETY: `spec.func` is the address of a symbol in a library kept loaded by
+    // FFI_LIBS (see ffi_load). The Cif was built from the same spec as `ptrs`/`ret`:
+    // `ptrs` holds one pointer per argument to a Buf of size_of(arg type) bytes, 8-byte
+    // aligned, and `ret` is >= max(size_of(ret), 16) bytes (libffi's minimum), all
+    // alive across the call. That the C function really has the declared signature is
+    // the BQN caller's contract (as in CBQN's •FFI); see #128.
     unsafe {
         let f: unsafe extern "C" fn() = std::mem::transmute(spec.func);
         libffi::raw::ffi_call(cif.as_raw_ptr(), Some(f), ret.ptr() as *mut _, ptrs.as_mut_ptr());
@@ -729,6 +755,10 @@ pub fn ffi_call(spec_id: usize, w: Option<B>, x: B) -> B {
             Some(k) => {
                 let bytes = &m.keep[k].0;
                 let es = size_of(&mp.elem.ty);
+                // SAFETY: this buffer was created in `Marsh::write` as Buf::new(len * es) with
+                // the same len/es (mp.len = items.len(), es = size_of(elem)), so it holds
+                // >= mp.len * es initialised bytes; u8 alignment is 1; `m.keep` is not
+                // mutated while `raw` is used.
                 let raw = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, mp.len * es) };
                 match mp.bqn {
                     Some(bq) => bytes_to_list(bq, raw),

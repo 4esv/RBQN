@@ -21,10 +21,6 @@ pub struct SysRuntime {
     pub compgen: B,
 }
 
-// NOTE: B contains a u64 which is Send-safe; all B values are NaN-boxed pointers or scalars.
-// The std::rc::Rc<Derived> data structure is immutable after creation.
-unsafe impl Send for SysRuntime {}
-
 /// Set the global runtime state for •BQN (called after bootstrap).
 pub fn set_sys_runtime(compiler: B, runtime: Vec<B>, formatter: Option<(B, B)>) {
     *SYS_RUNTIME.lock().unwrap_or_else(|e| e.into_inner()) = Some(SysRuntime {
@@ -4297,6 +4293,7 @@ mod sys_value_names_tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "•wdpath calls getcwd, unsupported under Miri isolation")]
     fn every_listed_sys_value_resolves() {
         for n in SYS_VALUE_NAMES {
             let key = n.to_lowercase();

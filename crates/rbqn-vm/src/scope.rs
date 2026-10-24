@@ -99,7 +99,10 @@ impl ScRef {
     /// Take a new strong reference (for closures that capture this scope).
     #[inline]
     pub fn to_rc(self) -> std::rc::Rc<Scope> {
-        // SAFETY: the pointer came from a live Rc (see type docs).
+        // SAFETY: relies on the type-level contract that the Rc this ScRef was made from
+        // is still alive (so the pointer is a valid Rc<Scope> data pointer and the strong
+        // count is >= 1 before the increment). That contract is only a convention:
+        // `ScRef::new` is a safe fn, see #127.
         unsafe {
             std::rc::Rc::increment_strong_count(self.0);
             std::rc::Rc::from_raw(self.0)
@@ -110,7 +113,14 @@ impl ScRef {
 impl std::ops::Deref for ScRef {
     type Target = Scope;
     #[inline(always)]
-    fn deref(&self) -> &Scope { unsafe { &*self.0 } }
+    fn deref(&self) -> &Scope {
+        // SAFETY: the Rc this ScRef was made from is still alive (type-level contract,
+        // which `ScRef::new` being a safe fn does not enforce, see #127), so
+        // the pointee is a valid Scope. A Scope is only mutated through `&mut` obtained
+        // via `Rc::get_mut` (unique owner), never while a ScRef exists, since ScRefs
+        // are cleared before `retry_scope` tests uniqueness.
+        unsafe { &*self.0 }
+    }
 }
 
 /// Per-thread interpreter state, kept in one thread-local so a block call
@@ -161,7 +171,9 @@ impl Scope {
     /// Build an `Rc<Scope>`, reusing a recycled allocation when one is available.
     #[inline]
     pub fn new_rc_in(t: &Tls, body: &Arc<Body>, psc: std::rc::Rc<Scope>, var_am: u16, init_vars: &[B]) -> std::rc::Rc<Scope> {
-        // SAFETY: single-threaded; nothing re-enters while the pool is borrowed.
+        // SAFETY: `t` is this thread's TLS block and `Tls` is !Sync, so the pool is only
+        // reachable from this thread; the borrow is one `pop()` that runs no user code
+        // (the popped Rc is dropped after the borrow ends), so it is the only live reference.
         let recycled = unsafe { (*t.scopes.get()).pop() };
         if let Some(mut rc) = recycled
             && let Some(s) = std::rc::Rc::get_mut(&mut rc)
@@ -184,7 +196,9 @@ impl Scope {
         if let Some(s) = std::rc::Rc::get_mut(&mut rc) {
             let parent = s.psc.take();
             s.ext = None;
-            // SAFETY: single-threaded; nothing re-enters while borrowed.
+            // SAFETY: as in `new_rc_in`: thread-confined pool, `f` is the only live reference.
+            // Only `len`/`push` run on it; `drop(parent)` below runs after `f`'s last use
+            // (and Scope has no Drop impl that could reach the pool).
             let f = unsafe { &mut *t.scopes.get() };
             if f.len() < 64 {
                 f.push(rc);
@@ -687,5 +701,49 @@ pub fn v_get_move(pscs: &[ScRef], s: B, chk: bool) -> B {
         rbqn_core::tag_arr(rbqn_core::array::typed_arr_from_b_vec(results, vec![len], None))
     } else {
         rbqn_core::error::throw("v_get_move: non-var access not yet implemented");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::block::Body;
+
+    fn root() -> std::rc::Rc<Scope> {
+        std::rc::Rc::new(Scope::new(Arc::new(Body::new(3, 0, 4, 2)), None, 3, &[]))
+    }
+
+    #[test]
+    fn scref_deref_and_to_rc_keep_the_scope_alive() {
+        let rc = root();
+        let r = ScRef::new(&rc);
+        assert_eq!(r.var_am, 3);
+        let strong = r.to_rc();
+        assert_eq!(std::rc::Rc::strong_count(&rc), 2);
+        drop(strong);
+        assert_eq!(std::rc::Rc::strong_count(&rc), 1);
+    }
+
+    #[test]
+    fn scope_pool_recycles_unique_scopes_only() {
+        TLS.with(|t| {
+            let body = Arc::new(Body::new(3, 0, 4, 2));
+            let parent = root();
+            let a = Scope::new_rc_in(t, &body, parent.clone(), 3, &[]);
+            let shared = a.clone();
+            Scope::recycle_in(t, a); // still shared: must not enter the pool
+            // SAFETY: test thread owns its TLS pool; no other reference is live.
+            assert!(unsafe { (*t.scopes.get()).is_empty() });
+            Scope::recycle_in(t, shared);
+            // SAFETY: as above.
+            assert_eq!(unsafe { (*t.scopes.get()).len() }, 1);
+            let b = Scope::new_rc_in(t, &body, parent, 3, &[]);
+            // SAFETY: as above.
+            assert!(unsafe { (*t.scopes.get()).is_empty() });
+            drop(b);
+            // NOTE: drain the ManuallyDrop TLS pool so Miri's leak check stays meaningful.
+            // SAFETY: as above.
+            drop(unsafe { std::mem::take(&mut *t.scopes.get()) });
+        });
     }
 }

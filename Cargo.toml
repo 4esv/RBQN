@@ -17,6 +17,9 @@ rust-version = "1.88"
 keywords = ["bqn", "array-language", "apl", "gpu", "interpreter"]
 categories = ["compilers", "science"]
 
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
 [workspace.dependencies]
 rbqn-core = { version = "0.1.0", path = "crates/rbqn-core" }
 rbqn-vm = { version = "0.1.0", path = "crates/rbqn-vm" }

@@ -51,3 +51,6 @@ required-features = ["gpu"]
 [[test]]
 name = "gpu_dispatch"
 required-features = ["gpu"]
+
+[lints]
+workspace = true

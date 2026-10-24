@@ -276,7 +276,9 @@ impl Frame {
     fn enter(t: &Tls, max_stack: usize, max_psc: usize) -> Frame {
         rbqn_core::stack::guard();
         t.depth.set(t.depth.get() + 1);
-        // SAFETY: single-threaded, and no other code runs while the pool is borrowed.
+        // SAFETY: `t` is this thread's TLS block, and `Tls` is !Sync (UnsafeCell), so the
+        // pool is only reachable from this thread. The exclusive borrow lasts for this
+        // one `pop()`, which runs no user code, so no other reference to the pool is live.
         let (mut stack, mut pscs) = unsafe { (*t.frames.get()).pop() }.unwrap_or_default();
         stack.reserve(max_stack);
         pscs.reserve(max_psc);
@@ -288,20 +290,25 @@ impl Drop for Frame {
     #[inline]
     fn drop(&mut self) {
         if !self.bl.is_null() && std::thread::panicking() {
-            // SAFETY: `bl` is the caller's block reference, which outlives the frame.
+            // SAFETY: `bl` was set from the `&Block` parameter of the function that owns this
+            // Frame as a local (`run_bc` callers), so the block outlives the Frame, whose
+            // drop (including unwind) runs before that parameter goes away. It is only
+            // non-null after `run_bc` stored it, and never reassigned to a shorter borrow.
             record_error_site(unsafe { &*self.bl }, self.pc);
         }
         let mut stack = std::mem::take(&mut self.stack);
         let mut pscs = std::mem::take(&mut self.pscs);
-        // B and ScRef have no destructors: clearing is just a length reset.
-        unsafe {
-            stack.set_len(0);
-            pscs.set_len(0);
-        }
-        // SAFETY: the TLS block outlives every frame on its thread (ManuallyDrop, never torn down).
+        // B and ScRef are Copy (no destructors): clearing is just a length reset.
+        stack.clear();
+        pscs.clear();
+        // SAFETY: `self.t` came from the `&Tls` handed to `Frame::enter` by the owner of
+        // this Frame, on this same thread (Frame holds a raw pointer, so it is !Send).
+        // The TLS block is ManuallyDrop and never torn down, so it outlives the Frame.
         let t = unsafe { &*self.t };
         t.depth.set(t.depth.get() - 1);
-        // SAFETY: see Frame::enter.
+        // SAFETY: as in Frame::enter: the pool is only reachable from this thread, and
+        // `p` is used only for `len`/`push`, which run no user code and cannot re-enter
+        // the pool, so it is the sole live reference to it.
         let p = unsafe { &mut *t.frames.get() };
         if p.len() < 1024 && stack.capacity() <= 4096 {
             p.push((stack, pscs));
@@ -573,7 +580,6 @@ pub fn exec_block_each(
 #[inline(always)]
 fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
     frame.bl = bl;
-    let pc_slot: *mut usize = &mut frame.pc;
     let stack = &mut frame.stack;
     let pscs = &mut frame.pscs;
     stack.clear();
@@ -620,8 +626,7 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
         let Some(&op_raw) = bc.get(pc) else {
             rbqn_core::error::throw("VM: bytecode overrun");
         };
-        // SAFETY: `pc_slot` points into `frame`, which outlives the loop.
-        unsafe { *pc_slot = pc };
+        frame.pc = pc;
         pc += 1;
         let op_val = op_raw as u32;
 
@@ -1315,4 +1320,32 @@ fn render_site(src: &[char], start: usize, end: usize, name: &str) -> Option<Str
     let pad: String = src[line_start..start].iter().map(|&c| if c == '\t' { '\t' } else { ' ' }).collect();
     let carets = "^".repeat(caret_end - start + 1);
     Some(format!("{name}:{line_no}:\n  {text}\n  {pad}{carets}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_pool_reuses_buffers_and_tracks_depth() {
+        TLS.with(|t| {
+            let d0 = t.depth.get();
+            {
+                let mut f = Frame::enter(t, 8, 2);
+                assert_eq!(t.depth.get(), d0 + 1);
+                f.stack.push(B::SENTINEL);
+            }
+            assert_eq!(t.depth.get(), d0);
+            // SAFETY: test thread owns its TLS pool; no other reference is live.
+            assert!(!unsafe { (*t.frames.get()).is_empty() });
+            let f = Frame::enter(t, 8, 2);
+            assert!(f.stack.is_empty(), "recycled stack is cleared");
+            drop(f);
+            assert_eq!(t.depth.get(), d0);
+            // NOTE: the pool is ManuallyDrop TLS by design (never torn down); drain it so
+            // Miri's leak check sees nothing left behind by this test thread.
+            // SAFETY: test thread owns its TLS pool; no other reference is live.
+            drop(unsafe { std::mem::take(&mut *t.frames.get()) });
+        });
+    }
 }
