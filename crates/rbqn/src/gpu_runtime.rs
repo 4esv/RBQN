@@ -109,10 +109,6 @@ fn build_runtime() -> Option<GpuRuntime> {
 }
 
 fn build_runtime_logged() -> Option<GpuRuntime> {
-    // NOTE: the upload caches are keyed by array handle bits; once a runtime may
-    // exist a freed address could be reused and hit a stale entry, so stop
-    // freeing arrays for the rest of the process (#160).
-    rbqn_core::arrstore::disable_free();
     let rt = std::panic::catch_unwind(build_runtime).ok().flatten();
     if rt.is_none() && debug_enabled() {
         eprintln!("[gpu] device init failed; using CPU path");
@@ -151,6 +147,9 @@ pub fn init(no_gpu: bool) {
         GPU_DISABLED.store(true, Ordering::Relaxed);
         return;
     }
+    // NOTE: the upload caches are keyed by array handle bits; frees are queued
+    // so `evict_freed` can drop entries for a freed (soon reusable) address (#163).
+    rbqn_core::arrstore::track_frees();
     if gpu_mode() == GpuMode::Force {
         start_init_thread();
     } else {
@@ -162,7 +161,6 @@ pub fn init(no_gpu: bool) {
 /// The thread initializes GPU_RUNTIME and then keeps precompiling; `get()`
 /// waits only for the device (OnceLock init), never for the precompile.
 fn start_init_thread() {
-    rbqn_core::arrstore::disable_free();
     if INIT_START.set(std::time::Instant::now()).is_err() {
         return;
     }
@@ -756,6 +754,16 @@ std::thread_local! {
     static UPLOAD_CACHE: RefCell<Vec<(u64, Arc<GpuBuffer>, f64)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Drop cache entries whose array was freed, before any lookup can alias them.
+fn evict_freed() {
+    let freed = rbqn_core::arrstore::take_freed();
+    if freed.is_empty() {
+        return;
+    }
+    UPLOAD_CACHE.with(|c| c.borrow_mut().retain(|(k, _, _)| !rbqn_core::arrstore::key_freed(*k, &freed)));
+    HOST_LEAVES.with(|c| c.borrow_mut().retain(|(k, _, _)| !rbqn_core::arrstore::key_freed(*k, &freed)));
+}
+
 /// Shape of an array operand without forcing a pending device value.
 /// Returns the host array too when the operand is not pending.
 fn operand_shape(b: B) -> Option<(Vec<usize>, Option<Arc<BqnArr>>)> {
@@ -785,6 +793,7 @@ fn operand_buf(gpu: &GpuRuntime, b: B, host: Option<&BqnArr>) -> Option<(Arc<Gpu
 }
 
 fn upload_operand(gpu: &GpuRuntime, b: B, host: Option<&BqnArr>) -> Option<(Arc<GpuBuffer>, f64)> {
+    evict_freed();
     if let Some(hit) = UPLOAD_CACHE.with(|c| {
         c.borrow().iter().find(|(k, _, _)| *k == b.0).map(|(_, buf, m)| (buf.clone(), *m))
     }) {
@@ -815,11 +824,13 @@ struct Operand {
 }
 
 fn upload_is_cached(key: u64) -> bool {
+    evict_freed();
     key != 0 && UPLOAD_CACHE.with(|c| c.borrow().iter().any(|(k, _, _)| *k == key))
 }
 
 /// Upload a host leaf (an upload-cache hit when `key` was uploaded recently).
 fn upload_cached(gpu: &GpuRuntime, key: u64, arr: &BqnArr, bound: f64) -> Arc<GpuBuffer> {
+    evict_freed();
     if let Some(hit) = UPLOAD_CACHE.with(|c| c.borrow().iter().find(|(k, _, _)| key != 0 && *k == key).map(|(_, b, _)| b.clone())) {
         return hit;
     }
@@ -845,6 +856,7 @@ std::thread_local! {
 
 /// A host array as a tree leaf (no upload): (leaf, exact max |v|).
 fn host_leaf(b: B, arr: &Arc<BqnArr>) -> Option<(Rc<Expr>, f64)> {
+    evict_freed();
     if let Some(hit) = HOST_LEAVES.with(|c| c.borrow().iter().find(|(k, _, _)| *k == b.0).map(|(_, e, m)| (e.clone(), *m))) {
         return Some(hit);
     }
