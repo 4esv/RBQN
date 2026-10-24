@@ -17,6 +17,14 @@ pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
 
 #[inline(never)]
 pub fn exec_block_with_args(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
+    exec_block_slot(bl, body, psc, args).leak()
+}
+
+/// As `exec_block_with_args`, but the result keeps its ownership (#161): `Owned` when
+/// the block ended on an array created by a primitive and referenced from nowhere
+/// else. The arguments are still plain handles that the caller must have leaked.
+#[inline(never)]
+pub fn exec_block_slot(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> Slot {
     let var_am = body.var_am.max(args.len() as u16);
     TLS.with(|t| {
         let sc = Scope::new_rc_in(t, body, psc, var_am, args);
@@ -568,26 +576,27 @@ fn alias_make(o: B, gid: i32) -> B {
 }
 
 #[inline(never)]
-fn ret_d(body: &Body, stack: &mut Vec<Slot>, pscs: &[ScRef], current_sc: &std::rc::Rc<Scope>) -> B {
+fn ret_d(body: &Body, stack: &mut Vec<Slot>, pscs: &[ScRef], current_sc: &std::rc::Rc<Scope>) -> Slot {
     if let Some(ref ns_desc) = body.ns_desc {
         if !stack.is_empty() {
             stack.pop();
         }
-        return store_ns(NS {
+        return Slot::Borrowed(store_ns(NS {
             desc: ns_desc.clone(),
             sc: if !pscs.is_empty() { pscs[0].to_rc() } else { current_sc.clone() },
-        });
+        }));
     }
-    stack.pop().map_or(B::SENTINEL, Slot::leak)
+    // NOTE: RETD is the immediate-block / header-less return; keep it leaking.
+    Slot::Borrowed(stack.pop().map_or(B::SENTINEL, Slot::leak))
 }
 
 #[inline(never)]
 pub fn eval_bc(body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
-    TLS.with(|t| eval_bc_in(t, body, sc, bl))
+    TLS.with(|t| eval_bc_in(t, body, sc, bl)).leak()
 }
 
 #[inline]
-fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
+fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> Slot {
     let mut frame = Frame::enter(t, body.max_stack as usize, body.max_psc as usize);
     run_bc(t, &mut frame, body, sc, bl)
 }
@@ -609,14 +618,14 @@ pub fn exec_block_each(
         let mut frame = Frame::enter(t, body.max_stack as usize, body.max_psc as usize);
         for x in elems {
             let sc = Scope::new_rc_in(t, body, psc.clone(), var_am, &[f, x, B::SENTINEL]);
-            out.push(run_bc(t, &mut frame, body, sc, bl));
+            out.push(run_bc(t, &mut frame, body, sc, bl).leak());
         }
     })
 }
 
 /// The interpreter loop proper, on a frame owned by the caller.
 #[inline(always)]
-fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> B {
+fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> Slot {
     frame.bl = bl;
     let stack = &mut frame.stack;
     let pscs = &mut frame.pscs;
@@ -1117,7 +1126,9 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
                 return ret_d(body, stack, pscs, &current_sc);
             }
             Some(Op::RETN) => {
-                let r = popb!();
+                // NOTE: the result keeps its ownership: an `Owned` slot is the only
+                // reference to its array (stores leak), so it can travel to the caller.
+                let r = pop!();
                 Scope::recycle_in(t, current_sc);
                 return r;
             }

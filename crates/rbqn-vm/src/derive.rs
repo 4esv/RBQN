@@ -849,10 +849,68 @@ impl Drop for BirthSpan {
 fn call_impure(f: B, w: Option<Slot>, x: Slot) -> Slot {
     let xb = x.leak();
     let wb = w.map(Slot::leak);
+    if f.is_fun()
+        && let Some(r) = call_block_slot(f, wb, xb)
+    {
+        return r;
+    }
     Slot::Borrowed(match wb {
         Some(wb) => c2(f, wb, xb),
         None => c1(f, xb),
     })
+}
+
+/// Calls of user-defined block functions (plain, or derived by a block modifier)
+/// whose result keeps its ownership (#161): the body's last value, when it is an
+/// `Owned` slot, is the only reference to its array and moves to the caller. Same
+/// dispatch as `c1`/`c2`; `None` for any other callee. The arguments are already
+/// plain (leaked) handles, so the block may store them.
+fn call_block_slot(f: B, w: Option<B>, x: B) -> Option<Slot> {
+    use crate::vm::exec_block_slot;
+    let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
+    let d = get_derived(id);
+    let fv = tagu64(id << 3, FUN_TAG);
+    match d.kind {
+        DerivedKind::FunBlock => {
+            let bl = d.bl.as_ref()?;
+            let psc = d.sc.as_ref()?.clone();
+            Some(match w {
+                None => exec_block_slot(bl, &bl.bodies[0], psc, &[f, x, B::SENTINEL]),
+                Some(w) => {
+                    let body = bl.dy_body.as_ref().unwrap_or_else(|| &bl.bodies[0]);
+                    exec_block_slot(bl, body, psc, &[f, x, w])
+                }
+            })
+        }
+        DerivedKind::Md1D if d.g.is_md1() => {
+            let md = get_derived((d.g.0 & 0xFFFFFFFFFFFF) >> 3);
+            if md.kind != DerivedKind::Md1Block {
+                return None;
+            }
+            let bl = md.bl.as_ref()?.clone();
+            let psc = md.sc.as_ref()?.clone();
+            let body = match w {
+                None => bl.bodies[0].clone(),
+                Some(_) => bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone()),
+            };
+            Some(exec_block_slot(&bl, &body, psc, &[fv, x, w.unwrap_or(B::SENTINEL), d.g, d.f]))
+        }
+        DerivedKind::Md2D if d.g.is_md2() => {
+            let md = get_derived((d.g.0 & 0xFFFFFFFFFFFF) >> 3);
+            if md.kind != DerivedKind::Md2Block {
+                return None;
+            }
+            let bl = md.bl.as_ref()?.clone();
+            let psc = md.sc.as_ref()?.clone();
+            let body = match w {
+                None => bl.bodies[0].clone(),
+                // NOTE: c2 throws when no dyadic body exists; leave that to it.
+                Some(_) => bl.dy_body.clone()?,
+            };
+            Some(exec_block_slot(&bl, &body, psc, &[fv, x, w.unwrap_or(B::SENTINEL), d.g, d.f, d.h]))
+        }
+        _ => None,
+    }
 }
 
 /// Call `f` with arguments that may own their arrays; the result's ownership is
