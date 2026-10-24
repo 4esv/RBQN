@@ -458,3 +458,47 @@ fn sys_ns_errors_match_cbqn() {
         assert!(format!("{out}{err}").contains(want), "{expr}: {out}{err}");
     }
 }
+
+// =============================================================================
+// •MakeRand (#141)
+// =============================================================================
+
+fn print_expr(expr: &str) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-p", expr]).output().unwrap();
+    assert!(out.status.success(), "{expr}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn makerand_same_seed_same_sequence_across_processes() {
+    let expr = "(•MakeRand 42).Range⟜1000000¨ ↕5";
+    let first = print_expr(expr);
+    for _ in 0..2 {
+        assert_eq!(print_expr(expr), first);
+    }
+}
+
+#[test]
+fn makerand_seeds_differ_and_generators_are_independent() {
+    assert_eq!(print_expr("((•MakeRand 1).Range 1000000) ≡ (•MakeRand 1).Range 1000000"), "1\n");
+    assert_eq!(print_expr("((•MakeRand 1).Range 1000000) ≡ (•MakeRand 2).Range 1000000"), "0\n");
+    // Drawing from one generator must not advance another.
+    assert_eq!(
+        print_expr("a←•MakeRand 3 ⋄ b←•MakeRand 3 ⋄ c←a.Range 1000000 ⋄ b.Range 1000000"),
+        print_expr("(•MakeRand 3).Range 1000000"),
+    );
+}
+
+#[test]
+fn makerand_namespace_has_rand_fields() {
+    assert_eq!(print_expr("g←•MakeRand 5 ⋄ ≢ g.Deal 6"), "⟨ 6 ⟩\n");
+    assert_eq!(print_expr("g←•MakeRand 5 ⋄ ∧ g.Deal 6"), "⟨ 0 1 2 3 4 5 ⟩\n");
+    assert_eq!(print_expr("g←•MakeRand 5 ⋄ ≠ 3 g.Subset 9"), "3\n");
+}
+
+#[test]
+fn rand_stays_nondeterministic_across_processes() {
+    let draws: std::collections::HashSet<String> =
+        (0..4).map(|_| print_expr("•rand.Range 1000000000")).collect();
+    assert!(draws.len() > 1, "•rand repeated: {draws:?}");
+}
