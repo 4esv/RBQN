@@ -77,3 +77,9 @@ fn suite_fill_enclose_pair_transpose() {
     gives("((2⥊<) ≡○(3⊸↑) ⋈˜) ⟨\"ab\"‿⟨↕4⟩,2⟩", "1\n");
     gives("\"c  \" ≡ 3↑⍉'c'", "1\n");
 }
+
+#[test]
+fn empty_result_needs_no_fill() {
+    gives("≢ 0‿1‿1 ↑ ⟨⟩", "⟨ 0 1 1 ⟩\n");
+    gives("≢ 0‿2 ↑ ⟨⟩", "⟨ 0 2 ⟩\n");
+}

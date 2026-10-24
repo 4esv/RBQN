@@ -1460,6 +1460,8 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
         };
         dim.is_some_and(|d| (n.unsigned_abs() as usize) > d)
     });
+    // NOTE: an empty result pads nothing, so no fill is needed (CBQN: 0‿1‿1 ↑ ⟨⟩ is ↕0‿1‿1)
+    let overtakes = overtakes && !axes.contains(&0);
     let fill_val = if overtakes { needed_fill(arr, TAKE_NEEDS_FILL)? } else { arr_fill(arr) };
     let mut current_data: Vec<B> = (0..arr.ia()).map(|i| arr.get(i).unwrap_or(B::SENTINEL)).collect();
     let mut current_shape = arr.shape.clone();
