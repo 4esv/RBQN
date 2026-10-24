@@ -1247,6 +1247,9 @@ pub fn prim_to_b(idx: usize) -> B {
 ///   8=setInvReg, 9=setInvSwap, 10=nativeInvReg, 11=nativeInvSwap,
 ///   22=GroupLen, 23=GroupOrd
 fn dispatch_sys_c1(idx: u32, x: B) -> B {
+    if idx >= HASHMAP_BASE {
+        return hashmap_call(idx - HASHMAP_BASE, None, x);
+    }
     if idx >= REBQN_BASE {
         return rebqn_call((idx - REBQN_BASE) as usize, x);
     }
@@ -1657,16 +1660,8 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
             x
         }
         // NOTE: •bit operations are now 1-modifiers (native_md1 idx 70-78), no sys_fn dispatch needed
-        // NOTE: •HashMap constructor
-        170 => make_hashmap_instance(x),
-        // NOTE: •HashMap method stubs
-        171 => B::m_i32(0), // Count — stub returns 0
-        172 => crate::vm::b_vec_to_arr(vec![]), // Keys — stub returns ⟨⟩
-        173 => B::m_i32(0), // Has — stub returns 0
-        174 => rbqn_core::error::throw("•HashMap.Get: key not found"),
-        175 => rbqn_core::error::throw("•HashMap.Set: not yet implemented"),
-        176 => rbqn_core::error::throw("•HashMap.Delete: not yet implemented"),
-        177 => crate::vm::b_vec_to_arr(vec![]), // Values — stub returns ⟨⟩
+        // NOTE: •HashMap is dyadic only, as in CBQN
+        170 => rbqn_core::error::throw("This function can't be called monadically"),
         // NOTE: •ns.Keys — return exported field names of a namespace
         180 => ns_keys_c1(x),
         // NOTE: •ns.Values — return exported field values of a namespace
@@ -1681,6 +1676,9 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
 
 /// Dispatch system function c2.
 fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
+    if idx >= HASHMAP_BASE {
+        return hashmap_call(idx - HASHMAP_BASE, Some(w), x);
+    }
     if idx >= REBQN_BASE {
         return rebqn_call((idx - REBQN_BASE) as usize, x);
     }
@@ -1931,8 +1929,8 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         182 => ns_has_c2(w, x),
         // NOTE: •ns.Get dyadic: name •ns.Get ns → value
         183 => ns_get_c2(w, x),
-        // NOTE: •HashMap stubs dyadic
-        170 => make_hashmap_instance(x), // dyadic: ignore w, create from x
+        // NOTE: •HashMap constructor: keys •HashMap vals
+        170 => make_hashmap_instance(w, x),
         _ => rbqn_core::error::throw(format!("system value {idx} not yet implemented (c2)")),
     }
 }
@@ -4116,45 +4114,144 @@ fn ns_get_c2(w: B, x: B) -> B {
 }
 
 // =============================================================================
-// •HashMap constructor
+// •HashMap
 // =============================================================================
 
-use std::collections::HashMap as StdHashMap;
+/// SysFn indices from here up are •HashMap methods: HASHMAP_BASE + 8·map + method.
+const HASHMAP_BASE: u32 = 1 << 24;
 
-#[allow(clippy::type_complexity)]
-static HASHMAP_STORE: std::sync::LazyLock<Mutex<StdHashMap<u64, Mutex<StdHashMap<u64, (B, B)>>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(StdHashMap::new()));
+const HM_COUNT: u32 = 0;
+const HM_KEYS: u32 = 1;
+const HM_HAS: u32 = 2;
+const HM_GET: u32 = 3;
+const HM_SET: u32 = 4;
+const HM_DELETE: u32 = 5;
+const HM_VALUES: u32 = 6;
 
-static HASHMAP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+struct HashMapState {
+    /// Insertion order; deleted entries stay as None until the next compaction.
+    entries: Vec<Option<(u64, B, B)>>,
+    /// Content hash of a key → positions in `entries`.
+    index: HashMap<u64, Vec<u32>>,
+    live: usize,
+    /// The namespace handle, returned by Set and Delete.
+    ns: B,
+}
 
-fn make_hashmap_instance(x: B) -> B {
-    let hm_id = HASHMAP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+// NOTE: thread-local like the namespace store: the interpreter is single-threaded.
+std::thread_local! {
+    static HASHMAPS: std::cell::RefCell<Vec<HashMapState>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
-    // Initialize the hash map
-    let mut inner_map = StdHashMap::new();
-
-    // If x is a 2-element array ⟨keys, values⟩, initialize with those
-    if let Some(arr) = crate::vm::get_arr(x)
-        && arr.ia() == 2 && arr.rank() == 1
-            && let (Ok(k_b), Ok(v_b)) = (arr.get(0), arr.get(1))
-                && let (Some(k_arr), Some(v_arr)) = (crate::vm::get_arr(k_b), crate::vm::get_arr(v_b)) {
-                    let n = k_arr.ia().min(v_arr.ia());
-                    for i in 0..n {
-                        if let (Ok(k), Ok(v)) = (k_arr.get(i), v_arr.get(i)) {
-                            let hash = hash_b(k);
-                            inner_map.insert(hash, (k, v));
-                        }
-                    }
+/// Hash by content, consistent with `deep_equal`: 0 and ¯0 agree, arrays hash shape and
+/// elements, functions and modifiers hash their tag (equal derived values share it).
+fn hash_key(x: B) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    fn go(b: B, h: &mut DefaultHasher) {
+        rbqn_core::stack::guard();
+        if b.is_f64() {
+            let f = b.o2f();
+            (if f == 0.0 { 0.0 } else { f }).to_bits().hash(h);
+        } else if b.is_arr() {
+            if let Some(a) = crate::vm::get_arr(b) {
+                a.shape.hash(h);
+                for i in 0..a.ia() {
+                    go(a.get(i).unwrap_or(B::SENTINEL), h);
                 }
-        // Empty array or ⟨⟩ — leave map empty
-    // If x is 0, also leave map empty
+            }
+        } else if b.is_fun() || b.is_md1() || b.is_md2() {
+            (b.0 >> 48).hash(h);
+        } else {
+            b.0.hash(h);
+        }
+    }
+    let mut h = DefaultHasher::new();
+    go(x, &mut h);
+    h.finish()
+}
 
-    HASHMAP_STORE.lock().unwrap_or_else(|e| e.into_inner())
-        .insert(hm_id, Mutex::new(inner_map));
+impl HashMapState {
+    fn find(&self, h: u64, k: B) -> Option<usize> {
+        self.index.get(&h)?.iter().map(|&i| i as usize).find(|&i| {
+            self.entries[i].is_some_and(|(_, ek, _)| rbqn_core::compare::deep_equal(ek, k))
+        })
+    }
 
-    // Build a namespace with Count, Keys, Has, Get, Set, Delete, Values methods
+    fn insert_new(&mut self, h: u64, k: B, v: B) {
+        self.index.entry(h).or_default().push(self.entries.len() as u32);
+        self.entries.push(Some((h, k, v)));
+        self.live += 1;
+    }
+
+    fn remove(&mut self, pos: usize) {
+        let (h, _, _) = self.entries[pos].take().expect("live entry");
+        if let Some(bucket) = self.index.get_mut(&h) {
+            bucket.retain(|&i| i as usize != pos);
+            if bucket.is_empty() {
+                self.index.remove(&h);
+            }
+        }
+        self.live -= 1;
+        if self.entries.len() > 32 && self.live * 2 < self.entries.len() {
+            self.compact();
+        }
+    }
+
+    fn compact(&mut self) {
+        let old = std::mem::take(&mut self.entries);
+        self.index.clear();
+        for e in old.into_iter().flatten() {
+            self.index.entry(e.0).or_default().push(self.entries.len() as u32);
+            self.entries.push(Some(e));
+        }
+    }
+
+    fn list(&self, vals: bool) -> B {
+        let v: Vec<B> = self.entries.iter().flatten().map(|&(_, k, v)| if vals { v } else { k }).collect();
+        crate::vm::b_vec_to_arr(v)
+    }
+}
+
+/// `≢` of an argument as CBQN prints it in the constructor errors.
+fn hm_shape_str(x: B) -> String {
+    let shape = crate::vm::get_arr(x).map(|a| a.shape.clone()).unwrap_or_default();
+    match shape.len() {
+        0 => "⟨⟩".to_string(),
+        1 => format!("⟨{}⟩", shape[0]),
+        _ => shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("‿"),
+    }
+}
+
+/// keys •HashMap vals
+fn make_hashmap_instance(w: B, x: B) -> B {
+    let is_list = |b: B| b.is_arr() && crate::vm::get_arr(b).is_some_and(|a| a.rank() == 1);
+    if !is_list(w) || !is_list(x) {
+        rbqn_core::error::throw(format!(
+            "𝕨 •HashMap 𝕩: Arguments must be lists ({}≡≢𝕨, {}≡≢𝕩)", hm_shape_str(w), hm_shape_str(x)));
+    }
+    let (wa, xa) = (crate::vm::get_arr(w).unwrap(), crate::vm::get_arr(x).unwrap());
+    let n = wa.ia();
+    if n != xa.ia() {
+        rbqn_core::error::throw(format!(
+            "𝕨 •HashMap 𝕩: 𝕨 and 𝕩 must have the same length ({}≡≠𝕨, {}≡≠𝕩)", n, xa.ia()));
+    }
+    let mut st = HashMapState { entries: Vec::with_capacity(n), index: HashMap::with_capacity(n), live: 0, ns: B::SENTINEL };
+    for i in 0..n {
+        let k = wa.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
+        let v = xa.get(i).unwrap_or_else(|e| rbqn_core::error::throw_bqn(e));
+        let h = hash_key(k);
+        if st.find(h, k).is_some() {
+            rbqn_core::error::throw("•HashMap: 𝕨 contained duplicate keys");
+        }
+        st.insert_new(h, k, v);
+    }
+    let id = HASHMAPS.with(|m| {
+        let mut m = m.borrow_mut();
+        m.push(st);
+        m.len() - 1
+    });
+
     use crate::namespace::{str2gid, NSDesc, NS};
-
     let gids = vec![
         str2gid("count"),
         str2gid("keys"),
@@ -4166,43 +4263,80 @@ fn make_hashmap_instance(x: B) -> B {
     ];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
-
     let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
     let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
-
-    // Encode hm_id into sys_fn indices: 1700 + (hm_id * 10) + method_offset
-    // But sys_fn idx is u32, and we need to recover the hm_id at dispatch time.
-    // Simpler approach: store hm_id as a float in slot 0, use sys_fn for methods that
-    // read slot 0 of their parent scope. But that's complex.
-    // Simplest MVP: use sys_fn stubs that throw "not yet implemented" for mutating ops,
-    // and make Count return 0 for now. Since the test suite doesn't test HashMap,
-    // just having it be a valid namespace is sufficient.
+    let base = HASHMAP_BASE + (id as u32) * 8;
     let sc = std::rc::Rc::new(crate::scope::Scope::new(
         body,
         None,
         var_am_u16,
         &[
-            m_sys_fn(171), // Count
-            m_sys_fn(172), // Keys
-            m_sys_fn(173), // Has
-            m_sys_fn(174), // Get
-            m_sys_fn(175), // Set
-            m_sys_fn(176), // Delete
-            m_sys_fn(177), // Values
+            m_sys_fn(base + HM_COUNT),
+            m_sys_fn(base + HM_KEYS),
+            m_sys_fn(base + HM_HAS),
+            m_sys_fn(base + HM_GET),
+            m_sys_fn(base + HM_SET),
+            m_sys_fn(base + HM_DELETE),
+            m_sys_fn(base + HM_VALUES),
         ],
     ));
-
-    let ns = NS { desc, sc };
-    crate::namespace::store_ns(ns)
+    let ns = crate::namespace::store_ns(NS { desc, sc });
+    HASHMAPS.with(|m| m.borrow_mut()[id].ns = ns);
+    ns
 }
 
-/// Simple hash for B values — used by HashMap
-fn hash_b(x: B) -> u64 {
-    rbqn_core::stack::guard();
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    x.0.hash(&mut hasher);
-    hasher.finish()
+/// Method call on a map: `rel` is HASHMAP_BASE-relative, `w` is None for a monadic call.
+fn hashmap_call(rel: u32, w: Option<B>, x: B) -> B {
+    let (id, method) = ((rel / 8) as usize, rel % 8);
+    let monadic_only = |w: Option<B>| {
+        if w.is_some() { rbqn_core::error::throw("This function can't be called dyadically"); }
+    };
+    // NOTE: hash before borrowing the table; hashing and comparing never call back into it.
+    let with = |f: &mut dyn FnMut(&mut HashMapState) -> B| HASHMAPS.with(|m| f(&mut m.borrow_mut()[id]));
+    match method {
+        HM_COUNT => { monadic_only(w); with(&mut |s| B::m_f64(s.live as f64)) }
+        HM_KEYS => { monadic_only(w); with(&mut |s| s.list(false)) }
+        HM_VALUES => { monadic_only(w); with(&mut |s| s.list(true)) }
+        HM_HAS => {
+            monadic_only(w);
+            let h = hash_key(x);
+            with(&mut |s| B::m_f64(if s.find(h, x).is_some() { 1.0 } else { 0.0 }))
+        }
+        HM_GET => {
+            let h = hash_key(x);
+            let found = with(&mut |s| match s.find(h, x) {
+                Some(i) => s.entries[i].map_or(B::SENTINEL, |(_, _, v)| v),
+                None => B::SENTINEL,
+            });
+            if found.0 != B::SENTINEL.0 { return found; }
+            match w {
+                Some(d) => d,
+                None => rbqn_core::error::throw("(hashmap).Get: key not found"),
+            }
+        }
+        HM_SET => {
+            let Some(k) = w else { rbqn_core::error::throw("This function can't be called monadically") };
+            let h = hash_key(k);
+            with(&mut |s| {
+                match s.find(h, k) {
+                    Some(i) => s.entries[i] = Some((h, k, x)),
+                    None => s.insert_new(h, k, x),
+                }
+                s.ns
+            })
+        }
+        HM_DELETE => {
+            monadic_only(w);
+            let h = hash_key(x);
+            let r = with(&mut |s| match s.find(h, x) {
+                Some(i) => { s.remove(i); s.ns }
+                None => B::SENTINEL,
+            });
+            if r.0 == B::SENTINEL.0 { rbqn_core::error::throw("(hashmap).Delete: key not found"); }
+            r
+        }
+        _ => rbqn_core::error::throw("•HashMap: invalid method"),
+    }
 }
 
 // ============================================================
