@@ -1,22 +1,7 @@
 mod cli;
-#[cfg(feature = "gpu")]
 mod gpu_host;
-#[cfg(feature = "gpu")]
 mod gpu_runtime;
 mod repl;
-
-// NOTE: CPU-only build (--no-default-features): the entry points main uses, as no-ops.
-#[cfg(not(feature = "gpu"))]
-mod gpu_runtime {
-    pub struct SummaryGuard;
-    pub fn report_panic(_: &std::panic::PanicHookInfo<'_>) {}
-    pub fn init(_no_gpu: bool) {}
-    pub fn print_summary() {}
-    /// None: the GPU runtime is not compiled in, so the REPL header omits the gpu part.
-    pub fn adapter_label() -> Option<String> { None }
-    /// `--version` gpu line: no GPU code is compiled in.
-    pub fn version_label(_no_gpu: bool) -> String { "none".to_string() }
-}
 
 use rbqn::bootstrap;
 use rbqn::exec::exec_string;
@@ -73,12 +58,16 @@ fn interp_main(mut t: std::time::Instant) {
 
     gpu_runtime::init(args.no_gpu);
 
+    // NOTE: The lazy elementwise graph and its host-side fusion (arith, iota, fold,
+    // scan) are registered in every build: with the device off (--no-gpu, RBQN_GPU=off,
+    // CPU-only build) the cost model keeps every tree on the host, fused (#137).
+    // Function pointer pattern avoids circular dependency (rbqn-prim cannot depend on rbqn).
+    rbqn_prim::arith_dyad::register_gpu_arith(gpu_runtime::gpu_arith_binary);
+    rbqn_prim::structural::register_gpu_iota(gpu_runtime::gpu_iota);
+    rbqn_vm::modifiers::register_gpu_fold(gpu_runtime::gpu_fold);
+    rbqn_vm::modifiers::register_gpu_scan(gpu_runtime::gpu_scan);
     #[cfg(feature = "gpu")]
     {
-        // NOTE: Register GPU dispatch hooks into rbqn-prim after GPU runtime is initialized.
-        // Function pointer pattern avoids circular dependency (rbqn-prim cannot depend on rbqn).
-        rbqn_prim::arith_dyad::register_gpu_arith(gpu_runtime::gpu_arith_binary);
-        rbqn_prim::structural::register_gpu_iota(gpu_runtime::gpu_iota);
 
         // NOTE: Register GPU fused arithmetic hook for explicit multi-op dispatch.
         // FusionBuilder wired here; true expression-level auto-fusion is future work (requires
@@ -102,11 +91,6 @@ fn interp_main(mut t: std::time::Instant) {
         rbqn_core::register_resident_download(gpu_runtime::resident_download);
         // NOTE: Monadic arithmetic on a resident value stays lazy (issue #15).
         rbqn_vm::derive::register_gpu_resident_monad(gpu_runtime::gpu_resident_monad);
-
-        // NOTE: Register GPU fold/scan hooks into rbqn-vm modifiers.
-        // These enable +´ and +` to dispatch to GPU for large arrays.
-        rbqn_vm::modifiers::register_gpu_fold(gpu_runtime::gpu_fold);
-        rbqn_vm::modifiers::register_gpu_scan(gpu_runtime::gpu_scan);
 
         // NOTE: Register GPU grade and sort hooks into rbqn-prim.
         // These enable ⍋/⍒ and ∧/∨ to dispatch to GPU for large arrays.
