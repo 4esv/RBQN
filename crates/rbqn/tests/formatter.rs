@@ -198,6 +198,11 @@ fn system_function_display_names() {
         ("•FLines", "(file).Lines"),
         ("•MakeRand", "•MakeRand"),
         ("•rand.Range", "(rand).Range"),
+        ("•rand.Deal", "(rand).Deal"),
+        ("•rand.Subset", "(rand).Subset"),
+        ("(•MakeRand 3).Range", "(rand).Range"),
+        ("(•MakeRand 3).Deal", "(rand).Deal"),
+        ("(•MakeRand 3).Subset", "(rand).Subset"),
         ("•ReBQN {repl⇐\"loose\"}", "(REPL)"),
         ("•Show", "•Show"),
     ] {

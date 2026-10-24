@@ -2173,6 +2173,12 @@ fn sys_fn_name(sys_idx: u32) -> &'static str {
         170 => "•HashMap",
         171 => "•MakeRand",
         200 => "•_nativeRepr_",
+        // NOTE: •MakeRand generator members print like •rand's, matching CBQN.
+        i if i >= RAND_BASE => match (i - RAND_BASE) % 4 {
+            RAND_RANGE => "(rand).Range",
+            RAND_DEAL => "(rand).Deal",
+            _ => "(rand).Subset",
+        },
         // NOTE: •ReBQN evaluators display as "(REPL)", matching CBQN.
         i if i >= REBQN_BASE => "(REPL)",
         _   => "(system function)",
