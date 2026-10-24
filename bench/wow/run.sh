@@ -95,7 +95,7 @@ def gmed(cmd, w, arg, env, reps):
         if r.returncode: return None, r.stderr.strip()[:60]
         lines = r.stdout.split("\n")
         val = lines[0].strip()
-        ts.append(float([l for l in lines if l.startswith("t=")][0][2:]))
+        ts.append(float([l for l in lines if l.startswith("t=")][0][2:].replace("¯", "-")))
     return statistics.median(ts), val
 def gdebug(w, arg):
     r = subprocess.run([rb, gprog, w, arg], capture_output=True, text=True, env={**os.environ, "RBQN_GPU_DEBUG": "1"})
