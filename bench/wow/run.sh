@@ -1,5 +1,5 @@
 #!/bin/bash
-# Multicore (#104) and GPU (#125) bench. Median wall time of 3 runs per workload on CBQN,
+# Multicore (#104) and GPU (#125, #146) bench. Median wall time of 3 runs per workload on CBQN,
 # rbqn -t 1 and rbqn default threads; prints a Markdown table.
 # Each cell: median in-process op time (median whole-process wall time).
 # Env: CBQN_BIN (default $HOME/Code/forks/CBQN/BQN), RBQN_BIN (default target/release/rbqn), REPS (3).
@@ -75,6 +75,50 @@ for label, c, w, env in gcols:
         print(f"| {label} | {cell} | {o} | {u} | {d} | `{summ}` |")
 print()
 print("Explicit row: exactly one `[gpu] upload` line; the sum is read back as one scalar (readbacks=1 in the summary), so there is no `[gpu] download` line. The f32 sum is not guaranteed equal to the exact one.")
+
+# GPU rows where the device can win (#146): sort, matmul, row sums, each at three sizes.
+# CBQN has no •math.MatMul, so its matmul cell is the BQN expression `w +˝∘× ⎉1‿∞ x`; its •rand stream
+# differs from rbqn's, so only the three rbqn columns are compared for agreement.
+print()
+print("| workload | CBQN | rbqn CPU (`RBQN_GPU=off`) | rbqn GPU (`RBQN_GPU=force`) | rbqn default | default ran on | model gpu / cpu ms | rbqn modes agree |")
+print("|---|---|---|---|---|---|---|---|")
+grows = [("sort `∧` 1e6 i32", "sort", "1e6", 3), ("sort `∧` 1e7 i32", "sort", "1e7", 3), ("sort `∧` 1e8 i32", "sort", "1e8", 3),
+         ("`•math.MatMul` 1000² (entries below 10)", "matmul", "1000", 3), ("`•math.MatMul` 2000²", "matmul", "2000", 3),
+         ("`•math.MatMul` 4096²", "matmul", "4096", 1),
+         ("`+´˘` 1e3×1e3 i32", "rows", "1000", 3), ("`+´˘` 3e3×3e3 i32", "rows", "3000", 3), ("`+´˘` 1e4×1e4 i32", "rows", "1e4", 3)]
+def gmed(cmd, w, arg, env, reps):
+    ts, walls, val = [], [], None
+    for _ in range(reps):
+        t0 = time.perf_counter()
+        r = subprocess.run(cmd + [gprog, w, arg], capture_output=True, text=True, env={**os.environ, **env})
+        walls.append(time.perf_counter() - t0)
+        if r.returncode: return None, r.stderr.strip()[:60]
+        lines = r.stdout.split("\n")
+        val = lines[0].strip()
+        ts.append(float([l for l in lines if l.startswith("t=")][0][2:]))
+    return statistics.median(ts), val
+def gdebug(w, arg):
+    r = subprocess.run([rb, gprog, w, arg], capture_output=True, text=True, env={**os.environ, "RBQN_GPU_DEBUG": "1"})
+    err = r.stderr.splitlines()
+    summ = [l for l in err if l.startswith("gpu: dispatches=")]
+    disp = int(summ[-1].split("dispatches=")[1].split()[0]) if summ else 0
+    dec = [l for l in err if "decide sort" in l or "decide matmul" in l]
+    model = "-"
+    if dec:
+        m = dec[-1]
+        model = m.split(" gpu=")[1].split(" (")[0].replace("ms cpu=", " / ").replace("ms", "")
+    return ("GPU" if disp > 0 else "CPU"), model
+for label, w, arg, off_reps in grows:
+    cells, vals = [], []
+    for name, cmd, env, reps in [("cb", [cb], {}, 3), ("off", [rb], {"RBQN_GPU": "off"}, off_reps),
+                                 ("force", [rb], {"RBQN_GPU": "force"}, 3), ("def", [rb], {}, 3)]:
+        t, o = gmed(cmd, w, arg, env, reps)
+        cells.append(f"{t:.3f} s" + (" (1 run)" if name == "off" and off_reps == 1 else "") if t is not None else f"error: {o}")
+        if name != "cb": vals.append(o)
+    ran, model = gdebug(w, arg)
+    print(f"| {label} | " + " | ".join(cells) + f" | {ran} | {model} | {'yes' if len(set(vals)) == 1 else 'NO'} |")
+print()
+print("Cells: median in-process seconds of the operation alone, 3 runs unless marked. Model column: the cost model's predicted GPU / CPU milliseconds from the default run's `RBQN_GPU_DEBUG` line (`-`: no model decision, the operation is below the array-size floor).")
 PY
 echo
 kill $sampler 2>/dev/null; wait $sampler 2>/dev/null || true
