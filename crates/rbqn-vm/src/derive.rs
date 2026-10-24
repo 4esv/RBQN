@@ -2689,7 +2689,9 @@ fn sys_hash_c1(x: B) -> B {
     fn hash_b(b: B) -> u64 {
         rbqn_core::stack::guard();
         let mut h = DefaultHasher::new();
-        b.0.hash(&mut h);
+        // NOTE: an array handle is an allocation address (varies per run); hash the tag
+        // and the contents instead so •Hash stays deterministic.
+        if b.is_arr() { (b.0 >> 48).hash(&mut h) } else { b.0.hash(&mut h) }
         if b.is_arr()
             && let Some(arr) = crate::vm::get_arr(b) {
                 for i in 0..arr.ia() {
