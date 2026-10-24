@@ -64,15 +64,30 @@ static IMPORT_CACHE: std::sync::LazyLock<Mutex<HashMap<String, B>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Set •path and •name from the executing file path.
+/// •path is the file's directory with a trailing slash (spec/system.md#•path);
+/// "" stays "" for -e/-p/stdin.
 pub fn set_sys_path(path: &str) {
-    *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(str_to_b(path));
+    let dir = std::path::Path::new(path)
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    set_sys_dir(&dir);
 
-    // Compute name as basename
     let name = std::path::Path::new(path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
     *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()) = Some(str_to_b(name));
+}
+
+/// Set •path to directory `dir` (trailing slash added), leaving •name empty.
+pub fn set_sys_dir(dir: &str) {
+    let mut d = dir.to_string();
+    if !d.is_empty() && !d.ends_with('/') {
+        d.push('/');
+    }
+    *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()) = Some(str_to_b(&d));
+    *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()) = Some(str_to_b(""));
 }
 
 // NOTE: BQN primitive glyphs in fruntime order (0-63).
@@ -2984,10 +2999,8 @@ fn resolve_path(path: String) -> String {
     if let Some(path_b) = sys_path {
         let path_str = b_to_string(path_b);
         if !path_str.is_empty() {
-            let base = std::path::Path::new(&path_str);
-            // •path stores the file path; get its parent directory for relative resolution
-            let base_dir = base.parent().unwrap_or(base);
-            let joined = base_dir.join(&path);
+            // •path is already the directory (trailing slash)
+            let joined = std::path::Path::new(&path_str).join(&path);
             return joined.to_string_lossy().into_owned();
         }
     }

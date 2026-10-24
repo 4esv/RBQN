@@ -144,15 +144,68 @@ fn sys_wdpath_nonempty() {
 
 // -- •path --
 
+// spec/system.md line 75: "`•path` simply gives the path of the file in which it
+// appears. It includes a trailing slash but not the name of the file itself."
+// -p has no file, so RBQN uses the working directory plus a trailing slash (so
+// `•path∾"data.txt"` works). CBQN returns the cwd without a slash; deliberate.
 #[test]
-#[ignore = "requires CBQN_PATH"]
-fn sys_path_empty_in_p_mode() {
-    let (stdout, _, code) = run_print("•path");
+fn sys_path_is_wdpath_with_slash_in_p_mode() {
+    let (path, _, code) = run_print("•path");
     assert_eq!(code, 0, "•path should succeed");
-    // In -p mode, •path is empty string "" or ⟨⟩
-    // An empty char array displays as "" or ⟨⟩
-    let is_empty = stdout == "\"\"" || stdout == "⟨⟩" || stdout.is_empty();
-    assert!(is_empty, "•path should be empty in -p mode, got: {}", stdout);
+    let (wd, _, _) = run_print("•wdpath∾\"/\"");
+    assert_eq!(path, wd, "-p •path must be •wdpath plus slash");
+    assert!(path.ends_with("/\""), "got: {path}");
+}
+
+/// Fresh canonical temp dir (macOS /var is a symlink to /private/var).
+fn path_test_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("rbqn-151-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::canonicalize(&d).unwrap()
+}
+
+// spec/system.md#•path: the file's directory with a trailing slash, no file name.
+// (CBQN omits the slash; deliberate divergence, spec is the target.)
+#[test]
+fn sys_path_is_directory_with_trailing_slash_for_script() {
+    let d = path_test_dir("script");
+    let f = d.join("p.bqn");
+    std::fs::write(&f, "•Out •path\n•Out •name\n").unwrap();
+    let out = rbqn_cmd().arg(&f).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(got, format!("{}/\np.bqn\n", d.display()));
+}
+
+#[test]
+fn sys_path_imported_file_sees_its_own_directory() {
+    let d = path_test_dir("import");
+    std::fs::create_dir_all(d.join("sub")).unwrap();
+    std::fs::write(d.join("sub/q.bqn"), "•Out •path\n•Out •name\n").unwrap();
+    std::fs::write(d.join("p.bqn"), "•Import \"sub/q.bqn\"\n•Out •path\n").unwrap();
+    let out = rbqn_cmd().arg(d.join("p.bqn")).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let got = String::from_utf8_lossy(&out.stdout).to_string();
+    let d = d.display();
+    assert_eq!(got, format!("{d}/sub/\nq.bqn\n{d}/\n"));
+}
+
+#[test]
+fn sys_path_repl_is_wdpath_with_trailing_slash() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let d = path_test_dir("repl");
+    let mut child = rbqn_cmd()
+        .current_dir(&d)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all("•Out •path\n".as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let got = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(got.contains(&format!("{}/", d.display())), "REPL •path, got: {got}");
 }
 
 // -- •name --
