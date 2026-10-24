@@ -596,8 +596,9 @@ fn resolve_lib_path(p: &str) -> String {
         return p.to_string();
     }
     let base = b_to_rust_string(crate::derive::dispatch_sys_env(38));
-    if let Some(dir) = std::path::Path::new(&base).parent().filter(|d| !base.is_empty() && !d.as_os_str().is_empty()) {
-        let cand = dir.join(p);
+    if !base.is_empty() {
+        // `•path` is already the directory (trailing slash)
+        let cand = std::path::Path::new(&base).join(p);
         if cand.exists() { return cand.to_string_lossy().into_owned(); }
     }
     p.to_string()

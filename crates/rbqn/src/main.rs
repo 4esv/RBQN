@@ -174,6 +174,12 @@ fn interp_main(mut t: std::time::Instant) {
 
     // REPL if requested or no actions given
     if args.repl {
+        if args.actions.is_empty() {
+            // REPL has no file: •path is the working directory (spec/system.md#•path)
+            if let Ok(wd) = std::env::current_dir() {
+                rbqn_vm::derive::set_sys_dir(&wd.to_string_lossy());
+            }
+        }
         repl::run_repl(&rt, args.silent);
     }
     rbqn::timing::lap(&mut t, "end of interp_main");
