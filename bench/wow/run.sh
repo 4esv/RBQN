@@ -8,7 +8,17 @@ here=$(cd "$(dirname "$0")" && pwd)
 CBQN_BIN=${CBQN_BIN:-$HOME/Code/forks/CBQN/BQN}
 RBQN_BIN=${RBQN_BIN:-$here/../../target/release/rbqn}
 export CBQN_BIN RBQN_BIN REPS=${REPS:-3} PROG=$here/multicore.bqn
-exec python3 -I - <<'PY'
+echo "uptime (start): $(uptime)"
+echo "load1 before run: $(uptime | sed 's/.*averages: //' | awk '{print $1}' | tr -d ,)"
+# Interference evidence: max CPU% of any process other than rbqn/BQN/this script's own tools, sampled every 2 s.
+samp=$(mktemp); echo 0 > "$samp"
+( while :; do
+    m=$(ps -Ao pcpu,comm | awk 'NR>1{n=$2; sub(/.*\//,"",n); if(n!~/^(rbqn|BQN|python3|Python|bash|zsh|sh|ps|awk|sleep)$/ && $1>m) m=$1} END{print m+0}')
+    p=$(cat "$samp"); awk -v a="$m" -v b="$p" 'BEGIN{print (a>b?a:b)}' > "$samp.n" && mv "$samp.n" "$samp"
+    sleep 2
+  done ) &
+sampler=$!
+python3 -I - <<'PY'
 import os, statistics, subprocess, time
 cb, rb, reps, prog = os.environ["CBQN_BIN"], os.environ["RBQN_BIN"], int(os.environ["REPS"]), os.environ["PROG"]
 threads = subprocess.run([rb, "--version"], capture_output=True, text=True).stdout
@@ -38,3 +48,9 @@ for label, w in work:
     print(f"| {label} | " + " | ".join(cells) + f" | {sp} | {agree} |")
 print()
 print("Cells: median in-process seconds for the operation alone (median whole-process wall seconds).")
+PY
+echo
+kill $sampler 2>/dev/null; wait $sampler 2>/dev/null || true
+echo "max foreign CPU% during run: $(cat "$samp")"
+rm -f "$samp" "$samp.n"
+echo "uptime (end): $(uptime)"
