@@ -502,3 +502,98 @@ fn rand_stays_nondeterministic_across_processes() {
         (0..4).map(|_| print_expr("•rand.Range 1000000000")).collect();
     assert!(draws.len() > 1, "•rand repeated: {draws:?}");
 }
+
+// ============================================================
+// •math hyperbolics/ErfC/LogFact/Sum, •file metadata, •_timed (#133):
+// expected values are CBQN's own output for the same expression
+// ============================================================
+
+/// First line of `-p` output, stdout and stderr combined.
+fn print_first(expr: &str) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(["-p", expr]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+    text.lines().next().unwrap_or("").to_string()
+}
+
+#[test]
+fn test_math_new_functions_match_cbqn() {
+    let cases: &[(&str, &str)] = &[
+        ("⟨•math.Sinh 1, •math.Cosh 1, •math.Tanh 1, •math.Asinh 1, •math.Acosh 2, •math.Atanh 0.5⟩",
+         "⟨ 1.1752011936438014 1.5430806348152437 0.7615941559557649 0.881373587019543 1.3169578969248166 0.5493061443340549 ⟩"),
+        ("•math.Sinh 0‿1‿2", "⟨ 0 1.1752011936438014 3.6268604078470186 ⟩"),
+        ("•math.Sinh ⟨1,⟨2,3⟩⟩", "⟨ 1.1752011936438014 ⟨ 3.6268604078470186 10.017874927409903 ⟩ ⟩"),
+        ("⟨•math.Acosh 0.5, •math.Atanh 2, •math.Atanh 1, •math.Atanh ¯1⟩", "⟨ NaN NaN ∞ ¯∞ ⟩"),
+        ("⟨•math.ErfC 0.5, •math.ErfC ¯1, •math.ErfC 3⟩", "⟨ 0.4795001221869535 1.8427007929497148 2.2090496998585438e¯5 ⟩"),
+        ("⟨•math.LogFact 5, •math.LogFact 0, •math.LogFact 0.5, •math.LogFact ¯1⟩", "⟨ 4.787491742782045 0 ¯0.12078223763524526 ∞ ⟩"),
+        ("⟨•math.Sum 1e6⥊0.1, •math.Sum ⟨⟩, •math.Sum 1‿2‿3, •math.Sum 100⥊0.1⟩", "⟨ 100000.00000022355 0 6 9.999999999999998 ⟩"),
+        ("•math.Sum 1e5⥊0.1", "9999.999999999669"),
+        ("•math.Sum (↕50)÷3", "408.33333333333337"),
+        ("•math.Sinh \"a\"", "Error: •math.Sinh 𝕩: 𝕩 contained non-number"),
+        ("•math.Sum 2‿2⥊1", "Error: •math.Sum 𝕩: 𝕩 must be a list (2‿2 ≡ ≢𝕩)"),
+        ("•math.Sum 3", "Error: •math.Sum 𝕩: 𝕩 must be a list (⟨⟩ ≡ ≢𝕩)"),
+        ("•math.Sum ⟨1,\"a\"⟩", "Error: •math.Sum 𝕩: 𝕩 elements must be numbers"),
+        ("1 •math.Sinh 2", "Error: This function can't be called dyadically"),
+    ];
+    // NOTE: libm results differ by an ulp across platforms (macOS vs glibc), so numbers
+    // are compared to 1e-14 relative; everything else must match exactly.
+    let close = |got: &str, want: &str| {
+        let (g, w): (Vec<&str>, Vec<&str>) = (got.split(' ').collect(), want.split(' ').collect());
+        g.len() == w.len()
+            && g.iter().zip(&w).all(|(a, b)| match (a.replace('¯', "-").parse::<f64>(), b.replace('¯', "-").parse::<f64>()) {
+                (Ok(x), Ok(y)) => x == y || (x.is_nan() && y.is_nan()) || (x - y).abs() <= 1e-14 * y.abs().max(1e-300),
+                _ => a == b,
+            })
+    };
+    for (expr, want) in cases {
+        let got = print_first(expr);
+        // Sum is pure f64 arithmetic in a fixed order: bit-exact everywhere.
+        let ok = if expr.contains("Sum") { got == *want } else { close(&got, want) };
+        assert!(ok, "{expr}: got {got}, want {want}");
+    }
+}
+
+#[test]
+fn test_file_metadata_matches_cbqn() {
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let meta = std::fs::metadata("Cargo.toml").unwrap();
+    assert_eq!(print_first("•file.Size \"Cargo.toml\""), meta.len().to_string());
+    let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
+    for (name, t) in [("Modified", meta.modified().unwrap()), ("Accessed", meta.accessed().unwrap())] {
+        let got: f64 = print_first(&format!("•file.{name} \"Cargo.toml\"")).parse().unwrap();
+        assert!((got - secs(t)).abs() < 5.0, "{name}: {got}");
+    }
+    let created: f64 = print_first("•file.Created \"Cargo.toml\"").parse().unwrap();
+    assert!(created > 1.0e9);
+    assert_eq!(print_first("•file.RealPath \"Cargo.toml\""), format!("\"{dir}/Cargo.toml\""));
+    assert_eq!(print_first("•file.RealPath \"src/..\""), format!("\"{dir}\""));
+    assert_eq!(print_first("(•file.MapBytes \"Cargo.toml\") ≡ •file.Bytes \"Cargo.toml\""), "1");
+    assert_eq!(print_first("≠ •file.MapBytes \"Cargo.toml\""), meta.len().to_string());
+    assert_eq!(
+        print_first("•file.Size \"nonexist\""),
+        format!("Error: Failed to access file \"{dir}/nonexist\": No such file or directory")
+    );
+    assert_eq!(
+        print_first("•file.RealPath \"nonexist\""),
+        format!("Error: Failed to resolve \"{dir}/nonexist\": No such file or directory")
+    );
+    assert_eq!(print_first("•file.MapBytes \"nonexist\""), "Error: Failed to open file: No such file or directory");
+    assert_eq!(print_first("•file.MapBytes \"src\""), "Error: failed to mmap file");
+    assert_eq!(print_first("•file.Size 3"), "Error: •file.Size: Path must be a list of characters");
+    assert_eq!(print_first("•file.RealPath 3"), "Error: •file.RealPath: Path must be a list of characters");
+    assert_eq!(print_first("1 •file.Size \"Cargo.toml\""), "Error: This function can't be called dyadically");
+    assert_eq!(print_first("•Type •file.path"), "0");
+}
+
+#[test]
+fn test_timed_matches_cbqn() {
+    for expr in ["{𝕩} •_timed 100", "+´∘↕ •_timed 5", "3 {𝕨+𝕩} •_timed 2", "2 {1+𝕩} •_timed 3"] {
+        let v: f64 = print_first(expr).replace('¯', "-").parse().unwrap_or_else(|_| panic!("{expr}"));
+        assert!((0.0..1.0).contains(&v), "{expr}: {v}");
+    }
+    assert_eq!(print_first("0 {𝕩} •_timed 2"), "Error: 𝕨 𝔽•_timed 𝕩: 𝕨 must be an integer greater than 0");
+    assert_eq!(print_first("1.5 {𝕩} •_timed 2"), "Error: Expected integer, got 1.5");
+    assert_eq!(print_first("\"a\" {𝕩} •_timed 2"), "Error: Expected integer, got array");
+    // 𝕨 is the repeat count: the operand runs 𝕨 times
+    assert_eq!(print_first("n←0 ⋄ t←3 {n+↩1 ⋄ 𝕩} •_timed 0 ⋄ n"), "3");
+    assert_eq!(print_first("•Type¨ ⟨•_timed⟩"), "⟨ 4 ⟩");
+}

@@ -1530,6 +1530,22 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         1113 => math_lcm_c1(x),   // monadic: not well-defined, return x
         // NOTE: •math.MatMul — monadic: error (requires left argument)
         1114 => rbqn_core::error::throw("•math.MatMul requires left argument (w •math.MatMul x)"),
+        // NOTE: issue #133 — •math hyperbolics/ErfC/LogFact/Sum and •file stat functions
+        1160 => math_map("Sinh", f64::sinh, x),
+        1161 => math_map("Cosh", f64::cosh, x),
+        1162 => math_map("Tanh", f64::tanh, x),
+        1163 => math_map("Asinh", libm_asinh, x),
+        1164 => math_map("Acosh", libm_acosh, x),
+        1165 => math_map("Atanh", libm_atanh, x),
+        1166 => math_map("ErfC", libm_erfc, x),
+        1167 => math_map("LogFact", |v| libm_lgamma(v + 1.0), x),
+        1168 => math_sum_c1(x),
+        1170 => file_size_c1(x),
+        1171 => file_time_c1("Created", x),
+        1172 => file_time_c1("Modified", x),
+        1173 => file_time_c1("Accessed", x),
+        1174 => file_realpath_c1(x),
+        1175 => file_mapbytes_c1(x),
         // NOTE: •math.Softmax — monadic: compute softmax of rank-1 numeric array
         1115 => {
             if let Some(hook) = GPU_SOFTMAX_HOOK.get()
@@ -1821,6 +1837,7 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         }
         // NOTE: •math.Softmax — dyadic: not standard, throw error
         1115 => rbqn_core::error::throw("•math.Softmax takes one argument (•math.Softmax x)"),
+        1160..=1168 | 1170..=1175 => rbqn_core::error::throw("This function can't be called dyadically"),
         1117 => rbqn_core::error::throw("•gpu.Softmax takes one argument (•gpu.Softmax x)"),
         1118 => rbqn_core::error::throw("•gpu.Available takes one argument (•gpu.Available @)"),
         1119 => rbqn_core::error::throw("•gpu.Tensor takes one argument (•gpu.Tensor x)"),
@@ -2112,6 +2129,21 @@ fn sys_fn_name(sys_idx: u32) -> &'static str {
         1113 => "•math.Lcm",
         1114 => "•math.MatMul",
         1115 => "•math.Softmax",
+        1160 => "•math.Sinh",
+        1161 => "•math.Cosh",
+        1162 => "•math.Tanh",
+        1163 => "•math.Asinh",
+        1164 => "•math.Acosh",
+        1165 => "•math.Atanh",
+        1166 => "•math.ErfC",
+        1167 => "•math.LogFact",
+        1168 => "•math.Sum",
+        1170 => "(file).Size",
+        1171 => "(file).Created",
+        1172 => "(file).Modified",
+        1173 => "(file).Accessed",
+        1174 => "(file).RealPath",
+        1175 => "(file).MapBytes",
         1116 => "•gpu.MatMul",
         1117 => "•gpu.Softmax",
         1118 => "•gpu.Available",
@@ -2286,7 +2318,7 @@ pub const SYS_VALUE_NAMES: &[&str] = &[
     "Exit", "args", "path", "name", "wdpath", "state", "FLines", "FChars", "FBytes", "Import",
     "ParseFloat", "Hash", "FromUTF8", "ToUTF8", "CurrentError", "file", "math", "gpu", "rand",
     "MakeRand", "platform", "UnixTime", "MonoTime", "Delay", "SH", "_while_", "_fillBy_", "FFI",
-    "bit", "term", "ns", "HashMap",
+    "bit", "term", "ns", "HashMap", "_timed",
 ];
 
 /// Map a system value name (lowercase) to its B value.
@@ -2344,6 +2376,7 @@ fn sys_name_to_b(name: &str) -> B {
         // NOTE: shell execution
         "sh"        => m_sys_fn(145),
         // NOTE: •_while_ 2-modifier (CBQN compiler strips underscores → "while")
+        "_timed" | "timed" => m_native_md1(crate::modifiers::MD1_TIMED),
         "_while_" | "while" => m_native_md2(crate::modifiers::MD2_WHILE),
         // NOTE: •_fillBy_ 2-modifier (CBQN compiler strips underscores → "fillby")
         "_fillBy_" | "_fillby_" | "fillby" => m_native_md2(crate::modifiers::MD2_FILL_BY),
@@ -2425,12 +2458,20 @@ fn make_file_namespace() -> B {
     let rename_gid    = str2gid("rename");
     let remove_gid    = str2gid("remove");
     let open_gid      = str2gid("open");
+    let path_gid      = str2gid("path");
+    let size_gid      = str2gid("size");
+    let created_gid   = str2gid("created");
+    let modified_gid  = str2gid("modified");
+    let accessed_gid  = str2gid("accessed");
+    let realpath_gid  = str2gid("realpath");
+    let mapbytes_gid  = str2gid("mapbytes");
 
-    let var_am_i32: i32 = 13;
-    let var_am_u16: u16 = 13;
+    let var_am_i32: i32 = 20;
+    let var_am_u16: u16 = 20;
     let exp_gids = vec![
         lines_gid, list_gid, chars_gid, bytes_gid, at_gid, name_gid,
         parent_gid, exists_gid, type_gid, createdir_gid, rename_gid, remove_gid, open_gid,
+        path_gid, size_gid, created_gid, modified_gid, accessed_gid, realpath_gid, mapbytes_gid,
     ];
 
     let desc = Arc::new(NSDesc { var_am: var_am_i32, exp_gids });
@@ -2457,6 +2498,13 @@ fn make_file_namespace() -> B {
             m_sys_fn(60),  // Rename
             m_sys_fn(61),  // Remove
             m_sys_fn(62),  // Open
+            dispatch_sys_env(38), // path (= •path)
+            m_sys_fn(1170), // Size
+            m_sys_fn(1171), // Created
+            m_sys_fn(1172), // Modified
+            m_sys_fn(1173), // Accessed
+            m_sys_fn(1174), // RealPath
+            m_sys_fn(1175), // MapBytes
         ],
     ));
 
@@ -2581,6 +2629,82 @@ fn file_exists_c1(x: B) -> B {
     let path_str = resolve_path(b_to_string(x));
     let exists = std::path::Path::new(&path_str).exists();
     B::m_f64(if exists { 1.0 } else { 0.0 })
+}
+
+/// Path argument check shared by the issue-#133 `•file` functions.
+fn file_path_arg(name: &str, x: B) -> String {
+    let ok = x.is_arr()
+        && crate::vm::get_arr(x).is_some_and(|a| {
+            a.rank() == 1 && (0..a.ia()).all(|i| a.get(i).is_ok_and(|b| b.is_c32()))
+        });
+    if !ok {
+        rbqn_core::error::throw(format!("•file.{name}: Path must be a list of characters"));
+    }
+    let p = resolve_path(b_to_string(x));
+    // CBQN reports the absolute path in errors, so make it absolute up front.
+    let abs = std::env::current_dir().map(|d| d.join(&p)).unwrap_or_else(|_| p.clone().into());
+    abs.to_string_lossy().into_owned()
+}
+
+/// OS error text without Rust's " (os error N)" suffix, as C's strerror gives it.
+fn io_msg(e: &std::io::Error) -> String {
+    let s = e.to_string();
+    match s.find(" (os error") {
+        Some(i) => s[..i].to_string(),
+        None => s,
+    }
+}
+
+fn file_stat(path: &str) -> std::fs::Metadata {
+    std::fs::metadata(path).unwrap_or_else(|e| {
+        rbqn_core::error::throw(format!("Failed to access file \"{path}\": {}", io_msg(&e)))
+    })
+}
+
+/// •file.Size: byte size of a file.
+fn file_size_c1(x: B) -> B {
+    let p = file_path_arg("Size", x);
+    B::m_f64(file_stat(&p).len() as f64)
+}
+
+/// •file.Created / Modified / Accessed: Unix time in seconds. As in CBQN,
+/// "Created" is the status-change time (st_ctime), not the birth time.
+fn file_time_c1(name: &str, x: B) -> B {
+    use std::os::unix::fs::MetadataExt;
+    let p = file_path_arg(name, x);
+    let m = file_stat(&p);
+    let (s, ns) = match name {
+        "Created" => (m.ctime(), m.ctime_nsec()),
+        "Modified" => (m.mtime(), m.mtime_nsec()),
+        _ => (m.atime(), m.atime_nsec()),
+    };
+    B::m_f64(s as f64 + ns as f64 * 1e-9)
+}
+
+/// •file.RealPath: canonical absolute path.
+fn file_realpath_c1(x: B) -> B {
+    let p = file_path_arg("RealPath", x);
+    match std::fs::canonicalize(&p) {
+        Ok(r) => str_to_b(&r.to_string_lossy()),
+        Err(e) => rbqn_core::error::throw(format!("Failed to resolve \"{p}\": {}", io_msg(&e))),
+    }
+}
+
+/// •file.MapBytes: file contents as a byte array (read, not mapped).
+fn file_mapbytes_c1(x: B) -> B {
+    let p = file_path_arg("MapBytes", x);
+    let data = std::fs::File::open(&p)
+        .and_then(|mut f| {
+            let mut v = Vec::new();
+            std::io::Read::read_to_end(&mut f, &mut v).map(|_| v)
+        })
+        .unwrap_or_else(|e| {
+            if std::path::Path::new(&p).is_dir() || e.kind() != std::io::ErrorKind::NotFound {
+                rbqn_core::error::throw("failed to mmap file")
+            }
+            rbqn_core::error::throw(format!("Failed to open file: {}", io_msg(&e)))
+        });
+    crate::vm::tag_arr(rbqn_core::array::BqnArr::new_vec_f64(data.iter().map(|&b| b as f64).collect()))
 }
 
 /// •file.Type: return file type as character — 'f' (file), 'd' (dir), 'l' (symlink).
@@ -3341,6 +3465,15 @@ fn make_math_namespace() -> B {
         str2gid("pi"),     // 14
         str2gid("matmul"), // 15
         str2gid("softmax"),// 16
+        str2gid("sinh"),   // 17
+        str2gid("cosh"),   // 18
+        str2gid("tanh"),   // 19
+        str2gid("asinh"),  // 20
+        str2gid("acosh"),  // 21
+        str2gid("atanh"),  // 22
+        str2gid("erfc"),   // 23
+        str2gid("logfact"),// 24
+        str2gid("sum"),    // 25
     ];
     let var_am: i32 = gids.len() as i32;
     let var_am_u16 = var_am as u16;
@@ -3369,6 +3502,15 @@ fn make_math_namespace() -> B {
             B::m_f64(std::f64::consts::PI), // pi — immediate constant
             m_sys_fn(1114), // matmul
             m_sys_fn(1115), // softmax
+            m_sys_fn(1160), // sinh
+            m_sys_fn(1161), // cosh
+            m_sys_fn(1162), // tanh
+            m_sys_fn(1163), // asinh
+            m_sys_fn(1164), // acosh
+            m_sys_fn(1165), // atanh
+            m_sys_fn(1166), // erfc
+            m_sys_fn(1167), // logfact
+            m_sys_fn(1168), // sum
         ],
     ));
 
@@ -3408,6 +3550,107 @@ fn erf_approx(x: f64) -> f64 {
     let t = 1.0 / (1.0 + p * x);
     let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
     sign * y
+}
+
+unsafe extern "C" {
+    #[link_name = "erfc"]
+    fn c_erfc(x: f64) -> f64;
+    #[link_name = "lgamma"]
+    fn c_lgamma(x: f64) -> f64;
+    #[link_name = "asinh"]
+    fn c_asinh(x: f64) -> f64;
+    #[link_name = "acosh"]
+    fn c_acosh(x: f64) -> f64;
+    #[link_name = "atanh"]
+    fn c_atanh(x: f64) -> f64;
+}
+// NOTE: Rust's own asinh/acosh/atanh differ from C libm by an ulp (e.g. atanh 0.5);
+// CBQN calls libm, so call it too.
+fn libm_asinh(x: f64) -> f64 {
+    // SAFETY: libm `asinh` is a pure function of its f64 argument.
+    unsafe { c_asinh(x) }
+}
+fn libm_acosh(x: f64) -> f64 {
+    // SAFETY: libm `acosh` is a pure function of its f64 argument.
+    unsafe { c_acosh(x) }
+}
+fn libm_atanh(x: f64) -> f64 {
+    // SAFETY: libm `atanh` is a pure function of its f64 argument.
+    unsafe { c_atanh(x) }
+}
+fn libm_erfc(x: f64) -> f64 {
+    // SAFETY: libm `erfc` is a pure function of its f64 argument.
+    unsafe { c_erfc(x) }
+}
+fn libm_lgamma(x: f64) -> f64 {
+    // SAFETY: libm `lgamma` only writes the global `signgam`, which nothing here reads.
+    unsafe { c_lgamma(x) }
+}
+
+/// Apply `f` to every number in `x`, recursing into nested arrays (CBQN's
+/// `arith_recm`). Non-numbers throw `•math.<name> 𝕩: 𝕩 contained non-number`.
+fn math_map(name: &str, f: fn(f64) -> f64, x: B) -> B {
+    if x.is_f64() {
+        return B::m_f64(f(x.o2f()));
+    }
+    let Some(arr) = crate::vm::get_arr(x) else {
+        rbqn_core::error::throw(format!("•math.{name} 𝕩: 𝕩 contained non-number"))
+    };
+    let elems: Vec<B> = (0..arr.ia())
+        .map(|i| math_map(name, f, arr.get(i).unwrap_or(B::m_f64(0.0))))
+        .collect();
+    let mut out = if elems.iter().all(|b| b.is_f64()) {
+        rbqn_core::array::squeeze_num(rbqn_core::array::BqnArr::new_vec_f64(elems.iter().map(|b| b.o2f()).collect()))
+    } else {
+        rbqn_core::array::BqnArr::from_b_vec(elems)
+    };
+    out.shape = arr.shape.clone();
+    crate::vm::tag_arr(out)
+}
+
+/// Float sum with CBQN's SIMD association order (`si_sum_f64`, 2 lanes: the
+/// x86-64 SSE2 build; matches the reference binary on all probes):
+/// the partial tail vector seeds the accumulator, full vectors are added in
+/// groups of four combined pairwise, then the lanes are added.
+fn simd_sum(v: &[f64]) -> f64 {
+    const L: usize = 2;
+    let e = v.len() / L;
+    let mut r = [0.0f64; L];
+    for (k, slot) in r.iter_mut().enumerate().take(v.len() % L) {
+        *slot = v[e * L + k];
+    }
+    let vec = |i: usize| -> [f64; L] { std::array::from_fn(|k| v[i * L + k]) };
+    let add = |a: [f64; L], b: [f64; L]| -> [f64; L] { std::array::from_fn(|k| a[k] + b[k]) };
+    let f = e / 4;
+    for g in 0..f {
+        let w = add(add(vec(g * 4), vec(g * 4 + 1)), add(vec(g * 4 + 2), vec(g * 4 + 3)));
+        r = add(r, w);
+    }
+    for i in f * 4..e {
+        r = add(r, vec(i));
+    }
+    r[0] + r[1]
+}
+
+/// •math.Sum: `+´` on a list of numbers with pairwise accumulation.
+fn math_sum_c1(x: B) -> B {
+    let arr = if x.is_arr() { crate::vm::get_arr(x) } else { None };
+    let Some(arr) = arr.filter(|a| a.rank() == 1) else {
+        let shape = match crate::vm::get_arr(x) {
+            Some(a) if a.rank() > 0 => a.shape.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("‿"),
+            _ => "⟨⟩".to_string(),
+        };
+        rbqn_core::error::throw(format!("•math.Sum 𝕩: 𝕩 must be a list ({shape} ≡ ≢𝕩)"))
+    };
+    let mut vals = Vec::with_capacity(arr.ia());
+    for i in 0..arr.ia() {
+        let e = arr.get(i).unwrap_or(B::m_f64(0.0));
+        if !e.is_f64() {
+            rbqn_core::error::throw("•math.Sum 𝕩: 𝕩 elements must be numbers");
+        }
+        vals.push(e.o2f());
+    }
+    B::m_f64(simd_sum(&vals))
 }
 
 fn math_erf_c1(x: B) -> B { B::m_f64(erf_approx(math_scalar(x))) }
