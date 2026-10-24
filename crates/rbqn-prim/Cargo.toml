@@ -11,3 +11,4 @@ categories.workspace = true
 
 [dependencies]
 rbqn-core.workspace = true
+rayon = "1.10"

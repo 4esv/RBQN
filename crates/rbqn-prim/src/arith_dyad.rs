@@ -81,7 +81,7 @@ fn is_shape_prefix(short: &[usize], long: &[usize]) -> bool {
 
 /// Recursively apply a scalar dyadic function element-wise through Boxed arrays.
 /// This handles depth>1 pervasion: e.g. `3 + ⟨1, 2, ⟨3, 4⟩⟩ → ⟨4, 5, ⟨6, 7⟩⟩`.
-fn pervasive_boxed_scalar_arr<F: Fn(f64, f64) -> f64 + Copy>(
+fn pervasive_boxed_scalar_arr<F: Fn(f64, f64) -> f64 + Copy + Sync>(
     w: B,
     xa_arr: &BqnArr,
     scalar_fn: F,
@@ -113,7 +113,7 @@ fn pervasive_boxed_scalar_arr<F: Fn(f64, f64) -> f64 + Copy>(
     Ok(PrimResult::Array(out))
 }
 
-fn pervasive_boxed_arr_scalar<F: Fn(f64, f64) -> f64 + Copy>(
+fn pervasive_boxed_arr_scalar<F: Fn(f64, f64) -> f64 + Copy + Sync>(
     wa_arr: &BqnArr,
     x: B,
     scalar_fn: F,
@@ -151,7 +151,7 @@ fn pervasive_boxed_arr_scalar<F: Fn(f64, f64) -> f64 + Copy>(
     Ok(PrimResult::Array(out))
 }
 
-fn pervasive_boxed_arr_arr<F: Fn(f64, f64) -> f64 + Copy>(
+fn pervasive_boxed_arr_arr<F: Fn(f64, f64) -> f64 + Copy + Sync>(
     wa_arr: &BqnArr,
     xa_arr: &BqnArr,
     scalar_fn: F,
@@ -197,7 +197,7 @@ fn pervasive_fill(results: &[B], fallback: Option<B>) -> Option<B> {
     }
 }
 
-fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
+fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy + Sync>(
     w: B,
     wa: Option<&BqnArr>,
     x: B,
@@ -230,7 +230,7 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
                 }
             if let Ok(wf) = w.to_f64()
                 && let Ok(xvals) = num_view(xa_arr) {
-                    let result: Vec<f64> = xvals.iter().map(|&xv| scalar_fn(wf, xv)).collect();
+                    let result: Vec<f64> = crate::par::map1(matches!(xa_arr.data, array::ArrData::F64(_)), &xvals, |xv| scalar_fn(wf, xv));
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = xa_arr.shape.clone();
                     return Ok(PrimResult::Array(array::squeeze_num(out)));
@@ -246,7 +246,7 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
                 }
             if let Ok(xf) = x.to_f64()
                 && let Ok(wvals) = num_view(wa_arr) {
-                    let result: Vec<f64> = wvals.iter().map(|&wv| scalar_fn(wv, xf)).collect();
+                    let result: Vec<f64> = crate::par::map1(matches!(wa_arr.data, array::ArrData::F64(_)), &wvals, |wv| scalar_fn(wv, xf));
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = wa_arr.shape.clone();
                     return Ok(PrimResult::Array(array::squeeze_num(out)));
@@ -270,11 +270,12 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy>(
             // Try fast numeric path first
             if let (Ok(wvals), Ok(xvals)) = (num_view(wa_arr), num_view(xa_arr)) {
                 if wa_arr.shape == xa_arr.shape {
-                    let result: Vec<f64> = wvals
-                        .iter()
-                        .zip(xvals.iter())
-                        .map(|(&wv, &xv)| scalar_fn(wv, xv))
-                        .collect();
+                    let result: Vec<f64> = crate::par::map2(
+                        matches!((&wa_arr.data, &xa_arr.data), (array::ArrData::F64(_), array::ArrData::F64(_))),
+                        &wvals,
+                        &xvals,
+                        scalar_fn,
+                    );
                     let mut out = BqnArr::new_vec_f64(result);
                     out.shape = wa_arr.shape.clone();
                     return Ok(PrimResult::Array(array::squeeze_num(out)));
