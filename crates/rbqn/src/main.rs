@@ -34,7 +34,8 @@ const INTERP_STACK_BYTES: usize = 512 << 20;
 fn main() {
     let t0 = std::time::Instant::now();
     // NOTE: Rust starts with SIGPIPE ignored, so `rbqn -p '↕1e6' | head` would report
-    // "Broken pipe" as a BQN error. Restore the default: exit quietly like any CLI.
+    #[cfg(unix)]
+    unsafe {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
