@@ -1247,6 +1247,9 @@ pub fn prim_to_b(idx: usize) -> B {
 ///   8=setInvReg, 9=setInvSwap, 10=nativeInvReg, 11=nativeInvSwap,
 ///   22=GroupLen, 23=GroupOrd
 fn dispatch_sys_c1(idx: u32, x: B) -> B {
+    if idx >= RAND_BASE {
+        return rand_call(idx - RAND_BASE, None, x);
+    }
     if idx >= HASHMAP_BASE {
         return hashmap_call(idx - HASHMAP_BASE, None, x);
     }
@@ -1539,10 +1542,11 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
         1116 => rbqn_core::error::throw("•gpu.MatMul requires left argument (w •gpu.MatMul x)"),
         1118 => B::m_f64(if GPU_AVAILABLE_HOOK.get().is_some_and(|f| f()) { 1.0 } else { 0.0 }),
         // NOTE: •rand sys functions — range 1120-1123
-        1140 => make_rand_namespace(),
-        1121 => rand_range_c1(x),
-        1122 => rand_deal_c1(x),
-        1123 => rand_subset_c1(x),
+        1121 => rand_range_c1(None, x),
+        1122 => rand_deal_c1(None, x),
+        1123 => rand_subset_c1(None, x),
+        // NOTE: •MakeRand seed — fresh seeded generator namespace
+        171 => make_seeded_rand(x),
         // NOTE: •platform.environment — range 1130
         1130 => platform_env_c1(x),
         // NOTE: time functions — sys 140-142
@@ -1677,6 +1681,9 @@ fn dispatch_sys_c1(idx: u32, x: B) -> B {
 
 /// Dispatch system function c2.
 fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
+    if idx >= RAND_BASE {
+        return rand_call(idx - RAND_BASE, Some(w), x);
+    }
     if idx >= HASHMAP_BASE {
         return hashmap_call(idx - HASHMAP_BASE, Some(w), x);
     }
@@ -1819,8 +1826,8 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         1119 => rbqn_core::error::throw("•gpu.Tensor takes one argument (•gpu.Tensor x)"),
         1124 => rbqn_core::error::throw("•gpu.Fetch takes one argument (•gpu.Fetch x)"),
         // NOTE: rand dyadic: shape •rand.Range n
-        1121 => rand_range_c2(w, x),
-        1123 => rand_subset_c2(w, x),
+        1121 => rand_range_c2(None, w, x),
+        1123 => rand_subset_c2(None, w, x),
         // NOTE: •SH dyadic: options •SH args
         145 => sh_exec_c2(w, x),
         // NOTE: w(+˜)⁼x = x - w  (dyadic: +˜ swaps: w +˜ y = y+w, inverse = y = x - w)
@@ -2113,7 +2120,6 @@ fn sys_fn_name(sys_idx: u32) -> &'static str {
         1121 => "(rand).Range",
         1122 => "(rand).Deal",
         1123 => "(rand).Subset",
-        1140 => "•MakeRand",
         70  => "•Import",
         75  => "•ParseFloat",
         76  => "•Hash",
@@ -2133,6 +2139,7 @@ fn sys_fn_name(sys_idx: u32) -> &'static str {
         167 => "•term.OutRaw",
         168 => "•term.ErrRaw",
         170 => "•HashMap",
+        171 => "•MakeRand",
         200 => "•_nativeRepr_",
         // NOTE: •ReBQN evaluators display as "(REPL)", matching CBQN.
         i if i >= REBQN_BASE => "(REPL)",
@@ -2327,8 +2334,7 @@ fn sys_name_to_b(name: &str) -> B {
         "gpu"       => make_gpu_namespace(),
         // NOTE: •rand namespace (PRNG: Range, Deal, Subset)
         "rand"      => make_rand_namespace(),
-        // NOTE: •MakeRand — creates a seeded PRNG (simplified: returns global •rand)
-        "makerand"  => m_sys_fn(1140),
+        "makerand"  => m_sys_fn(171),
         // NOTE: •platform namespace (os, bqn.impl, etc.)
         "platform"  => make_platform_namespace(),
         // NOTE: time functions
@@ -3724,6 +3730,78 @@ fn rand_next() -> u64 {
     wyrand(&mut guard)
 }
 
+/// SysFn indices from here up are seeded-generator methods: RAND_BASE + 4·generator + method.
+const RAND_BASE: u32 = 1 << 25;
+const RAND_RANGE: u32 = 0;
+const RAND_DEAL: u32 = 1;
+const RAND_SUBSET: u32 = 2;
+
+/// States of the generators made by •MakeRand, indexed by generator id.
+static RAND_GENS: std::sync::LazyLock<Mutex<Vec<u64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Next value from the global generator (`None`) or from seeded generator `g`.
+fn rand_draw(g: Option<usize>) -> u64 {
+    match g {
+        None => rand_next(),
+        Some(g) => {
+            let mut gens = RAND_GENS.lock().unwrap_or_else(|e| e.into_inner());
+            wyrand(&mut gens[g])
+        }
+    }
+}
+
+fn splitmix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9e3779b97f4a7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^ (z >> 31)
+}
+
+fn rand_call(rel: u32, w: Option<B>, x: B) -> B {
+    let (g, method) = (Some((rel / 4) as usize), rel % 4);
+    match (method, w) {
+        (RAND_RANGE, None) => rand_range_c1(g, x),
+        (RAND_RANGE, Some(w)) => rand_range_c2(g, w, x),
+        (RAND_DEAL, None) => rand_deal_c1(g, x),
+        (RAND_SUBSET, None) => rand_subset_c1(g, x),
+        (RAND_SUBSET, Some(w)) => rand_subset_c2(g, w, x),
+        _ => rbqn_core::error::throw("•rand: invalid call"),
+    }
+}
+
+/// •MakeRand seed: a new generator namespace whose sequence depends only on the seed.
+fn make_seeded_rand(seed: B) -> B {
+    if !seed.is_f64() {
+        rbqn_core::error::throw("•MakeRand: 𝕩 must be a number");
+    }
+    let state = splitmix64(seed.o2f().to_bits());
+    let id = {
+        let mut gens = RAND_GENS.lock().unwrap_or_else(|e| e.into_inner());
+        gens.push(state);
+        gens.len() - 1
+    };
+
+    use crate::namespace::{str2gid, NSDesc, NS};
+    let gids = vec![str2gid("range"), str2gid("deal"), str2gid("subset")];
+    let var_am: i32 = gids.len() as i32;
+    let var_am_u16 = var_am as u16;
+    let desc = Arc::new(NSDesc { var_am, exp_gids: gids });
+    let body = Arc::new(crate::block::Body::new(var_am_u16, 0, 0, 0));
+    let base = RAND_BASE + (id as u32) * 4;
+    let sc = std::rc::Rc::new(crate::scope::Scope::new(
+        body,
+        None,
+        var_am_u16,
+        &[
+            m_sys_fn(base + RAND_RANGE),
+            m_sys_fn(base + RAND_DEAL),
+            m_sys_fn(base + RAND_SUBSET),
+        ],
+    ));
+    crate::namespace::store_ns(NS { desc, sc })
+}
+
 /// Cached •rand namespace object.
 static RAND_NS: std::sync::LazyLock<Mutex<Option<B>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
@@ -3763,21 +3841,21 @@ fn make_rand_namespace() -> B {
     ns_b
 }
 
-fn rand_range_c1(x: B) -> B {
+fn rand_range_c1(g: Option<usize>, x: B) -> B {
     // •rand.Range n — random integer in [0, n)
     let n = x.o2f().round() as u64;
     if n == 0 { return B::m_f64(0.0); }
-    let r = rand_next() % n;
+    let r = rand_draw(g) % n;
     B::m_f64(r as f64)
 }
 
-fn rand_range_c2(w: B, x: B) -> B {
+fn rand_range_c2(g: Option<usize>, w: B, x: B) -> B {
     // shape •rand.Range n — array of random integers in [0, n)
     let n = x.o2f().round() as u64;
     if !w.is_arr() {
         // w is a scalar: produce array of length w
         let len = w.o2f().round() as usize;
-        let vals: Vec<f64> = (0..len).map(|_| (rand_next() % n.max(1)) as f64).collect();
+        let vals: Vec<f64> = (0..len).map(|_| (rand_draw(g) % n.max(1)) as f64).collect();
         let arr = rbqn_core::array::BqnArr::new_vec_f64(vals);
         return crate::vm::tag_arr(arr);
     }
@@ -3790,30 +3868,30 @@ fn rand_range_c2(w: B, x: B) -> B {
         .map(|i| shape_arr.get(i).unwrap_or(B::SENTINEL).o2f().round() as usize)
         .collect();
     let total: usize = shape.iter().product();
-    let vals: Vec<f64> = (0..total).map(|_| (rand_next() % n.max(1)) as f64).collect();
+    let vals: Vec<f64> = (0..total).map(|_| (rand_draw(g) % n.max(1)) as f64).collect();
     let mut arr = rbqn_core::array::BqnArr::new_vec_f64(vals);
     arr.shape = shape;
     crate::vm::tag_arr(arr)
 }
 
-fn rand_deal_c1(x: B) -> B {
+fn rand_deal_c1(g: Option<usize>, x: B) -> B {
     // •rand.Deal n — random permutation of ↕n (Fisher-Yates shuffle)
     let n = x.o2f().round() as usize;
     let mut perm: Vec<f64> = (0..n).map(|i| i as f64).collect();
     for i in (1..n).rev() {
-        let j = (rand_next() % (i + 1) as u64) as usize;
+        let j = (rand_draw(g) % (i + 1) as u64) as usize;
         perm.swap(i, j);
     }
     let arr = rbqn_core::array::BqnArr::new_vec_f64(perm);
     crate::vm::tag_arr(arr)
 }
 
-fn rand_subset_c1(x: B) -> B {
+fn rand_subset_c1(g: Option<usize>, x: B) -> B {
     // Monadic: treat as •rand.Deal (return permutation)
-    rand_deal_c1(x)
+    rand_deal_c1(g, x)
 }
 
-fn rand_subset_c2(w: B, x: B) -> B {
+fn rand_subset_c2(g: Option<usize>, w: B, x: B) -> B {
     // k •rand.Subset n — k random distinct indices from ↕n
     let k = w.o2f().round() as usize;
     let n = x.o2f().round() as usize;
@@ -3822,7 +3900,7 @@ fn rand_subset_c2(w: B, x: B) -> B {
     let mut pool: Vec<usize> = (0..n).collect();
     let mut result = Vec::with_capacity(k);
     for i in 0..k {
-        let j = i + (rand_next() % (n - i) as u64) as usize;
+        let j = i + (rand_draw(g) % (n - i) as u64) as usize;
         pool.swap(i, j);
         result.push(pool[i] as f64);
     }
