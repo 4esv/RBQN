@@ -1099,7 +1099,7 @@ pub fn c1(f: B, x: B) -> B {
                         .map(|d| (d.shape().to_vec(), d.fill()))
                         .or_else(|| rbqn_core::peek_resident(x).map(|r| (r.shape.clone(), r.fill)))
                 {
-                    let stand_in = rbqn_core::BqnArr { shape, data: rbqn_core::ArrData::Boxed(vec![]), fill };
+                    let stand_in = rbqn_core::BqnArr { shape, data: rbqn_core::ArrData::Boxed(vec![]), fill, owns: false };
                     return match c1_fn(x, Some(&stand_in)) {
                         Ok(r) => prim_result_to_b(r),
                         Err(e) => rbqn_core::error::throw_bqn(e),
@@ -4106,6 +4106,7 @@ fn f64_arr(shape: Vec<usize>, vals: Vec<f64>) -> B {
         shape,
         data: rbqn_core::array::ArrData::F64(vals),
         fill: Some(B::m_f64(0.0)),
+        owns: false,
     })
 }
 
@@ -4196,7 +4197,7 @@ pub fn matmul_idiom(f: B, g: B, w: B, x: B) -> Option<B> {
     let wm = mat_operand(&wa, &mut t1, "");
     let xm = mat_operand(&xa, &mut t2, "");
     let vals = rbqn_prim::matmul::matmul(wm, xm, m, k, n, true);
-    let out = rbqn_core::array::squeeze_num(rbqn_core::array::BqnArr { shape: vec![m, n], data: ArrData::F64(vals), fill: Some(B::m_f64(0.0)) });
+    let out = rbqn_core::array::squeeze_num(rbqn_core::array::BqnArr { shape: vec![m, n], data: ArrData::F64(vals), fill: Some(B::m_f64(0.0)), owns: false });
     Some(crate::vm::tag_arr(out))
 }
 

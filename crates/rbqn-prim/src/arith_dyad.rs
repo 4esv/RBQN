@@ -792,7 +792,7 @@ fn empty_pairing(wa: Option<&BqnArr>, xa: Option<&BqnArr>) -> Option<Result<Prim
             ))));
         }
     }
-    Some(Ok(PrimResult::Array(BqnArr { shape: a.shape.clone(), data: ArrData::Boxed(vec![]), fill: None })))
+    Some(Ok(PrimResult::Array(BqnArr { shape: a.shape.clone(), data: ArrData::Boxed(vec![]), fill: None, owns: false })))
 }
 
 // - dyad: subtract
@@ -1082,7 +1082,7 @@ fn narrow_i32(vals: Vec<i32>, shape: Vec<usize>) -> BqnArr {
     } else {
         array::ArrData::I32(vals)
     };
-    BqnArr { shape, data, fill: Some(B::m_f64(0.0)) }
+    BqnArr { shape, data, fill: Some(B::m_f64(0.0)), owns: false }
 }
 
 /// Map with an i64 kernel; None if any result leaves the i32 range.
@@ -1125,7 +1125,7 @@ pub(crate) fn typed_scalar_arr(name: &str, s: f64, arr: &BqnArr, scalar_left: bo
             } else {
                 pack_bits(&v, |x| (x as f64) $op s)
             };
-            return Some(BqnArr { shape, data: array::ArrData::Bit(words), fill: Some(B::m_f64(0.0)) });
+            return Some(BqnArr { shape, data: array::ArrData::Bit(words), fill: Some(B::m_f64(0.0)), owns: false });
         }};
     }
     match name {

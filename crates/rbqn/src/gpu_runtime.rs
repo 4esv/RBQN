@@ -508,6 +508,7 @@ pub fn gpu_i32_to_arr(gpu: &GpuRuntime, buf: &GpuBuffer, shape: Vec<usize>, fill
         shape,
         data: ArrData::I32(data),
         fill,
+        owns: false,
     };
     // NOTE: Compact to smallest integer type that fits (I8/I16/I32).
     // Converts to F64 first for squeeze_num to work, since squeeze_num
@@ -521,6 +522,7 @@ pub fn gpu_i32_to_arr(gpu: &GpuRuntime, buf: &GpuBuffer, shape: Vec<usize>, fill
         shape: arr.shape.clone(),
         data: ArrData::F64(f64_data),
         fill: arr.fill,
+        owns: false,
     };
     squeeze_num(f64_arr)
 }
@@ -603,7 +605,7 @@ impl GpuArr {
         {
             return;
         }
-        let arr = Arc::new(BqnArr { shape: self.shape.clone(), data: self.host_eval(&e), fill: self.fill });
+        let arr = Arc::new(BqnArr { shape: self.shape.clone(), data: self.host_eval(&e), fill: self.fill, owns: false });
         let leaf = HostLeaf { arr, key: 0, bound: self.bound.get() };
         *self.state.borrow_mut() = State::Lazy(Rc::new(Expr::Host(Rc::new(leaf))));
     }
@@ -774,7 +776,7 @@ impl DeviceValue for GpuArr {
             && matches!(**e, Expr::Iota)
         {
             let data = ArrData::I32((0..self.n() as i32).collect());
-            return BqnArr { shape: self.shape.clone(), data, fill: self.fill };
+            return BqnArr { shape: self.shape.clone(), data, fill: self.fill, owns: false };
         }
         let lazy = self.lazy_expr();
         if let Some(e) = &lazy {
@@ -784,7 +786,7 @@ impl DeviceValue for GpuArr {
             }
             let w = tree_work(e, self.n(), self.out_kind());
             if self.host_pref.get() || !decide(Kind::Materialize, &w, self.wide) {
-                return BqnArr { shape: self.shape.clone(), data: self.host_eval(e), fill: self.fill };
+                return BqnArr { shape: self.shape.clone(), data: self.host_eval(e), fill: self.fill, owns: false };
             }
         }
         let gpu = get_decided().expect("pending GPU value without a GPU runtime");
@@ -805,7 +807,7 @@ impl DeviceValue for GpuArr {
             }
             (None, None) => panic!("GPU readback failed"),
         };
-        BqnArr { shape: self.shape.clone(), data, fill: self.fill }
+        BqnArr { shape: self.shape.clone(), data, fill: self.fill, owns: false }
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -1534,6 +1536,7 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
             shape: vec![m, n],
             data: ArrData::F64(matmul_f32(gpu, &w_f64, &x_f64, m, k, n)?),
             fill: Some(B::m_f64(0.0)),
+            owns: false,
         };
         Some(rbqn_vm::vm::tag_arr(out))
     })
@@ -1653,7 +1656,7 @@ fn dtype_str(d: GpuDType) -> &'static str {
 
 fn tag_resident_buf(buf: GpuBuffer, dtype: GpuDType, shape: Vec<usize>) -> B {
     let data = ArrData::Gpu(GpuData { buf: Arc::new(buf), dtype });
-    tag_resident(BqnArr { shape, data, fill: Some(B::m_f64(0.0)) })
+    tag_resident(BqnArr { shape, data, fill: Some(B::m_f64(0.0)), owns: false })
 }
 
 /// The buffer and dtype of a resident array; a lazy one is evaluated first
@@ -1724,7 +1727,7 @@ pub fn resident_download(r: &BqnArr) -> BqnArr {
         Some(match dtype {
             GpuDType::F32 => {
                 let v = pollster::block_on(download_f32(device, queue, &buf));
-                squeeze_num(BqnArr { shape: vec![], data: ArrData::F64(v.into_iter().map(|e| e as f64).collect()), fill: None }).data
+                squeeze_num(BqnArr { shape: vec![], data: ArrData::F64(v.into_iter().map(|e| e as f64).collect()), fill: None, owns: false }).into_data()
             }
             GpuDType::I32 => squeeze_i32(pollster::block_on(download_i32(device, queue, &buf))),
         })
@@ -1733,7 +1736,7 @@ pub fn resident_download(r: &BqnArr) -> BqnArr {
     if debug_enabled() {
         eprintln!("[gpu] download {} ({})", shape_str(&r.shape), dtype_str(dtype));
     }
-    BqnArr { shape: r.shape.clone(), data, fill: r.fill }
+    BqnArr { shape: r.shape.clone(), data, fill: r.fill, owns: false }
 }
 
 // =============================================================================
@@ -1805,7 +1808,7 @@ fn tag_lazy(e: Rc<Expr>, shape: Vec<usize>) -> Option<B> {
         materialize_lazy(id, shape.iter().product())?;
     }
     let data = ArrData::Gpu(GpuData { buf: Arc::new(LazyRef(id)), dtype: GpuDType::F32 });
-    Some(tag_resident(BqnArr { shape, data, fill: Some(B::m_f64(0.0)) }))
+    Some(tag_resident(BqnArr { shape, data, fill: Some(B::m_f64(0.0)), owns: false }))
 }
 
 fn f32_scalar(b: B) -> Rc<Expr> {

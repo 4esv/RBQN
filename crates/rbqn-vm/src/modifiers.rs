@@ -362,6 +362,7 @@ fn extract_cell(arr: &BqnArr, cell_idx: usize, cell_size: usize, cell_shape: &[u
         shape: cell_shape.to_vec(),
         data,
         fill: arr.fill,
+        owns: false,
     }
 }
 
@@ -700,6 +701,7 @@ fn enclose_cell(e: B) -> B {
         shape: vec![],
         data: ArrData::Boxed(vec![e]),
         fill: None,
+        owns: false,
     })
 }
 
@@ -812,6 +814,7 @@ fn scan_c1(f: B, x: B) -> B {
             shape: arr.shape.clone(),
             data: ArrData::Boxed(vec![]),
             fill: arr.fill,
+            owns: false,
         });
     }
     if rank == 1 {
@@ -919,6 +922,7 @@ pub fn scan_inv_c1(f: B, x: B) -> B {
             shape: arr.shape.clone(),
             data: ArrData::Boxed(vec![]),
             fill: arr.fill,
+            owns: false,
         });
     }
     // Get the inverse of F for applying between consecutive elements
@@ -1028,6 +1032,7 @@ fn cells_c1(f: B, x: B) -> B {
                 ArrData::Boxed(vec![result])
             },
             fill: Some(rbqn_prim::structural::prototype_of(result)),
+            owns: false,
         });
     }
     let arr = arr_of(x);
@@ -1056,6 +1061,7 @@ fn cells_c1(f: B, x: B) -> B {
                     shape: vec![],
                     data: ArrData::Boxed(vec![elem]),
                     fill: Some(rbqn_prim::structural::prototype_of(elem)),
+                    owns: false,
                 });
                 results.push(c1(f, cell));
             } else if elem.is_atom() && is_join_prim(f) {

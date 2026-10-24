@@ -354,6 +354,11 @@ impl Drop for Val {
                         panic!("double free of array handle {:#x}", host_ptr(self.0) as usize);
                     }
                     LIVE_ARRAYS.fetch_sub(1, Ordering::Relaxed);
+                    // The parked array never runs `BqnArr::drop`: release its element counts now.
+                    let mut arc = arc;
+                    if let Some(a) = Arc::get_mut(&mut arc) {
+                        a.release_owned();
+                    }
                     GRAVE.lock().unwrap_or_else(|e| e.into_inner()).push(arc);
                 }
                 return;
@@ -374,6 +379,36 @@ impl Drop for Val {
             }
         }
     }
+}
+
+std::thread_local! {
+    static DRAINING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DEFERRED: std::cell::RefCell<Vec<B>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Release one strong count of each host-array handle in `v` (the elements of an
+/// owning array being freed, #161). Iterative: a release that frees a nested owning
+/// array defers its elements to a thread-local worklist instead of recursing, so
+/// freeing a deeply nested value cannot overflow the native stack.
+pub(crate) fn release_elems(v: &[B]) {
+    // NOTE: try_with: during thread teardown the cells may be gone; then leak.
+    match DRAINING.try_with(|d| d.replace(true)) {
+        Err(_) => return,
+        Ok(true) => {
+            let _ = DEFERRED.try_with(|q| q.borrow_mut().extend(v.iter().copied().filter(|&b| is_host_arr(b))));
+            return;
+        }
+        Ok(false) => {}
+    }
+    for &b in v {
+        // SAFETY: the owning array held one count of each host-array element.
+        drop(unsafe { Val::from_b_owned(b) });
+    }
+    while let Ok(Some(b)) = DEFERRED.try_with(|q| q.borrow_mut().pop()) {
+        // SAFETY: as above; deferred by a nested owning array's release.
+        drop(unsafe { Val::from_b_owned(b) });
+    }
+    let _ = DRAINING.try_with(|d| d.set(false));
 }
 
 /// Tag an array as a merge target (ARMM opcode).
@@ -675,5 +710,64 @@ mod tests {
         drop(shared); // the pin still holds the array
         assert_eq!(get_arr(b).unwrap().ia(), 3);
         assert!(!DEAD.lock().unwrap().contains(&(host_ptr(b) as usize)));
+    }
+
+    // #161 stage 2b: an owning boxed array releases one count per host-array element.
+    fn strong(b: B) -> usize {
+        let a = get_arr(b).unwrap();
+        Arc::strong_count(&a) - 1
+    }
+
+    fn owning(elems: Vec<B>) -> Val {
+        let mut a = BqnArr::from_b_vec(elems);
+        a.seal_counted();
+        assert!(a.owns);
+        tag_arr_owned(a)
+    }
+
+    #[test]
+    fn owning_array_releases_elements_on_drop() {
+        let e = tag_arr_owned(nums(3));
+        let eb = e.b();
+        // SAFETY: `e` holds a count for the whole test.
+        let kept = unsafe { share(eb) };
+        let outer = owning(vec![e.leak(), B::m_f64(2.0)]); // moves e's count into the array
+        assert_eq!(strong(eb), 2);
+        drop(outer);
+        assert_eq!(strong(eb), 1, "the array released its count, `kept` still holds one");
+        assert_eq!(get_arr(kept.b()).unwrap().shape, vec![3]);
+    }
+
+    #[test]
+    fn clone_of_owning_array_pins_elements() {
+        let e = tag_arr_owned(nums(2));
+        let eb = e.b();
+        let outer = owning(vec![e.leak()]);
+        let copy = (*get_arr(outer.b()).unwrap()).clone();
+        assert!(!copy.owns);
+        assert_eq!(strong(eb), 2);
+        drop(outer);
+        assert_eq!(strong(eb), 1, "the clone's pin keeps the element alive");
+        drop(copy);
+        assert_eq!(get_arr(eb).unwrap().shape, vec![2]);
+    }
+
+    #[test]
+    fn non_owning_array_releases_nothing() {
+        let e = tag_arr_owned(nums(2));
+        let eb = e.b();
+        let outer = tag_arr_owned(BqnArr::from_b_vec(vec![eb]));
+        drop(outer);
+        assert_eq!(strong(eb), 1);
+        drop(e);
+    }
+
+    #[test]
+    fn deeply_nested_owning_chain_drops_without_recursion() {
+        let mut cur = tag_arr_owned(nums(1));
+        for _ in 0..200_000 {
+            cur = owning(vec![cur.leak()]);
+        }
+        drop(cur); // would overflow the native stack if the release recursed
     }
 }
