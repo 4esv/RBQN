@@ -25,6 +25,11 @@ fn libc_name() -> &'static str {
     if cfg!(target_os = "macos") { "libSystem.dylib" } else { "libc.so.6" }
 }
 
+/// pow/sqrt live in libm on Linux; libSystem exports them on macOS.
+fn libm_name() -> &'static str {
+    if cfg!(target_os = "macos") { "libSystem.dylib" } else { "libm.so.6" }
+}
+
 fn run_with(bqn_args: &[&str]) -> (String, String, bool) {
     let out = Command::new(env!("CARGO_BIN_EXE_rbqn")).args(bqn_args).output().expect("run rbqn");
     (String::from_utf8_lossy(&out.stdout).trim().to_string(),
@@ -65,12 +70,12 @@ fn libc_abs_marker_gt() {
 
 #[test]
 fn libc_pow_w_marker() {
-    assert_eq!(eval(&format!("f←\"{}\" •FFI \"f64\"‿\"pow\"‿\"𝕨f64\"‿\"f64\" ⋄ 2 F 10", libc_name())), "1024");
+    assert_eq!(eval(&format!("f←\"{}\" •FFI \"f64\"‿\"pow\"‿\"𝕨f64\"‿\"f64\" ⋄ 2 F 10", libm_name())), "1024");
 }
 
 #[test]
 fn libc_scalar_back_compat() {
-    assert_eq!(eval(&format!("f←\"{}\" •FFI \"f64\"‿\"sqrt\"‿\"f64\" ⋄ F 2", libc_name())), "1.4142135623730951");
+    assert_eq!(eval(&format!("f←\"{}\" •FFI \"f64\"‿\"sqrt\"‿\"f64\" ⋄ F 2", libm_name())), "1.4142135623730951");
 }
 
 #[test]
