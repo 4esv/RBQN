@@ -12,6 +12,6 @@ pub mod stack;
 pub use value::B;
 pub use value::{tagu64, TAG_TAG, FUN_TAG, ARR_TAG, MD1_TAG, MD2_TAG, NSP_TAG, VAR_TAG, EXT_TAG, ALIAS_TAG};
 pub use array::{ArrData, BqnArr};
-pub use arrstore::{tag_arr, tag_arr_merge, is_arr_merge, get_arr, tag_device, is_device_tagged, peek_device, arr_shape, tag_resident, peek_resident, register_resident_download, DeviceValue, IdHasher, IdMap};
+pub use arrstore::{tag_arr, tag_arr_owned, Val, live_arrays, births_begin, births_end, tag_arr_merge, is_arr_merge, get_arr, tag_device, is_device_tagged, peek_device, arr_shape, tag_resident, peek_resident, register_resident_download, DeviceValue, IdHasher, IdMap};
 pub use eltype::ElType;
 pub use error::{BqnError, Result};

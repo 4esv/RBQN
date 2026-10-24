@@ -556,3 +556,19 @@ fn format_arr(arr: &BqnArr) -> String {
         format!("[{}×…]", shape_str.join("‿"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rbqn_core::{get_arr, live_arrays, tag_arr_owned, BqnArr, B};
+
+    /// Stage 1 of #124: the mechanism and counter only; no interpreter path owns a `Val` yet.
+    #[test]
+    fn owned_val_read_then_drop_lowers_live_arrays() {
+        let before = live_arrays();
+        let v = tag_arr_owned(BqnArr::from_b_vec((0..4).map(B::m_usz).collect()));
+        assert_eq!(live_arrays(), before + 1);
+        assert_eq!(get_arr(v.b()).unwrap().shape, vec![4]);
+        drop(v);
+        assert_eq!(live_arrays(), before);
+    }
+}

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::array::BqnArr;
@@ -45,8 +45,10 @@ static ARR_COUNTER: AtomicU64 = AtomicU64::new(1);
 //   host array:   `Arc::into_raw(..)` address, 8-byte aligned; bit 0 = merge flag, bit 1 = 0.
 //   device value: `(id << 3) | 2`; id keys the thread-local tables below.
 // A host handle is valid on every thread: `get_arr` needs no table.
-// NOTE: the strong count taken by `tag_arr` is never released, so arrays are still
-// never freed (#124) and an address is never reused while a `B` can name it.
+// NOTE: the strong count taken by `tag_arr` is released only by dropping a `Val` that
+// owns it (#145, stage 1). Every existing caller holds a plain `B` and so never frees
+// (#124): an address is never reused while a `B` can name it, unless its owner dropped
+// a `Val` after proving the array unreachable.
 //
 // NOTE: The device tables are thread-local: device values (PENDING, RESIDENT and
 // their host-side cache DEVICE_HOST) do not cross threads yet; GPU and FFI calls
@@ -88,19 +90,137 @@ fn large_arr_hint(ia: usize) {
     }
 }
 
+/// Host arrays currently allocated through `tag_*` (created minus freed by `Val`).
+static LIVE_ARRAYS: AtomicUsize = AtomicUsize::new(0);
+
+/// Number of host arrays tagged and not yet freed. Arrays held as plain `B` are
+/// never freed, so this only goes down when a `Val` drops the last strong count.
+pub fn live_arrays() -> usize {
+    LIVE_ARRAYS.load(Ordering::Relaxed)
+}
+
+std::thread_local! {
+    static BIRTHS: std::cell::RefCell<Option<Vec<u64>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Start recording the handles `tag_*` creates on this thread (replaces any
+/// earlier recording). Used to prove an array is fresh: made after this call.
+pub fn births_begin() {
+    BIRTHS.with(|b| *b.borrow_mut() = Some(Vec::new()));
+}
+
+/// Stop recording and return the host handles (as `B` bits, flags included)
+/// created since `births_begin`.
+pub fn births_end() -> Vec<u64> {
+    BIRTHS.with(|b| b.borrow_mut().take()).unwrap_or_default()
+}
+
 #[inline]
 fn tag_host(arr: BqnArr, flags: u64) -> B {
     large_arr_hint(arr.ia());
     let addr = Arc::into_raw(Arc::new(arr)).expose_provenance() as u64;
+    LIVE_ARRAYS.fetch_add(1, Ordering::Relaxed);
     assert!(
         addr & !PTR_MASK == 0,
         "array allocation {addr:#x} is not 8-byte aligned or does not fit in 48 bits"
     );
-    tagu64(addr | flags, ARR_TAG)
+    let b = tagu64(addr | flags, ARR_TAG);
+    BIRTHS.with(|v| {
+        if let Some(v) = v.borrow_mut().as_mut() {
+            v.push(b.0);
+        }
+    });
+    b
 }
 
 pub fn tag_arr(arr: BqnArr) -> B {
     tag_host(arr, 0)
+}
+
+/// Like `tag_arr`, but the caller owns the array's strong count.
+pub fn tag_arr_owned(arr: BqnArr) -> Val {
+    Val(tag_host(arr, 0))
+}
+
+/// An owned value. For a host array it owns one strong count: `Clone` adds one,
+/// `Drop` releases one and frees the array when it was the last. Numbers, chars,
+/// functions and device-tagged values carry no count here (Clone/Drop do nothing).
+///
+/// Not `Copy`, so a double drop does not type-check. `b()` is a `Copy` view that
+/// must not outlive the `Val`; `leak()` gives up ownership (what every caller
+/// holding a plain `B` does implicitly today).
+pub struct Val(B);
+
+#[inline]
+fn is_host_arr(b: B) -> bool {
+    b.is_arr() && b.0 & 2 == 0
+}
+
+#[inline]
+fn host_ptr(b: B) -> *const BqnArr {
+    std::ptr::with_exposed_provenance::<BqnArr>((b.0 & PTR_MASK) as usize)
+}
+
+impl Val {
+    /// Wrap a non-array value (number, char, function). Arrays need
+    /// `tag_arr_owned` or `from_b_owned`; this panics on one to keep ownership explicit.
+    pub fn plain(b: B) -> Val {
+        assert!(!b.is_arr(), "Val::plain on an array handle");
+        Val(b)
+    }
+
+    /// Adopt the strong count of a handle that was leaked (created by `tag_arr`
+    /// and held as a plain `B`).
+    ///
+    /// # Safety
+    /// The caller must own that count: no other `Val` may adopt the same count,
+    /// and no copy of `b` may be read after the returned `Val` is dropped (unless
+    /// another count keeps the array alive). Device-tagged handles are fine (no-op).
+    pub unsafe fn from_b_owned(b: B) -> Val {
+        Val(b)
+    }
+
+    /// Copy view for read-only use that does not outlive this `Val`.
+    #[inline]
+    pub fn b(&self) -> B {
+        self.0
+    }
+
+    /// Give up ownership without releasing the count: the array stays alive.
+    pub fn leak(self) -> B {
+        let b = self.0;
+        std::mem::forget(self);
+        b
+    }
+}
+
+impl Clone for Val {
+    fn clone(&self) -> Val {
+        if is_host_arr(self.0) {
+            // SAFETY: `self` owns a strong count of the live allocation behind this
+            // host handle (built by `tag_host` from `Arc::into_raw`), so the count
+            // is at least 1 and the pointer is valid; the increment gives the clone
+            // its own count.
+            unsafe { Arc::increment_strong_count(host_ptr(self.0)) };
+        }
+        Val(self.0)
+    }
+}
+
+impl Drop for Val {
+    fn drop(&mut self) {
+        if is_host_arr(self.0) {
+            // SAFETY: `self` owns one strong count (see `Clone`/`from_b_owned`) and
+            // is being dropped, so adopting that count into an `Arc` is exactly
+            // releasing it. `into_inner` returns the array only when this was the
+            // last count (atomically), so the counter drops exactly when it frees.
+            let arc = unsafe { Arc::from_raw(host_ptr(self.0)) };
+            if let Some(arr) = Arc::into_inner(arc) {
+                LIVE_ARRAYS.fetch_sub(1, Ordering::Relaxed);
+                drop(arr);
+            }
+        }
+    }
 }
 
 /// Tag an array as a merge target (ARMM opcode).
@@ -123,10 +243,11 @@ pub fn get_arr(b: B) -> Option<Arc<BqnArr>> {
         return None;
     }
     if b.0 & 2 == 0 {
-        let ptr = std::ptr::with_exposed_provenance::<BqnArr>((b.0 & PTR_MASK) as usize);
-        // SAFETY: a host handle is built only by `tag_host` from `Arc::into_raw`, and
-        // that strong count is never released, so the allocation is live and `ptr`
-        // carries its (exposed) provenance. The increment gives the returned Arc its
+        let ptr = host_ptr(b);
+        // SAFETY: a host handle is built only by `tag_host` from `Arc::into_raw`. Its
+        // strong count is released only when a `Val` owning it drops, and that owner
+        // promises no `B` copy is read afterwards (`from_b_owned`), so the allocation
+        // is live and `ptr` carries its (exposed) provenance. The increment gives the returned Arc its
         // own count, which `from_raw` then adopts.
         return Some(unsafe {
             Arc::increment_strong_count(ptr);
@@ -288,5 +409,38 @@ mod tests {
         assert_eq!(nested, (vec![3], vec![0.0, 1.0, 2.0]));
         // and the spawning thread still sees the same data
         assert_eq!(get_arr(outer).unwrap().shape, vec![2]);
+    }
+
+    #[test]
+    fn val_clone_drop_round_trip_frees_at_zero() {
+        // NOTE: the counter is global and tests run in parallel, so assert on a
+        // value-local signal too: the Arc strong count seen through get_arr.
+        let v = tag_arr_owned(nums(5));
+        let w = v.clone();
+        let a = get_arr(v.b()).unwrap();
+        assert_eq!(Arc::strong_count(&a), 3); // v, w, a
+        drop(v);
+        assert_eq!(Arc::strong_count(&a), 2);
+        assert_eq!(get_arr(w.b()).unwrap().shape, vec![5]);
+        drop(a);
+        drop(w); // last count: frees
+    }
+
+    #[test]
+    fn non_arrays_are_noops() {
+        let n = Val::plain(B::m_f64(3.0));
+        let m = n.clone();
+        drop(n);
+        assert_eq!(m.b().o2f(), 3.0);
+    }
+
+    #[test]
+    fn births_record_new_handles() {
+        births_begin();
+        let a = tag_arr(nums(1));
+        let v = tag_arr_owned(nums(1));
+        let born = births_end();
+        assert!(born.contains(&a.0) && born.contains(&v.b().0));
+        assert!(births_end().is_empty());
     }
 }
