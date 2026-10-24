@@ -2228,7 +2228,7 @@ fn join_blocks(arr: &BqnArr) -> Result<PrimResult> {
 pub fn reverse_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     // NOTE: ⌽ on atoms (chars, numbers) errors; on rank-0 arrays errors.
     if x.is_atom() {
-        return Err(BqnError::Type("⌽𝕩: 𝕩 cannot be a unit".into()));
+        return Ok(PrimResult::Scalar(x));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⌽𝕩: 𝕩 must be an array".into()))?;
     if arr.rank() == 0 {
