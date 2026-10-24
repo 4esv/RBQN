@@ -26,7 +26,8 @@ def drain(t):
             out += d
 drain(3)
 # One chunk per line: a terminal delivers keystrokes separately.
-for chunk in inp.replace(b"\n", b"\n\0").split(b"\0"):
+chunks = [inp] if len(sys.argv) > 4 else inp.replace(b"\n", b"\n\0").split(b"\0")
+for chunk in chunks:
     if chunk:
         os.write(fd, chunk)
         drain(0.7)
@@ -45,12 +46,25 @@ sys.stdout.write("\nSTATUS=%d\n" % os.waitstatus_to_exitcode(st))
 "#;
 
 fn pty(input: &str) -> (String, i32) {
+    pty_mode(input, false)
+}
+
+/// `one_write`: deliver all of `input` in a single write, as a paste does (#118).
+fn pty_mode(input: &str, one_write: bool) -> (String, i32) {
     let home = std::env::temp_dir().join(format!("rbqn-fc-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
-    let o = Command::new("python3")
-        .args(["-I", "-c", PTY_DRIVER, env!("CARGO_BIN_EXE_rbqn"), input, home.to_str().unwrap()])
-        .output()
-        .unwrap();
+    let mut args = vec![
+        "-I",
+        "-c",
+        PTY_DRIVER,
+        env!("CARGO_BIN_EXE_rbqn"),
+        input,
+        home.to_str().unwrap(),
+    ];
+    if one_write {
+        args.push("one");
+    }
+    let o = Command::new("python3").args(args).output().unwrap();
     let s = String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n");
     let (body, st) = s.rsplit_once("STATUS=").expect("driver output");
     (body.to_string(), st.trim().parse().unwrap())
@@ -70,6 +84,21 @@ fn header_once_then_help_then_ctrl_d() {
     assert!(!out.contains("Unknown REPL command"), "{out}");
     assert!(out.contains("\n2\n"), "{out}");
     assert!(out.ends_with("\n"), "trailing newline after Ctrl-D: {out:?}");
+}
+
+#[test]
+fn pasted_lines_in_one_write_are_all_evaluated() {
+    let (out, status) = pty_mode(")help\\n1+1\\n\\x04", true);
+    assert_eq!(status, 0, "{out}");
+    assert!(out.contains(")off"), "missing help text in {out}");
+    assert!(out.contains("\n2\n"), "{out}");
+}
+
+#[test]
+fn pasted_program_in_one_write() {
+    let (out, status) = pty_mode("F←{𝕩+1}\\nG←{F F 𝕩}\\nG 5\\n\\x04", true);
+    assert_eq!(status, 0, "{out}");
+    assert!(out.contains("\n7\n"), "{out}");
 }
 
 #[test]

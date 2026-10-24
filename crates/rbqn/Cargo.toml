@@ -25,7 +25,7 @@ rbqn-core.workspace = true
 rbqn-vm.workspace = true
 rbqn-prim.workspace = true
 rbqn-gpu = { workspace = true, optional = true }
-rustyline = "15"
+rustyline = { version = "15", features = ["buffer-redux"] }
 pollster = "0.4"
 
 [dev-dependencies]
