@@ -7,7 +7,7 @@ use rbqn_core::{ArrData, BqnArr, B};
 use rbqn_prim::arith_dyad::{nan_max, nan_min};
 
 // Runtime primitive indices (see rbqn_prim::get_runtime).
-const ADD: usize = 0;
+pub const ADD: usize = 0;
 const MUL: usize = 2;
 const MIN: usize = 6;
 const MAX: usize = 7;
@@ -298,7 +298,14 @@ pub fn fold(f: B, arr: &BqnArr, init: Option<f64>) -> Option<B> {
     if arr.rank() != 1 || (init.is_none() && arr.ia() == 0) {
         return None;
     }
-    let idx = native_fn_idx(f)?;
+    fold_idx(native_fn_idx(f)?, arr, init)
+}
+
+/// `fold` for the primitive with index `idx` (the cost-model calibration times it without a `B`).
+pub fn fold_idx(idx: usize, arr: &BqnArr, init: Option<f64>) -> Option<B> {
+    if arr.rank() != 1 || (init.is_none() && arr.ia() == 0) {
+        return None;
+    }
     if let Some(r) = int_fold(idx, arr, init) {
         return Some(B::m_f64(r));
     }
@@ -349,7 +356,14 @@ pub fn scan(f: B, arr: &BqnArr) -> Option<BqnArr> {
     if arr.rank() != 1 || arr.ia() == 0 {
         return None;
     }
-    let idx = native_fn_idx(f)?;
+    scan_idx(native_fn_idx(f)?, arr)
+}
+
+/// `scan` for the primitive with index `idx` (see `fold_idx`).
+pub fn scan_idx(idx: usize, arr: &BqnArr) -> Option<BqnArr> {
+    if arr.rank() != 1 || arr.ia() == 0 {
+        return None;
+    }
     if let Some(mut out) = int_scan(idx, arr) {
         out.fill = arr.fill;
         return Some(out);

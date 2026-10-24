@@ -59,6 +59,20 @@ pub fn threads() -> usize {
     THREADS.load(Ordering::Relaxed)
 }
 
+/// Run `f` with every parallel path off, so a caller can time the serial kernels on a
+/// multicore host (the cost-model calibration, #167). Only for a thread that is alone in
+/// evaluating: the setting is process-wide.
+pub fn serially<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            THREADS.store(self.0, Ordering::Relaxed);
+        }
+    }
+    let _restore = Restore(THREADS.swap(1, Ordering::Relaxed));
+    f()
+}
+
 /// True when a job of `n` elements should take the parallel path.
 #[inline]
 pub fn go(n: usize) -> bool {
