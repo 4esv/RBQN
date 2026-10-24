@@ -100,14 +100,47 @@ fn to_error(e: BqnError, with_site: bool) -> Error {
     Error { message: e.to_string(), site }
 }
 
+thread_local! {
+    /// True while this thread runs BQN code under `guarded`.
+    static INSIDE_RBQN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Install, once per process, a hook that stays quiet while the current thread
+/// is inside `guarded` (BQN errors travel as panics) and otherwise delegates
+/// to whichever hook was installed before it. The hook is never swapped back.
+fn install_quiet_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !INSIDE_RBQN.with(|f| f.get()) {
+                prev(info);
+            }
+        }));
+    });
+}
+
+/// Clears the inside-rbqn flag (restoring the outer value) on drop.
+struct InsideGuard(bool);
+impl InsideGuard {
+    fn enter() -> Self {
+        Self(INSIDE_RBQN.with(|f| f.replace(true)))
+    }
+}
+impl Drop for InsideGuard {
+    fn drop(&mut self) {
+        INSIDE_RBQN.with(|f| f.set(self.0));
+    }
+}
+
 /// Run `f`, turning BQN's panic-based errors into `Error` without printing them.
 fn guarded<T>(f: impl FnOnce() -> Result<T, BqnError>) -> Result<T, Error> {
     clear_error_site();
-    // NOTE: the panic hook is process-global; swapped out only for the call.
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-    std::panic::set_hook(prev);
+    install_quiet_hook();
+    let r = {
+        let _inside = InsideGuard::enter();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+    };
     match r {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(e)) => Err(to_error(e, true)),

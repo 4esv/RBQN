@@ -61,3 +61,47 @@ fn call_functions() {
     assert_eq!(b.call1(&neg, &x).unwrap().to_vec_f64().unwrap(), vec![-10.0, -20.0]);
     assert!(b.call1(&w, &x).is_err());
 }
+
+// The panic hook is process-global and `Bqn` installs its quiet hook once on
+// first use, so this runs in a child process where nothing else has touched it.
+#[test]
+fn host_panic_hook_survives_eval() {
+    if std::env::var_os("RBQN_EMBED_HOOK_CHILD").is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "host_panic_hook_survives_eval", "--nocapture", "--test-threads=1"])
+            .env("RBQN_EMBED_HOOK_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "child failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        return;
+    }
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    std::panic::set_hook(Box::new(|_| {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+    }));
+    let b = Bqn::new().unwrap();
+    // A BQN error comes back as Err and does not reach the host hook.
+    assert!(b.eval("1+\"a\"+@+").is_err());
+    assert!(b.eval("+").and_then(|f| b.call1(&f, &b.string("a"))).is_err());
+    assert_eq!(CALLS.load(Ordering::SeqCst), 0, "BQN errors leaked to the host hook");
+    // A genuine panic still reaches the host hook, and it is still installed.
+    assert!(std::panic::catch_unwind(|| panic!("genuine")).is_err());
+    assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+    assert!(std::panic::catch_unwind(|| panic!("again")).is_err());
+    assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    // Another thread's genuine panics must reach the host hook while this
+    // thread is evaluating failing expressions (the old per-call swap lost them).
+    const N: usize = 3000;
+    let t = std::thread::spawn(|| {
+        for _ in 0..N {
+            let _ = std::panic::catch_unwind(|| panic!("other thread"));
+        }
+    });
+    for _ in 0..N {
+        assert!(b.eval("\"a\"+\"b\"").is_err());
+    }
+    t.join().unwrap();
+    assert_eq!(CALLS.load(Ordering::SeqCst), 2 + N, "host hook lost panics or was replaced");
+}
