@@ -12,6 +12,8 @@ mod gpu_runtime {
     pub fn report_panic(_: &std::panic::PanicHookInfo<'_>) {}
     pub fn init(_no_gpu: bool) {}
     pub fn print_summary() {}
+    /// None: the GPU runtime is not compiled in, so the REPL header omits the gpu part.
+    pub fn adapter_label() -> Option<String> { None }
 }
 
 use rbqn::bootstrap;
@@ -33,6 +35,7 @@ fn main() {
     let t0 = std::time::Instant::now();
     // NOTE: Rust starts with SIGPIPE ignored, so `rbqn -p '↕1e6' | head` would report
     // "Broken pipe" as a BQN error. Restore the default: exit quietly like any CLI.
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }

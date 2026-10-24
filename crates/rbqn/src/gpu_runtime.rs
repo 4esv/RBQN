@@ -212,6 +212,12 @@ fn get_decided() -> Option<&'static GpuRuntime> {
     r
 }
 
+/// Adapter name for the REPL header: the device name, or `off` when the GPU is
+/// disabled or no adapter exists. Creates the device, so interactive use only.
+pub fn adapter_label() -> Option<String> {
+    Some(get().map_or_else(|| "off".to_string(), |rt| rt.ctx.adapter_info.name.clone()))
+}
+
 /// Get the GPU runtime, waiting for device creation on first call. None when
 /// disabled (`--no-gpu`) or when no adapter is available.
 /// NOTE: Callers must apply their size threshold before calling this.

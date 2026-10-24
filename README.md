@@ -1,6 +1,35 @@
 # RBQN
 
-A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language, built to let BQN use the whole machine: typed arrays, a bytecode VM, and GPU dispatch for array operations.
+A Rust implementation of the [BQN](https://mlochbaum.github.io/BQN/) array language that uses the whole machine: multicore CPU, GPU dispatch, typed arrays, a bytecode VM.
+
+```
+cargo install rbqn
+```
+
+Or download a binary for macOS, Linux or Windows from [Releases](https://github.com/4esv/RBQN/releases).
+
+```
+   +´↕10
+45
+   3‿3⥊↕9
+┌─       
+╵ 0 1 2  
+  3 4 5  
+  6 7 8  
+        ┘
+   {𝕩≤1 ? 𝕩 ; (𝕊 𝕩-1)+𝕊 𝕩-2}¨ ↕10
+⟨ 0 1 1 2 3 5 8 13 21 34 ⟩
+```
+
+Multicore, 1e8 elements, `bench/wow/run.sh` against CBQN (12-core Intel Mac, [full output](bench/wow/results/2026-10-24-bench-intel12.md)):
+
+| workload | CBQN | rbqn -t 1 | rbqn -t 12 | speedup vs -t 1 | result agrees |
+|---|---|---|---|---|---|
+| `+´` 1e8 i32 | 0.030 s (0.27 s) | 0.035 s (0.31 s) | 0.019 s (0.31 s) | 1.83x | yes |
+| `(a×b)+c` 1e8 f64 | 1.199 s (3.69 s) | 1.779 s (4.11 s) | 0.569 s (3.06 s) | 3.12x | yes |
+| `⌈´` 1e8 f64 | 0.129 s (1.06 s) | 0.299 s (1.30 s) | 0.085 s (1.23 s) | 3.52x | yes |
+
+Cells: median in-process seconds for the operation alone (median whole-process wall seconds).
 
 RBQN passes the official BQN test suite and is self-hosting: it compiles its own compiler, runtime and formatter from the BQN sources, with no other BQN implementation involved. The goal is a BQN that leverages compute as far as it safely can. The language is Marshall Lochbaum's; the implementation goes its own way.
 
@@ -97,7 +126,7 @@ cargo build --release          # target/release/rbqn
 cargo build --release --no-default-features   # CPU-only, no wgpu
 ```
 
-Rust 1.85 or later (edition 2024), no external dependencies. The BQN compiler and runtime are embedded as bytecode, so nothing else is needed to build or run. Or install from crates.io: `cargo install rbqn`.
+Rust 1.88 or later (edition 2024). The only dynamic dependencies beyond the C runtime are libffi (`libffi.so.8` on Linux, e.g. `apt install libffi8`; part of the system on macOS) and libgcc_s; `ldd target/release/rbqn` on Linux lists `libffi.so.8 libgcc_s.so.1 libm.so.6 libc.so.6`. The BQN compiler and runtime are embedded as bytecode, so nothing else is needed to build or run. Or install from crates.io: `cargo install rbqn`.
 
 ## Architecture
 
