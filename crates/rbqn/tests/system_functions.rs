@@ -518,8 +518,8 @@ fn print_first(expr: &str) -> String {
 #[test]
 fn test_math_new_functions_match_cbqn() {
     let cases: &[(&str, &str)] = &[
-        ("⟨•math.Sinh 1, •math.Cosh 1, •math.Tanh 1, •math.Asinh 1, •math.Acosh 2, •math.Atanh 0⟩",
-         "⟨ 1.1752011936438014 1.5430806348152437 0.7615941559557649 0.881373587019543 1.3169578969248166 0 ⟩"),
+        ("⟨•math.Sinh 1, •math.Cosh 1, •math.Tanh 1, •math.Asinh 1, •math.Acosh 2, •math.Atanh 0.5⟩",
+         "⟨ 1.1752011936438014 1.5430806348152437 0.7615941559557649 0.881373587019543 1.3169578969248166 0.5493061443340549 ⟩"),
         ("•math.Sinh 0‿1‿2", "⟨ 0 1.1752011936438014 3.6268604078470186 ⟩"),
         ("•math.Sinh ⟨1,⟨2,3⟩⟩", "⟨ 1.1752011936438014 ⟨ 3.6268604078470186 10.017874927409903 ⟩ ⟩"),
         ("⟨•math.Acosh 0.5, •math.Atanh 2, •math.Atanh 1, •math.Atanh ¯1⟩", "⟨ NaN NaN ∞ ¯∞ ⟩"),
@@ -534,16 +534,22 @@ fn test_math_new_functions_match_cbqn() {
         ("•math.Sum ⟨1,\"a\"⟩", "Error: •math.Sum 𝕩: 𝕩 elements must be numbers"),
         ("1 •math.Sinh 2", "Error: This function can't be called dyadically"),
     ];
+    // NOTE: libm results differ by an ulp across platforms (macOS vs glibc), so numbers
+    // are compared to 1e-14 relative; everything else must match exactly.
+    let close = |got: &str, want: &str| {
+        let (g, w): (Vec<&str>, Vec<&str>) = (got.split(' ').collect(), want.split(' ').collect());
+        g.len() == w.len()
+            && g.iter().zip(&w).all(|(a, b)| match (a.replace('¯', "-").parse::<f64>(), b.replace('¯', "-").parse::<f64>()) {
+                (Ok(x), Ok(y)) => x == y || (x.is_nan() && y.is_nan()) || (x - y).abs() <= 1e-14 * y.abs().max(1e-300),
+                _ => a == b,
+            })
+    };
     for (expr, want) in cases {
-        assert_eq!(print_first(expr), *want, "{expr}");
+        let got = print_first(expr);
+        // Sum is pure f64 arithmetic in a fixed order: bit-exact everywhere.
+        let ok = if expr.contains("Sum") { got == *want } else { close(&got, want) };
+        assert!(ok, "{expr}: got {got}, want {want}");
     }
-}
-
-#[test]
-fn test_atanh_within_one_ulp_of_cbqn() {
-    // NOTE: libm differs by an ulp across platforms (macOS 0.5493061443340549, glibc ...48).
-    let v: f64 = print_first("•math.Atanh 0.5").parse().unwrap();
-    assert!((v - 0.5493061443340549).abs() < 2e-16, "{v}");
 }
 
 #[test]
