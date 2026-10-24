@@ -13,7 +13,8 @@ use rbqn_gpu::context::GpuContext;
 use rbqn_gpu::expr::Expr;
 use rbqn_gpu::fusion::{FusedOp, FusionBuilder};
 use rbqn_gpu::pipeline::PipelineCache;
-use rbqn_gpu::dispatch::{Kind, Work};
+use rbqn_gpu::calibrate;
+use rbqn_gpu::dispatch::{Kind, MODEL_FIELDS, Model, Work};
 
 use crate::gpu_host::{self, HostLeaf, Source};
 
@@ -179,12 +180,74 @@ fn gpu_possible() -> bool {
 }
 
 /// Part of device creation a dispatch issued now would still wait for (ms).
-fn exposed_init_ms() -> f64 {
+fn exposed_init_ms(m: &Model) -> f64 {
     if GPU_RUNTIME.get().is_some() {
         return 0.0;
     }
     let el = INIT_START.get().map_or(0.0, |t| t.elapsed().as_secs_f64() * 1e3);
-    (rbqn_gpu::dispatch::GPU_INIT_MS - el).max(0.0)
+    (m.gpu_init_ms - el).max(0.0)
+}
+
+static MODEL: OnceLock<Option<Model>> = OnceLock::new();
+/// Set while the calibration runs its own workloads, so no hook sends them to the device.
+static CALIBRATING: AtomicBool = AtomicBool::new(false);
+
+/// The cost model of this machine, resolved once per process (so every decision in a run
+/// sees the same constants): from the cache when it holds this adapter, else measured. While
+/// the device is still being created a cached model of the last adapter stands in, so a
+/// decision that ends on the host never waits for the device. `RBQN_GPU_CALIBRATE=1`
+/// re-measures. None when there is no device.
+pub fn model() -> Option<&'static Model> {
+    if GPU_DISABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+    MODEL.get_or_init(resolve_model).as_ref()
+}
+
+fn resolve_model() -> Option<Model> {
+    let forced = std::env::var("RBQN_GPU_CALIBRATE").is_ok_and(|v| !v.is_empty() && v != "0");
+    let threads = rbqn_prim::par::threads();
+    let path = calibrate::cache_path();
+    let mut cache = path.as_deref().map(calibrate::read_cache).unwrap_or_default();
+    let show = |how: &str, label: &str, m: &Model, ms: Option<f64>| {
+        if !debug_enabled() {
+            return;
+        }
+        let at = path.as_ref().map_or("none".to_string(), |p| p.display().to_string());
+        let took = ms.map_or(String::new(), |t| format!(" in {t:.1}ms"));
+        eprintln!("[gpu] model {how}{took}: {label} threads={threads} cache={at}");
+        let kv: Vec<String> = MODEL_FIELDS.iter().zip(m.values()).map(|(k, v)| format!("{k}={v:.4}")).collect();
+        eprintln!("[gpu] model {}", kv.join(" "));
+    };
+    if !forced && GPU_RUNTIME.get().is_none() && let Some(e) = cache.last_entry(threads) {
+        show("cached (device still starting, last adapter)", &e.key, &e.model, None);
+        return Some(e.model);
+    }
+    let rt = runtime()?;
+    let key = calibrate::adapter_key(&rt.ctx.adapter_info);
+    if !forced && let Some(hit) = cache.get(&key, threads).map(|e| e.model) {
+        show("cached", &key, &hit, None);
+        if cache.last.as_deref() != Some(&key) {
+            cache.last = Some(key.clone());
+            if let Some(p) = &path { let _ = calibrate::write_cache(p, &cache); }
+        }
+        return Some(hit);
+    }
+    let counters = rbqn_gpu::stats::snapshot();
+    CALIBRATING.store(true, Ordering::Relaxed);
+    let measured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::calibrate::measure(rt)));
+    CALIBRATING.store(false, Ordering::Relaxed);
+    rbqn_gpu::stats::restore(&counters);
+    let Ok((m, ms)) = measured else {
+        if debug_enabled() { eprintln!("[gpu] calibration panicked; using CPU path"); }
+        return None;
+    };
+    cache.put(calibrate::Entry { key: key.clone(), threads, model: m });
+    if let Some(p) = &path && let Err(e) = calibrate::write_cache(p, &cache) && debug_enabled() {
+        eprintln!("[gpu] model cache write failed: {e}");
+    }
+    show("measured", &key, &m, Some(ms));
+    Some(m)
 }
 
 /// The Step 6 decision: run `w` on the GPU when its modelled cost beats the
@@ -196,9 +259,10 @@ fn decide(kind: Kind, w: &Work, wide: bool) -> bool {
     if wide && let Some(Some(rt)) = GPU_RUNTIME.get() && !rt.ctx.shader_int64 {
         return false;
     }
-    let init = exposed_init_ms();
-    let g = rbqn_gpu::dispatch::gpu_ms(kind, w, init);
-    let c = rbqn_gpu::dispatch::cpu_ms(kind, w);
+    let Some(m) = model() else { return false };
+    let init = exposed_init_ms(m);
+    let g = rbqn_gpu::dispatch::gpu_ms(m, kind, w, init);
+    let c = rbqn_gpu::dispatch::cpu_ms(m, kind, w);
     let gpu = gpu_mode() == GpuMode::Force || g < c;
     if debug_enabled() {
         eprintln!(
@@ -235,7 +299,7 @@ fn get_decided() -> Option<&'static GpuRuntime> {
 /// disabled or no adapter exists. Creates the device, so interactive use only.
 pub fn adapter_label() -> Option<String> {
     if !cfg!(feature = "gpu") { return None; }
-    Some(get().map_or_else(|| "off".to_string(), |rt| rt.ctx.adapter_info.name.clone()))
+    Some(runtime().map_or_else(|| "off".to_string(), |rt| rt.ctx.adapter_info.name.clone()))
 }
 
 /// `--version` gpu line: `off` when disabled (`--no-gpu`, `RBQN_GPU=off`), `none` when no
@@ -245,13 +309,23 @@ pub fn version_label(no_gpu: bool) -> String {
     if no_gpu || gpu_mode() == GpuMode::Off {
         return "off".to_string();
     }
-    get().map_or_else(|| "none".to_string(), |rt| rt.ctx.adapter_info.name.clone())
+    runtime().map_or_else(|| "none".to_string(), |rt| rt.ctx.adapter_info.name.clone())
 }
 
 /// Get the GPU runtime, waiting for device creation on first call. None when
 /// disabled (`--no-gpu`) or when no adapter is available.
 /// NOTE: Callers must apply their size threshold before calling this.
 pub fn get() -> Option<&'static GpuRuntime> {
+    let rt = runtime()?;
+    // NOTE: first device use resolves the cost model (cache read or measurement), see `model`.
+    if !CALIBRATING.load(Ordering::Relaxed) {
+        model();
+    }
+    Some(rt)
+}
+
+/// The device without resolving the cost model.
+fn runtime() -> Option<&'static GpuRuntime> {
     if GPU_DISABLED.load(Ordering::Relaxed) {
         return None;
     }
@@ -377,8 +451,9 @@ fn sort_on_gpu(arr: &BqnArr) -> bool {
     if hi - lo + 1.0 <= n.max(1 << 16) as f64 { return false; }
     // NOTE: i32 keys: the host radix sort is modelled against the GPU sort (#146); F64 keys keep the gate above.
     if matches!(arr.data, ArrData::I32(_)) {
-        let init = exposed_init_ms();
-        return decide_ms(&format!("sort n={:e}", n as f64), rbqn_gpu::dispatch::sort_gpu_ms(n, init), rbqn_gpu::dispatch::sort_cpu_ms(n), init);
+        let Some(m) = model() else { return false };
+        let init = exposed_init_ms(m);
+        return decide_ms(&format!("sort n={:e}", n as f64), rbqn_gpu::dispatch::sort_gpu_ms(m, n, init), rbqn_gpu::dispatch::sort_cpu_ms(m, n), init);
     }
     true
 }
@@ -452,6 +527,9 @@ pub fn gpu_i32_to_arr(gpu: &GpuRuntime, buf: &GpuBuffer, shape: Vec<usize>, fill
 
 /// Check whether an operation on `len` elements should use the GPU.
 pub fn should_dispatch(op: &str, len: usize) -> bool {
+    if CALIBRATING.load(Ordering::Relaxed) {
+        return false;
+    }
     match gpu_mode() {
         GpuMode::Force => {
             if !rbqn_gpu::stats::program_started() {
@@ -1436,8 +1514,9 @@ pub fn gpu_matmul(w: B, x: B) -> Option<B> {
         // For small matrices, CPU is faster due to transfer overhead.
         if gpu_mode() != GpuMode::Force && m * k + k * n < 50_000 { return None; }
         if !gpu_possible() { return None; }
-        let init = exposed_init_ms();
-        let (g, c) = (rbqn_gpu::dispatch::matmul_gpu_ms(m, k, n, init), rbqn_gpu::dispatch::matmul_cpu_ms(m, k, n, rbqn_prim::par::threads()));
+        let cm = model()?;
+        let init = exposed_init_ms(cm);
+        let (g, c) = (rbqn_gpu::dispatch::matmul_gpu_ms(cm, m, k, n, init), rbqn_gpu::dispatch::matmul_cpu_ms(cm, m, k, n, rbqn_prim::par::threads()));
         if !decide_ms(&format!("matmul {m}x{k}x{n}"), g, c, init) { return None; }
         let gpu = get()?;
 
@@ -1480,7 +1559,7 @@ pub fn gpu_f32_matmul(w: B, x: B, m: usize, k: usize, n: usize) -> Option<B> {
 }
 
 /// Run the f32 matmul kernel; inputs are rounded to f32, the result widened back.
-fn matmul_f32(gpu: &GpuRuntime, w: &[f64], x: &[f64], m: usize, k: usize, n: usize) -> Option<Vec<f64>> {
+pub(crate) fn matmul_f32(gpu: &GpuRuntime, w: &[f64], x: &[f64], m: usize, k: usize, n: usize) -> Option<Vec<f64>> {
     let device = &gpu.ctx.device;
     let queue = &gpu.ctx.queue;
 
@@ -1509,7 +1588,7 @@ fn matmul_f32(gpu: &GpuRuntime, w: &[f64], x: &[f64], m: usize, k: usize, n: usi
 
     let result_f32 = pollster::block_on(download_f32(device, queue, &out_buf));
 
-    if debug_enabled() {
+    if debug_enabled() && !CALIBRATING.load(Ordering::Relaxed) {
         eprintln!("[gpu] matmul {}x{}x{} (f32)", m, k, n);
     }
 

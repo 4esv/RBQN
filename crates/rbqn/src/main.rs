@@ -1,3 +1,4 @@
+mod calibrate;
 mod cli;
 mod gpu_host;
 mod gpu_runtime;
