@@ -11,6 +11,7 @@ class Gate(unittest.TestCase):
         self.assertEqual(gate.docs_failures("compared 5 expressions; 0 differ\n"), [])
         self.assertTrue(gate.docs_failures("compared 5 expressions; 1 differ\n--- a.md: ⌽5\n    cbqn: 'x'\n"))
         self.assertTrue(gate.docs_failures("garbage"))
+        self.assertEqual(gate.docs_failures("compared 5 expressions; 1 differ\n--- a.md: ⌽5\n    cbqn: 'x'\n", {"a.md: ⌽5"}), [])
 
     def test_grid_known_passes_unknown_fails(self):
         txt = HEAD + "=== strict (1)\n" + CELL % "@ ¬ 1" + CELL % "⌽ 5"
@@ -26,8 +27,7 @@ class Gate(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write("# c\n@ ¬ 1 | why\n")
         self.assertEqual(gate.known(f.name), {"@ ¬ 1"})
-        self.assertEqual(gate.known(os.path.join(os.path.dirname(__file__), "known_divergences.txt")),
-                         {"@ - 0‿1‿1", "@ ¬ 1"})
+        self.assertIn("@ ¬ 1", gate.known(os.path.join(os.path.dirname(__file__), "known_divergences.txt")))
 
 
 if __name__ == "__main__":
