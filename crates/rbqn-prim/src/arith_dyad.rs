@@ -316,7 +316,8 @@ fn pervasive_dyad<F: Fn(f64, f64) -> f64 + Copy + Sync>(
 /// Numeric contents as f64, borrowing when the array already stores f64.
 fn num_view(a: &BqnArr) -> Result<std::borrow::Cow<'_, [f64]>> {
     match &a.data {
-        array::ArrData::F64(v) => Ok(std::borrow::Cow::Borrowed(v)),
+        // NOTE: empty arrays can store a dummy element (shape [0], data len 1); view only ia() of them.
+        array::ArrData::F64(v) => Ok(std::borrow::Cow::Borrowed(&v[..a.ia().min(v.len())])),
         _ => a.f64_iter().map(std::borrow::Cow::Owned),
     }
 }
