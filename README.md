@@ -21,7 +21,7 @@ Or download a binary for macOS, Linux or Windows from [Releases](https://github.
 ⟨ 0 1 1 2 3 5 8 13 21 34 ⟩
 ```
 
-Multicore, 1e8 elements, `bench/wow/run.sh` against CBQN (12-core Intel Mac, [full output](bench/wow/results/2026-10-24-bench-intel12.md)):
+Multicore, 1e8 elements, `bench/wow/run.sh` against CBQN (12-core Intel Mac, 2026-10-24, [full output](bench/wow/results/2026-10-24-bench-intel12.md), which does not record the machine's load; a quiet-machine re-measure is #119):
 
 | workload | CBQN | rbqn -t 1 | rbqn -t 12 | speedup vs -t 1 | result agrees |
 |---|---|---|---|---|---|
@@ -33,20 +33,20 @@ Cells: median in-process seconds for the operation alone (median whole-process w
 
 RBQN passes the official BQN test suite and is self-hosting: it compiles its own compiler, runtime and formatter from the BQN sources, with no other BQN implementation involved. The goal is a BQN that leverages compute as far as it safely can. The language is Marshall Lochbaum's; the implementation goes its own way.
 
-Status: pre-1.0, complete language, no known divergences from the specification. `•file.Open` is unspecified in BQN and absent here.
+Status: pre-1.0, complete language, no known divergences from the specification. `•file.Open` is unspecified in BQN; here it raises `not yet implemented`.
 
 ## What works
 
-- **The language.** Every primitive, modifier and combinator; headers, predicates, multiple bodies, namespaces, `⁼` for the invertible primitives, `⌾` and `⚇`. The official test suite passes in full (13 files, 1316 cases, see [Testing](#testing)). The workspace has 31 `unsafe` sites, each with a `// SAFETY:` comment enforced by `clippy::undocumented_unsafe_blocks` (`bench/unsafe_census.sh`); rbqn-core and rbqn-prim pass under Miri in CI.
+- **The language.** Every primitive, modifier and combinator; headers, predicates, multiple bodies, namespaces, `⁼` for the invertible primitives, `⌾` and `⚇`. The official test suite passes in full (13 files, 1316 cases at the pinned BQN revision, see [Testing](#testing)). The workspace has 50 `unsafe` sites (`bench/unsafe_census.sh`); every `unsafe` block carries a `// SAFETY:` comment, enforced by `clippy::undocumented_unsafe_blocks = "deny"`; rbqn-core, rbqn-prim and rbqn-vm pass under Miri in CI (the `miri` job).
 - **Self-hosting.** The compiler, runtimes and formatter are compiled by RBQN itself from `c.bqn`, `r0.bqn`, `r1.bqn` and `f.bqn`, embedded as bytecode. A fixpoint check confirms that the compiler compiled by itself produces identical bytecode.
 - **Typed arrays.** Arrays are stored unboxed as bits, i8, i16, i32, f64, or 8/16/32-bit characters, squeezed to the narrowest exact type, with boxed arrays only for nested data; the primitives have specialised paths for each.
-- **GPU dispatch.** Elementwise arithmetic, reductions, scans, sorting, selection, softmax and matrix multiply have wgpu kernels. Arithmetic, folds, scans and `•math.MatMul` dispatch automatically when a cost model says the GPU wins, using exact integer kernels only; the `•gpu` namespace gives explicit f32 kernels and device-resident arrays with lazy fusion. See [GPU](#gpu).
+- **GPU dispatch.** Elementwise arithmetic, reductions, scans, sorting, selection, softmax and matrix multiply have wgpu kernels. Arithmetic, folds, scans, sorts and `•math.MatMul` dispatch automatically, per call, when a cost model calibrated on the machine says the GPU wins, using exact integer kernels only, so the result is the same on either path; the `•gpu` namespace gives explicit f32 kernels and device-resident arrays with lazy fusion. See [GPU](#gpu).
 - **`•FFI`.** The full specification: numeric, pointer (`*`, mutable `&`), array and struct types, `>` and `𝕨`/`𝕩` argument markers, `a` for BQN values, pointer objects with `Read Write Add Sub Cast Field`, calls through libffi on the platform C ABI. `f←"@" •FFI "&"‿"memset"‿"&u8"‿"i32"‿"u64" ⋄ F ⟨0‿0‿0‿0, 7, 3⟩` gives `⟨ 7 7 7 0 ⟩`.
 - **Errors with position.** Every error names the primitive and the shapes involved, then the file and line, the source line and a caret under the failing token.
 - **Recursion** is bounded by the 512 MB interpreter stack, not a call count. Runaway recursion, and native recursion on deeply nested arrays, raise `Stack overflow` instead of crashing.
-- **System values.** `•BQN`, `•Import`, `•Show`, `•Out`, `•Fmt`, `•Repr`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•Hash`, `•HashMap`, `•ParseFloat`, `•FromUTF8`, `•ToUTF8`, `•UnixTime`, `•MonoTime`, `•Delay`, `•SH`, `•Exit`, `•args`, `•path`, `•name`, `•wdpath`, `•state`, `•rand`, `•platform`, `•GroupLen`, `•GroupOrd`, `•FLines`, `•FChars`, `•FBytes`, `•PrimInd`, `•ReBQN`.
-- **Namespaces.** `•math` (`Sin` `Cos` `Tan` `ASin` `ACos` `ATan` `Log` `Cbrt` `Hypot` `Erf` `ErfC` `Comb` `MatMul` `Softmax` `Pi` `Sinh` `Cosh` `Tanh` `Asinh` `Acosh` `Atanh` `LogFact` `Sum` `Atan2` `Expm1` `Log1p` `Log2` `Log10`), `•gpu`, `•file` (`Lines` `Chars` `Bytes` `List` `At` `Name` `Parent` `Exists` `Type` `CreateDir` `Remove` `Rename` `path` `Size` `Created` `Modified` `Accessed` `RealPath` `MapBytes`), `•term` (`RawMode` `CharB` `CharN` `Flush` `OutRaw` `ErrRaw`), `•bit` (`_cast` `_not` `_neg` and the binary operations across widths).
-- **A REPL** (`-r`) with history, backslash glyph input (`\r` gives `↑`, the standard BQN keymap) and Tab completion of system values and session names; plus script, expression and file modes.
+- **System values.** `•BQN`, `•Import`, `•Show`, `•Out`, `•Fmt`, `•Repr`, `•Type`, `•Decompose`, `•Glyph`, `•Fill`, `•CurrentError`, `•Hash`, `•HashMap` (`Count` `Keys` `Has` `Get` `Set` `Delete` `Values`), `•ns` (`Keys` `Values` `Has` `Get`; `Keys` and `Values` follow definition order), `•ParseFloat`, `•FromUTF8`, `•ToUTF8`, `•UnixTime`, `•MonoTime`, `•Delay`, `•SH`, `•Exit`, `•args`, `•path`, `•name`, `•wdpath`, `•state`, `•rand`, `•MakeRand` (a seed gives the same sequence in every process), `•platform`, `•GroupLen`, `•GroupOrd`, `•FLines`, `•FChars`, `•FBytes`, `•PrimInd`, `•ReBQN`.
+- **Namespaces.** `•math` (`Sin` `Cos` `Tan` `ASin` `ACos` `ATan` `Log` `Cbrt` `Hypot` `Erf` `ErfC` `Comb` `Fact` `GCD` `LCM` `MatMul` `Softmax` `Pi` `Sinh` `Cosh` `Tanh` `Asinh` `Acosh` `Atanh` `LogFact` `Sum` `Atan2` `Expm1` `Log1p` `Log2` `Log10`), `•gpu`, `•file` (`Lines` `Chars` `Bytes` `List` `At` `Name` `Parent` `Exists` `Type` `CreateDir` `Remove` `Rename` `path` `Size` `Created` `Modified` `Accessed` `RealPath` `MapBytes`), `•term` (`RawMode` `CharB` `CharN` `Flush` `OutRaw` `ErrRaw`), `•bit` (`_cast` `_not` `_neg` and the binary operations across widths).
+- **A REPL** (`-r`, or `rbqn` with no arguments) that prints a header line (version, threads, GPU adapter, `)help`) on a terminal, with history, backslash glyph input (`\r` gives `↑`, the standard BQN keymap), Tab completion of system values and session names, `)help`, `)off` or `)exit` or Ctrl-D to leave, and pasted multi-line programs evaluated line by line (`crates/rbqn/tests/repl_first_contact.rs`); plus script, expression and file modes.
 
 ## Performance
 
@@ -76,9 +76,9 @@ Scalar code through the VM (the fib row) is where the most room remains. `bench/
 
 Two layers, kept separate so that nothing outside `•gpu` ever changes a result.
 
-**Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path; f64 arithmetic stays on the CPU (Metal has no f64). A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper; `RBQN_GPU_DEBUG=1` prints each decision. `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`). `make gpu-parity` runs the stranger docs corpus and grid with `RBQN_GPU=force` and `RBQN_GPU=off` on the same binary and requires identical reports; it needs `CBQN_BIN` and `BQN_SRC`, and is run on a machine with a GPU, not in CI. The CBQN parity job in CI is a regression floor, not the goal: the spec is the target, and deliberate divergences beyond CBQN are recorded with a spec citation in `bench/stranger/known_divergences.txt`.
+**Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path; f64 arithmetic stays on the CPU (Metal has no f64). A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper on each call; `RBQN_GPU_DEBUG=1` prints each decision. The model's constants are measured per machine at first device use (small GPU and host workloads timed at two sizes, `crates/rbqn/src/calibrate.rs`) and cached by adapter, driver and thread count under `RBQN_CACHE_DIR` (default: the platform cache directory); `RBQN_GPU_CALIBRATE=1` measures again (`crates/rbqn/tests/gpu_calibrate.rs`). `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`). `make gpu-parity` runs the stranger docs corpus and grid with `RBQN_GPU=force` and `RBQN_GPU=off` on the same binary and requires identical reports; it needs `CBQN_BIN` and `BQN_SRC`, and is run on a machine with a GPU, not in CI. The CBQN parity job in CI is a regression floor, not the goal: the spec is the target, and deliberate divergences beyond CBQN are recorded with a spec citation in `bench/stranger/known_divergences.txt`.
 
-The device is used only when the cost model expects it to win, and results are identical either way. The model's constants were fitted from `bench/wow/gpu.bqn` sweeps on this table's device (method in the comment above them in `crates/rbqn-gpu/src/dispatch.rs`), so on another GPU they are a starting point. Median of 3 in-process seconds on an AMD Radeon Pro 5300M (Metal), from `bench/wow/results/2026-10-24-bench-gpu-rows-radeon5300m.md` (`bench/wow/run.sh`; that file records the load and foreign CPU of the run, which was shared with other builds: foreign CPU peaked at 974%, so the large ratios are the evidence, not the small ones):
+The device is used only when the cost model expects it to win, and results are identical either way. Median of 3 in-process seconds on an AMD Radeon Pro 5300M (Metal), from `bench/wow/results/2026-10-24-bench-matmul-cpu-166.md` (`bench/wow/run.sh`; that file records the load and foreign CPU of the run, which was shared with other builds: load1 16 at start, foreign CPU peaked at 533%, so the large ratios are the evidence, not the small ones; a quiet-machine re-measure is #119):
 
 <!-- gpu-table -->
 | workload | CBQN | rbqn CPU `-t 1` (`RBQN_GPU=off`) | rbqn CPU (`RBQN_GPU=off`) | rbqn GPU (`RBQN_GPU=force`) | rbqn default | default ran on |
@@ -94,7 +94,7 @@ The device is used only when the cost model expects it to win, and results are i
 | `+´˘` 1e4×1e4 i32 | 0.028 s | 0.250 s | 0.254 s | 19.261 s | 0.268 s | CPU |
 <!-- /gpu-table -->
 
-`•math.MatMul` and the idiom `+˝∘×⎉1‿∞` run a blocked, packed, multicore f64 kernel on the host (#166): 4096² takes 15.6 s at `-t 1` and 2.6 s on 12 threads against 42.8 s for CBQN's `+˝∘×⎉1‿∞` (a heavily loaded machine; see the results file), up from 704 s for the earlier naive loop. The cost model now keeps these sizes on the host; the exact-integer GPU kernel (4096² in 5.8 s when forced here) is chosen only where the model predicts it faster, for example with few host threads. Sort and row sums stay on the CPU here. The GPU sort is 1.2-1.8x slower than the host radix sort from 1e6 to 1e8 (upload and download included), and CBQN's own sort is faster than both (1.07 s at 1e8). There is no batched row-reduce kernel, so a forced `+´˘` runs one reduction per row and is 36x slower than the host. `RBQN_GPU=force` produces those GPU numbers and `RBQN_GPU_DEBUG=1` prints the model's predicted times next to each decision.
+`•math.MatMul` and the idiom `+˝∘×⎉1‿∞` run a blocked, packed, multicore f64 kernel on the host (#166): 4096² takes 15.6 s at `-t 1` and 2.6 s on 12 threads against 42.8 s for CBQN's `+˝∘×⎉1‿∞` (a heavily loaded machine; see the results file), up from 704 s for the earlier naive loop (`bench/wow/results/2026-10-24-bench-gpu-rows-radeon5300m.md`). The calibrated model keeps these sizes on the host on this machine; the exact-integer GPU kernel (4096² in 5.8 s when forced here) is chosen only where the model predicts it faster, for example at `-t 1`. Sort and row sums stay on the CPU here. The forced GPU sort (upload and download included) is slower than the host radix sort at 1e6 and about as fast from 1e7 to 1e8, and CBQN's own sort is faster than both (2.462 s at 1e8). There is no batched row-reduce kernel, so a forced `+´˘` runs one reduction per row and takes 19.261 s at 1e4×1e4 against 0.254 s on the host. `RBQN_GPU=force` produces those GPU numbers and `RBQN_GPU_DEBUG=1` prints the model's predicted times next to each decision.
 
 **`•gpu`.** Explicit f32 kernels and device-resident arrays, for code that accepts f32 rounding in exchange for speed.
 
@@ -110,7 +110,7 @@ Contract:
 
 - Inputs are numeric arrays of any element type; every element is rounded to f32 before upload (values beyond f32 range become `∞`).
 - `MatMul` and `Softmax` take resident or host arguments and return resident results, so `•gpu.Fetch a •gpu.MatMul b •gpu.MatMul c` uploads each input once and downloads once. Any other primitive (and `•Show`/`•Fmt`) downloads a resident value on first use and keeps the host copy; `≢`, `≠` and `=` read the shape without a download.
-- `Tensor` stores f32 when every element is exact in f32, else i32 when every element is an i32 integer, else f32 (rounded). So `•gpu.Fetch •gpu.Tensor x` ≡ `x` for i32 integers and f32-exact floats. An empty `x` stays on the host. `MatMul`/`Softmax` on an i32 tensor convert it through the host (one logged download and upload). Resident buffers are never freed (like host arrays today).
+- `Tensor` stores f32 when every element is exact in f32, else i32 when every element is an i32 integer, else f32 (rounded). So `•gpu.Fetch •gpu.Tensor x` ≡ `x` for i32 integers and f32-exact floats. An empty `x` stays on the host. `MatMul`/`Softmax` on an i32 tensor convert it through the host (one logged download and upload). Resident device buffers are kept until the process exits (host arrays are freed once nothing references them; the array store is #124).
 - Arithmetic on a resident value (`+ - × ÷ ⌊ ⌈ |`, monadic or dyadic, with a number or a same-shape resident operand) is f32 and stays lazy. The chain runs as one kernel when `Fetch`, `MatMul`, `Softmax` or any other primitive needs it, and `+´ ×´ ⌊´ ⌈´` on a resident list runs it inside the reduce kernel: `+´ 1+2×•gpu.Tensor x` is one dispatch with nothing downloaded except the sum. A host-array operand downloads, as before.
 - Downloaded values are ordinary arrays holding the f32 values. They differ from `•math.MatMul` / `•math.Softmax` (exact f64, CPU) by rounding: `(2‿2⥊0.1) •gpu.MatMul 2‿2⥊3` gives `0.6000000238418579` where `•math.MatMul` gives `0.6000000000000001`.
 - No size threshold and no exactness gate: every call dispatches, so small inputs pay the transfer cost.
@@ -128,6 +128,7 @@ Options:
   -p code    execute the argument as BQN and print its result pretty-printed
   -o code    execute the argument as BQN and print its raw result
   -M num     accepted for CBQN compatibility; no heap limit is enforced yet
+  -t num     use num threads for large array arithmetic (default: RBQN_THREADS or all cores; 1 = serial)
   -r         start the REPL after executing all arguments
   -s         start a silent REPL
   --no-gpu   disable GPU acceleration
@@ -135,7 +136,7 @@ Options:
   --version  display version information (including `gpu:` adapter name, `off` or `none`)
 ```
 
-Environment: `RBQN_GPU=off|force` overrides the dispatch decision (`force` bypasses the cost model only); `RBQN_GPU_DEBUG=1` traces it.
+Environment: `RBQN_GPU=off|force` overrides the dispatch decision (`force` bypasses the cost model only); `RBQN_GPU_DEBUG=1` traces it; `RBQN_GPU_CALIBRATE=1` re-measures the cost model and `RBQN_CACHE_DIR` moves its cache; `RBQN_THREADS` sets the thread count.
 
 ## Build
 
@@ -148,12 +149,12 @@ Rust 1.88 or later (edition 2024). The only dynamic dependencies beyond the C ru
 
 ## Architecture
 
-About 30K lines of Rust in five crates:
+About 34K lines of Rust outside `tests/` directories, in five crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `rbqn` | CLI, REPL, bootstrap, `•Import`/`•BQN`, GPU dispatch decisions |
-| `rbqn-core` | Value representation (NaN-boxed `B`), typed arrays, errors |
+| `rbqn` | CLI, REPL, embedding API, bootstrap, `•Import`/`•BQN`, GPU dispatch decisions and calibration |
+| `rbqn-core` | Value representation (NaN-boxed `B`, tagged-pointer array handles), typed arrays, errors |
 | `rbqn-prim` | Primitives: arithmetic, structural, search, sort, group |
 | `rbqn-vm` | Bytecode VM, blocks and scopes, modifiers, derived functions, system values |
 | `rbqn-gpu` | wgpu context, buffer pool, pipeline cache, WGSL kernels |
@@ -178,7 +179,7 @@ BQN_TEST_DIR=/path/to/BQN/test ./test_suite.sh    # official BQN test suite
 make gpu-corpus                                   # GPU kernels vs CPU, 87 expressions
 ```
 
-CI runs all three plus clippy with `-D warnings` on every push, against a pinned BQN revision. The suite result at this commit:
+CI (`.github/workflows/ci.yml`, on every push to main and every pull request) runs `cargo test --release --workspace` (job `test`, Linux), the official suite and clippy with `-D warnings` (job `build-test`, macOS, against a pinned BQN revision), the docs and grid comparison against a pinned CBQN (job `parity`) and Miri (job `miri`); `make gpu-corpus` and `make gpu-parity` run on a machine with a GPU. The suite result at this commit:
 
 ```
 simple       PASS|20|0      fill         PASS|62|0
