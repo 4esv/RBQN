@@ -847,12 +847,22 @@ impl Drop for BirthSpan {
 /// Callee that may keep its arguments: leak them, the result is Borrowed.
 #[inline(never)]
 fn call_impure(f: B, w: Option<Slot>, x: Slot) -> Slot {
+    // An Owned argument holds a strong count. A block callee takes it over (its scope
+    // releases it at exit when nothing captured the scope, #161); anyone else leaks it.
+    let x_own = matches!(x, Slot::Owned(_));
+    let w_own = matches!(w, Some(Slot::Owned(_)));
     let xb = x.leak();
     let wb = w.map(Slot::leak);
-    if f.is_fun()
-        && let Some(r) = call_block_slot(f, wb, xb)
-    {
-        return r;
+    if f.is_fun() {
+        let r = if x_own || w_own {
+            let owned = [if x_own { xb } else { B::SENTINEL }, if w_own { wb.unwrap_or(B::SENTINEL) } else { B::SENTINEL }];
+            call_block_slot(f, wb, xb, &owned)
+        } else {
+            call_block_slot(f, wb, xb, &[])
+        };
+        if let Some(r) = r {
+            return r;
+        }
     }
     Slot::Borrowed(match wb {
         Some(wb) => c2(f, wb, xb),
@@ -865,7 +875,7 @@ fn call_impure(f: B, w: Option<Slot>, x: Slot) -> Slot {
 /// `Owned` slot, is the only reference to its array and moves to the caller. Same
 /// dispatch as `c1`/`c2`; `None` for any other callee. The arguments are already
 /// plain (leaked) handles, so the block may store them.
-fn call_block_slot(f: B, w: Option<B>, x: B) -> Option<Slot> {
+fn call_block_slot(f: B, w: Option<B>, x: B, owned: &[B]) -> Option<Slot> {
     use crate::vm::exec_block_slot;
     let id = (f.0 & 0xFFFFFFFFFFFF) >> 3;
     let d = get_derived(id);
@@ -875,10 +885,10 @@ fn call_block_slot(f: B, w: Option<B>, x: B) -> Option<Slot> {
             let bl = d.bl.as_ref()?;
             let psc = d.sc.as_ref()?.clone();
             Some(match w {
-                None => exec_block_slot(bl, &bl.bodies[0], psc, &[f, x, B::SENTINEL]),
+                None => exec_block_slot(bl, &bl.bodies[0], psc, &[f, x, B::SENTINEL], owned),
                 Some(w) => {
                     let body = bl.dy_body.as_ref().unwrap_or_else(|| &bl.bodies[0]);
-                    exec_block_slot(bl, body, psc, &[f, x, w])
+                    exec_block_slot(bl, body, psc, &[f, x, w], owned)
                 }
             })
         }
@@ -893,7 +903,7 @@ fn call_block_slot(f: B, w: Option<B>, x: B) -> Option<Slot> {
                 None => bl.bodies[0].clone(),
                 Some(_) => bl.dy_body.clone().unwrap_or_else(|| bl.bodies[0].clone()),
             };
-            Some(exec_block_slot(&bl, &body, psc, &[fv, x, w.unwrap_or(B::SENTINEL), d.g, d.f]))
+            Some(exec_block_slot(&bl, &body, psc, &[fv, x, w.unwrap_or(B::SENTINEL), d.g, d.f], owned))
         }
         DerivedKind::Md2D if d.g.is_md2() => {
             let md = get_derived((d.g.0 & 0xFFFFFFFFFFFF) >> 3);
@@ -907,7 +917,7 @@ fn call_block_slot(f: B, w: Option<B>, x: B) -> Option<Slot> {
                 // NOTE: c2 throws when no dyadic body exists; leave that to it.
                 Some(_) => bl.dy_body.clone()?,
             };
-            Some(exec_block_slot(&bl, &body, psc, &[fv, x, w.unwrap_or(B::SENTINEL), d.g, d.f, d.h]))
+            Some(exec_block_slot(&bl, &body, psc, &[fv, x, w.unwrap_or(B::SENTINEL), d.g, d.f, d.h], owned))
         }
         _ => None,
     }
@@ -968,7 +978,7 @@ fn call_slots(f: B, w: Option<Slot>, x: Slot) -> Slot {
     for arg in [w, Some(x)].into_iter().flatten() {
         match arg {
             Slot::Owned(v) if result.is_none() && same_array(v.b(), r) => result = Some(Slot::Owned(v)),
-            other => drop(other), // an unreferenced temporary
+            other => drop(other), // an unreferenced temporary (or a shared count of a variable)
         }
     }
     result.unwrap_or(Slot::Borrowed(r))

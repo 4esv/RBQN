@@ -17,17 +17,22 @@ pub fn exec_block(bl: &Block, body: Arc<Body>, psc: std::rc::Rc<Scope>) -> B {
 
 #[inline(never)]
 pub fn exec_block_with_args(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> B {
-    exec_block_slot(bl, body, psc, args).leak()
+    exec_block_slot(bl, body, psc, args, &[]).leak()
 }
 
 /// As `exec_block_with_args`, but the result keeps its ownership (#161): `Owned` when
 /// the block ended on an array created by a primitive and referenced from nowhere
 /// else. The arguments are still plain handles that the caller must have leaked.
 #[inline(never)]
-pub fn exec_block_slot(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B]) -> Slot {
+pub fn exec_block_slot(bl: &Block, body: &Arc<Body>, psc: std::rc::Rc<Scope>, args: &[B], owned: &[B]) -> Slot {
     let var_am = body.var_am.max(args.len() as u16);
     TLS.with(|t| {
         let sc = Scope::new_rc_in(t, body, psc, var_am, args);
+        // `owned` are arguments the caller held the only reference to: the callee scope
+        // takes them over and frees them at exit unless they escaped (#161).
+        for &b in owned {
+            sc.own(b);
+        }
         eval_bc_in(t, body, sc, bl)
     })
 }
@@ -264,8 +269,8 @@ pub fn fmt_b_detail(b: B) -> String {
 }
 
 
-/// A value-stack slot (#160). `Owned` holds the strong count of an array created
-/// by a primitive call and referenced from nowhere else; `Borrowed` is any `B`
+/// A value-stack slot (#160). `Owned` holds a strong count of an array (one created
+/// by a primitive call, or a variable's array shared at read time); `Borrowed` is any `B`
 /// whose lifetime someone else decides (variables, constants, captures, fields,
 /// elements: all still leaked). Dropping an `Owned` slot frees its array.
 pub enum Slot {
@@ -280,6 +285,21 @@ impl Slot {
         match self {
             Slot::Owned(v) => v.b(),
             Slot::Borrowed(b) => *b,
+        }
+    }
+
+    /// A value read from a scope variable (#161). A host array is `Owned` by a shared
+    /// strong count, not `Borrowed`: the variable's scope may free its own count when
+    /// it exits, so every copy that is stored, captured or returned must hold a count
+    /// of its own. `leak` then keeps that count forever (the pin), dropping releases it.
+    #[inline(always)]
+    pub fn read(b: B) -> Slot {
+        if rbqn_core::arrstore::is_owned_kind(b) {
+            // SAFETY: `b` was read from a live variable slot of an unfinished scope, whose
+            // owner (or an immortal leak) holds a count, so the allocation is alive.
+            Slot::Owned(unsafe { rbqn_core::arrstore::share(b) })
+        } else {
+            Slot::Borrowed(b)
         }
     }
 
@@ -479,6 +499,36 @@ fn build_list(stack: &mut Vec<Slot>, sz: usize, mode: u8) -> B {
         0 => b_vec_to_arr(elems),
         1 => bqn_merge(elems),
         _ => rbqn_core::tag_arr_merge(BqnArr::from_b_vec(elems)),
+    }
+}
+
+/// A value about to be stored in a variable: the plain handle, and whether the
+/// slot was `Owned` (the variable's scope then takes over its count).
+#[inline(always)]
+fn take_store(x: Slot) -> (B, bool) {
+    let own = matches!(x, Slot::Owned(_));
+    (x.leak(), own)
+}
+
+/// Push back the value an assignment expression yields. A value the variable's scope
+/// now owns is shared (`Slot::read`), so storing it elsewhere holds its own count.
+#[inline(always)]
+fn stored_at(sc: &Scope, x: B, own: bool) -> Slot {
+    if own {
+        sc.own(x);
+        Slot::read(x)
+    } else {
+        Slot::Borrowed(x)
+    }
+}
+
+/// As `stored_at`, for a target that may be any assignable reference.
+#[inline(always)]
+fn stored(pscs: &[ScRef], target: B, x: B, own: bool) -> Slot {
+    if own && target.is_var() {
+        stored_at(&pscs[target.v_depth() as usize], x, own)
+    } else {
+        Slot::Borrowed(x)
     }
 }
 
@@ -866,14 +916,14 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::VARO) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                let val = pscs[d as usize].var_get(p as usize);
+                let val = pscs[d as usize].var_get_raw(p as usize);
                 if vm_debug {
                     vm_trace_varo(val, d, p);
                 }
                 if v_check_bad_read(val) {
                     rbqn_core::error::throw("Attempting to read variable which is not yet defined");
                 }
-                push!(val);
+                stack.push(Slot::read(val));
             }
             Some(Op::VARM) => {
                 let d = read_u32!();
@@ -883,8 +933,8 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::VARU) => {
                 let d = read_u32!();
                 let p = read_u32!();
-                let val = pscs[d as usize].var_get(p as usize);
-                push!(val);
+                let val = pscs[d as usize].var_get_raw(p as usize);
+                stack.push(Slot::read(val));
                 pscs[d as usize].var_set(p as usize, B::OPT_OUT);
             }
             Some(Op::EXTO) => {
@@ -917,15 +967,15 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             // --- Assignment opcodes ---
             Some(Op::SETN) => {
                 let s = popb!();
-                let x = popb!();
+                let (x, own) = take_store(pop!());
                 v_set(pscs, s, x, false, true);
-                push!(x);
+                stack.push(stored(pscs, s, x, own));
             }
             Some(Op::SETU) => {
                 let s = popb!();
-                let x = popb!();
+                let (x, own) = take_store(pop!());
                 v_set(pscs, s, x, true, true);
-                push!(x);
+                stack.push(stored(pscs, s, x, own));
             }
             Some(Op::SETM) => {
                 let s = popb!();
@@ -949,20 +999,20 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::SETNi) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let x = popb!();
+                let (x, own) = take_store(pop!());
                 pscs[d].var_set(p, x);
-                push!(x);
+                stack.push(stored_at(&pscs[d], x, own));
             }
             Some(Op::SETUi) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let x = popb!();
-                let prev = pscs[d].var_get(p);
+                let (x, own) = take_store(pop!());
+                let prev = pscs[d].var_get_raw(p);
                 if crate::scope::v_check_bad_write(prev) {
                     crate::scope::v_tag_error_pub(prev, true);
                 }
                 pscs[d].var_set(p, x);
-                push!(x);
+                stack.push(stored_at(&pscs[d], x, own));
             }
             Some(Op::SETMi) => {
                 let packed = read_u64!();
@@ -988,18 +1038,24 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::SETNv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let x = popb!();
+                let (x, own) = take_store(pop!());
                 pscs[d].var_set(p, x);
+                if own {
+                    pscs[d].own(x);
+                }
             }
             Some(Op::SETUv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let x = popb!();
-                let prev = pscs[d].var_get(p);
+                let (x, own) = take_store(pop!());
+                let prev = pscs[d].var_get_raw(p);
                 if crate::scope::v_check_bad_write(prev) {
                     crate::scope::v_tag_error_pub(prev, true);
                 }
                 pscs[d].var_set(p, x);
+                if own {
+                    pscs[d].own(x);
+                }
             }
             Some(Op::SETMv) => {
                 let packed = read_u64!();
@@ -1129,7 +1185,12 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
                 // NOTE: the result keeps its ownership: an `Owned` slot is the only
                 // reference to its array (stores leak), so it can travel to the caller.
                 let r = pop!();
-                Scope::recycle_in(t, current_sc);
+                // Fast path: nothing owned, just recycle.
+                if current_sc.owns_nothing() {
+                    Scope::recycle_in(t, current_sc);
+                } else {
+                    Scope::finish_in(t, current_sc);
+                }
                 return r;
             }
 
@@ -1229,6 +1290,8 @@ impl Clone for Scope {
                 vars: std::cell::RefCell::new(e.vars.borrow_mut().clone()),
             }),
             vars: std::cell::RefCell::new(self.vars.borrow_mut().clone()),
+            // NOTE: the copy owns nothing; the original's arrays stay with the original.
+            owned: std::cell::RefCell::new(Vec::new()),
         }
     }
 }

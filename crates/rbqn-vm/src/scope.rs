@@ -154,6 +154,12 @@ pub struct Scope {
     pub var_am: u16,
     pub ext: Option<ScopeExt>,
     pub vars: std::cell::RefCell<Vars>,
+    /// Strong counts this scope holds on arrays (#161): taken from an `Owned` slot by
+    /// `←`/`↩`, or passed in as an owned argument. Plain handles, never `Val`s, so
+    /// dropping a Scope (captured, unwound, replaced by a header retry) leaks them,
+    /// which is the safe default. Only `release_owned` releases, and only for a scope
+    /// no closure, namespace or running block can still reach.
+    pub owned: std::cell::RefCell<Vec<B>>,
 }
 
 impl Scope {
@@ -165,6 +171,35 @@ impl Scope {
             var_am,
             ext: None,
             vars: std::cell::RefCell::new(vars),
+            owned: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Record that this scope owns the strong count of host array `b` (no-op for
+    /// anything else). The count is released when the scope exits unshared.
+    #[inline]
+    pub fn own(&self, b: B) {
+        if rbqn_core::arrstore::is_owned_kind(b) {
+            self.owned.borrow_mut().push(b);
+        }
+    }
+
+    /// True when no array is owned (the list is empty).
+    #[inline(always)]
+    pub fn owns_nothing(&self) -> bool {
+        // SAFETY: no `RefCell` borrow of `owned` is held across instructions, and this
+        // thread-confined scope is not being mutated while its block returns.
+        unsafe { (*self.owned.as_ptr()).is_empty() }
+    }
+
+    /// Free every owned array. `&mut self` from `Rc::get_mut`: nothing else can reach
+    /// this scope, so no slot of it is read again.
+    fn release_owned(&mut self) {
+        for b in self.owned.get_mut().drain(..) {
+            // SAFETY: `own` took one strong count of `b` from an Owned slot. Every copy of
+            // the handle that left the scope holds a count of its own (`Slot::read` shares,
+            // `Slot::leak` keeps), so releasing this one cannot free a reachable array.
+            drop(unsafe { rbqn_core::Val::from_b_owned(b) });
         }
     }
 
@@ -189,8 +224,18 @@ impl Scope {
         std::rc::Rc::new(Scope::new(body.clone(), Some(psc), var_am, init_vars))
     }
 
-    /// Return a scope to the free list if nothing else holds it (no closure,
-    /// namespace or pscs entry captured it).
+    /// End of a block call (#161): recycle the scope if nothing else holds it (no
+    /// closure, namespace or pscs entry captured it), first releasing the counts it
+    /// owns. A shared scope keeps (leaks) them, since a closure may read its slots later.
+    /// Copies read from a slot hold counts of their own, so none can dangle.
+    #[inline]
+    pub fn finish_in(t: &Tls, mut rc: std::rc::Rc<Scope>) {
+        if let Some(s) = std::rc::Rc::get_mut(&mut rc) {
+            s.release_owned();
+            Self::recycle_in(t, rc);
+        }
+    }
+
     #[inline]
     pub fn recycle_in(t: &Tls, mut rc: std::rc::Rc<Scope>) {
         if let Some(s) = std::rc::Rc::get_mut(&mut rc) {
@@ -207,8 +252,17 @@ impl Scope {
         }
     }
 
-    /// Read a variable at the given position.
+    /// Read a variable at the given position. The copy may outlive this scope's
+    /// ownership, so an array handle is pinned (#161); `VARO` uses `var_get_raw`.
     pub fn var_get(&self, pos: usize) -> B {
+        let b = self.vars.borrow_mut()[pos];
+        rbqn_core::arrstore::pin(b);
+        b
+    }
+
+    /// Read a variable without pinning: the caller shares a count (`Slot::read`).
+    #[inline]
+    pub fn var_get_raw(&self, pos: usize) -> B {
         self.vars.borrow_mut()[pos]
     }
 
