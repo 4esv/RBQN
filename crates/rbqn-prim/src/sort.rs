@@ -667,3 +667,61 @@ pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Re
     out.fill = Some(B::m_i32(0));
     Ok(PrimResult::Array(out))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reference: stable grade (ascending, or descending with equal keys in original order).
+    fn reference(v: &[i64], asc: bool) -> Vec<i32> {
+        let mut idx: Vec<i32> = (0..v.len() as i32).collect();
+        if asc { idx.sort_by_key(|&i| v[i as usize]); } else { idx.sort_by_key(|&i| std::cmp::Reverse(v[i as usize])); }
+        idx
+    }
+
+    // NOTE: lengths straddle the 4-way chunking (n % 4 = 0..3) and the empty/short cases;
+    // these drive every unsafe block in this file (and are what Miri checks in CI).
+    fn data(n: usize, m: i64) -> Vec<i64> {
+        (0..n as i64).map(|i| (i * 7919 + i * i * 31) % m - m / 2).collect()
+    }
+
+    #[test]
+    fn grade_small_matches_reference() {
+        for n in [0usize, 1, 3, 4, 5, 7, 8, 13, 40] {
+            for asc in [true, false] {
+                let v = data(n, 100);
+                let i8s: Vec<i8> = v.iter().map(|&x| x as i8).collect();
+                assert_eq!(grade_small::<i8, 256>(&i8s, |x| (x as u8 ^ 0x80) as usize, asc), reference(&v, asc), "n={n} asc={asc}");
+                let bits: Vec<u8> = v.iter().map(|&x| (x & 1) as u8).collect();
+                let bv: Vec<i64> = bits.iter().map(|&b| b as i64).collect();
+                assert_eq!(grade_small::<u8, 2>(&bits, |x| x as usize, asc), reference(&bv, asc), "bits n={n} asc={asc}");
+            }
+        }
+    }
+
+    #[test]
+    fn grade_keyed_matches_reference() {
+        for n in [0usize, 1, 2, 5, 33] {
+            for asc in [true, false] {
+                let v = data(n, 1000);
+                let i32s: Vec<i32> = v.iter().map(|&x| x as i32).collect();
+                assert_eq!(grade_keyed(&i32s, i32_key, asc), reference(&v, asc), "n={n} asc={asc}");
+            }
+        }
+    }
+
+    #[test]
+    fn sort_small_matches_reference() {
+        for n in [0usize, 1, 3, 4, 5, 9, 40] {
+            for asc in [true, false] {
+                let v = data(n, 100);
+                let i8s: Vec<i8> = v.iter().map(|&x| x as i8).collect();
+                let mut want = i8s.clone();
+                want.sort();
+                if !asc { want.reverse(); }
+                let got = sort_small::<i8, 256>(&i8s, |x| (x as u8 ^ 0x80) as usize, |i| (i as u8 ^ 0x80) as i8, asc);
+                assert_eq!(got, want, "n={n} asc={asc}");
+            }
+        }
+    }
+}

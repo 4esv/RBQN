@@ -17,3 +17,6 @@ libffi = { version = "3.2", features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["term", "fs"] }
+
+[lints]
+workspace = true

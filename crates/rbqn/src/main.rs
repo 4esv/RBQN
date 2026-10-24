@@ -36,6 +36,8 @@ fn main() {
     // NOTE: Rust starts with SIGPIPE ignored, so `rbqn -p '↕1e6' | head` would report
     // "Broken pipe" as a BQN error. Restore the default: exit quietly like any CLI.
     #[cfg(unix)]
+    // SAFETY: signal(2) with SIG_DFL is async-signal-safe and sets a process-wide
+    // disposition; this runs first in main, before any thread is spawned.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
@@ -193,6 +195,9 @@ fn interp_main(mut t: std::time::Instant) {
         use std::io::Write;
         let _ = std::io::stdout().flush();
         drop(_gpu_summary);
+        // SAFETY: _exit takes no pointers and never returns; stdout was flushed and the
+        // GPU summary dropped above, and skipping atexit handlers/destructors is the
+        // purpose of RBQN_FAST_EXIT.
         unsafe { libc::_exit(0) };
     }
 }

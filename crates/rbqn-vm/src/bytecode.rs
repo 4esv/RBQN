@@ -78,12 +78,33 @@ pub enum Op {
 }
 
 impl Op {
-    pub fn from_u32(v: u32) -> Option<Op> {
-        if v < Op::BC_SIZE as u32 {
-            Some(unsafe { std::mem::transmute::<u32, Op>(v) })
-        } else {
-            None
+    /// Every opcode except `BC_SIZE`, for building the decode table.
+    const ALL: [Op; 64] = [
+        Op::PUSH, Op::DFND, Op::SYSV, Op::POPS, Op::RETN, Op::RETD, Op::LSTO, Op::LSTM,
+        Op::ARMO, Op::ARMM, Op::FN1C, Op::FN2C, Op::FN1O, Op::FN2O, Op::TR2D, Op::TR3D,
+        Op::CHKV, Op::TR3O, Op::MD1C, Op::MD2C, Op::MD2L, Op::MD2R, Op::VARO, Op::VARM,
+        Op::VARU, Op::DYNO, Op::DYNM, Op::PRED, Op::VFYM, Op::NOTM, Op::SETH, Op::SETN,
+        Op::SETU, Op::SETM, Op::SETC, Op::FLDO, Op::FLDM, Op::ALIM, Op::EXTO, Op::EXTM,
+        Op::EXTU, Op::FLDG, Op::ADDI, Op::ADDU, Op::FN1Ci, Op::FN1Oi, Op::FN2Ci, Op::FN2Oi,
+        Op::SETNi, Op::SETUi, Op::SETMi, Op::SETCi, Op::SETNv, Op::SETUv, Op::SETMv, Op::SETCv,
+        Op::SETH1, Op::SETH2, Op::PRED1, Op::PRED2, Op::DFND0, Op::DFND1, Op::DFND2, Op::FAIL,
+    ];
+
+    /// Opcode values are not contiguous (0x03..0x05, 0x09, ... are unassigned), so
+    /// decoding goes through a table rather than a transmute of the raw value.
+    const LUT: [Option<Op>; Op::BC_SIZE as usize] = {
+        let mut t = [None; Op::BC_SIZE as usize];
+        let mut i = 0;
+        while i < Op::ALL.len() {
+            t[Op::ALL[i] as usize] = Some(Op::ALL[i]);
+            i += 1;
         }
+        t
+    };
+
+    #[inline]
+    pub fn from_u32(v: u32) -> Option<Op> {
+        Op::LUT.get(v as usize).copied().flatten()
     }
 
     pub fn repr(self) -> &'static str {
@@ -230,5 +251,25 @@ pub fn stack_consumed(op: Op) -> i32 {
         Op::FAIL => 0,
         // LSTO, LSTM, ARMO, ARMM are special: N
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Op;
+
+    #[test]
+    fn from_u32_decodes_only_assigned_opcodes() {
+        let mut n = 0;
+        for v in 0..Op::BC_SIZE as u32 + 8 {
+            if let Some(o) = Op::from_u32(v) {
+                assert_eq!(o as u32, v);
+                n += 1;
+            }
+        }
+        assert_eq!(n, Op::ALL.len());
+        // 0x03 sits in a gap of the assigned values: it must not decode.
+        assert!(Op::from_u32(3).is_none());
+        assert!(Op::from_u32(Op::BC_SIZE as u32).is_none());
     }
 }
