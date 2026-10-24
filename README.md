@@ -126,7 +126,7 @@ cargo build --release          # target/release/rbqn
 cargo build --release --no-default-features   # CPU-only, no wgpu
 ```
 
-Rust 1.85 or later (edition 2024), no external dependencies. The BQN compiler and runtime are embedded as bytecode, so nothing else is needed to build or run. Or install from crates.io: `cargo install rbqn`.
+Rust 1.88 or later (edition 2024). The only dynamic dependencies beyond the C runtime are libffi (`libffi.so.8` on Linux, e.g. `apt install libffi8`; part of the system on macOS) and libgcc_s; `ldd target/release/rbqn` on Linux lists `libffi.so.8 libgcc_s.so.1 libm.so.6 libc.so.6`. The BQN compiler and runtime are embedded as bytecode, so nothing else is needed to build or run. Or install from crates.io: `cargo install rbqn`.
 
 ## Architecture
 
