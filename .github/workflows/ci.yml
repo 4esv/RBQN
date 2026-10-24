@@ -110,6 +110,36 @@ jobs:
       - name: Gate script tests
         run: python3 -I bench/stranger/test_gate.py
 
+  miri:
+    # NOTE: the unsafe code lives in rbqn-core (stack probe), rbqn-prim (sort kernels)
+    # and rbqn-vm (frame/scope pools, ScRef, bytecode decode); Miri checks all three.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Miri setup
+        run: cargo miri setup
+
+      - name: Miri (rbqn-core, rbqn-prim)
+        run: cargo miri test -p rbqn-core -p rbqn-prim
+
+      # NOTE: -Zmiri-ignore-leaks: the interpreter's value stores and pools are
+      # thread-local ManuallyDrop and intentionally never freed, so Miri's end-of-thread
+      # leak check would fail every test that evaluates BQN. It is not an allowlist for
+      # UB: all other checks (aliasing, uninit, bounds, validity) stay on. Isolation stays
+      # on; tests needing the host (getcwd) are `#[cfg_attr(miri, ignore = ...)]`.
+      - name: Miri (rbqn-vm)
+        env:
+          MIRIFLAGS: -Zmiri-ignore-leaks
+        run: cargo miri test -p rbqn-vm
+
   parity:
     runs-on: ubuntu-latest
     timeout-minutes: 40
