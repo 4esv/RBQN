@@ -201,6 +201,8 @@ pub(crate) struct ReplState {
     pub var_names: Vec<String>,
     /// One scope shared by every line and the closures they create.
     pub scope: Option<std::rc::Rc<Scope>>,
+    /// Host array handles created while the last line ran (not compiling it).
+    pub births: Vec<u64>,
 }
 
 impl ReplState {
@@ -208,6 +210,7 @@ impl ReplState {
         ReplState {
             var_names: Vec::new(),
             scope: None,
+            births: Vec::new(),
         }
     }
 }
@@ -231,6 +234,35 @@ pub(crate) fn exec_repl_line(
         Ok(result) => result,
         Err(panic) => Err(rbqn::exec::panic_to_bqn_error(panic)),
     }
+}
+
+/// Take ownership of a REPL line's result so dropping it frees the array, or
+/// `None` (the array stays leaked, as before) unless it is provably unreachable
+/// once printed. All of these must hold:
+/// - the line has no `←` `↩` `⇐` `•` `⍎`, so it stores nothing in the scope and
+///   reaches no system state or nested evaluation that could keep the result;
+/// - the result is a host array handle created while the line ran (not by
+///   compiling it, not read from a variable or a closure's captures);
+/// - nothing else holds an `Arc` to it (strong count 1 plus our probe).
+///
+/// Only the result array itself is freed; its elements stay leaked (stage 2).
+pub(crate) fn own_result(code: &str, result: B, state: &ReplState) -> Option<rbqn_core::Val> {
+    if code.chars().any(|c| "←↩⇐•⍎".contains(c)) {
+        return None;
+    }
+    if !result.is_arr() || rbqn_core::is_device_tagged(result) || rbqn_core::is_arr_merge(result) {
+        return None;
+    }
+    if !state.births.contains(&result.0) {
+        return None;
+    }
+    let probe = get_arr(result)?;
+    let sole = std::sync::Arc::strong_count(&probe) == 2;
+    drop(probe);
+    // SAFETY: the line stored nothing (no assignment) and the array was born
+    // while it ran, so the only counted holder is the leaked count from `tag_arr`,
+    // which we adopt; `result` is not read again after the caller drops the `Val`.
+    sole.then(|| unsafe { rbqn_core::Val::from_b_owned(result) })
 }
 
 /// Build a BQN varNames value (list of strings) from Rust strings.
@@ -404,7 +436,9 @@ fn exec_repl_line_inner(
     // (Clone first: on line 1 the scope's body is this body, so locking both would deadlock.)
     let gids = body.all_var_gids.lock().unwrap().clone();
     *exec_scope.body.all_var_gids.lock().unwrap() = gids;
+    rbqn_core::births_begin();
     let result = rbqn_vm::vm::eval_bc(&body, exec_scope.clone(), &block);
+    state.births = rbqn_core::births_end();
 
     // Build updated variable names list.
     // Positions 0..prev_var_count-1 keep their names.
@@ -554,5 +588,75 @@ fn format_arr(arr: &BqnArr) -> String {
         // Multi-rank: show shape
         let shape_str: Vec<String> = arr.shape.iter().map(|s| s.to_string()).collect();
         format!("[{}×…]", shape_str.join("‿"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run REPL lines the way `eval_line` does, releasing each printed result.
+    fn run(rt: &bootstrap::Runtime, line: &str, state: &mut ReplState) -> String {
+        let r = exec_repl_line(rt, line, state).expect("line failed");
+        let s = format_result(rt, &r);
+        drop(own_result(line, r, state));
+        s
+    }
+
+    #[test]
+    fn repl_printed_results_are_released() {
+        std::thread::Builder::new()
+            .stack_size(INTERP_STACK_BYTES)
+            .spawn(|| {
+                let rt = bootstrap::bootstrap().expect("bootstrap");
+                rbqn_vm::derive::set_sys_runtime(rt.compiler, rt.runtime.clone(), rt.formatter);
+                rbqn_vm::derive::set_sys_compgen(rt.compgen);
+                rbqn_vm::derive::register_derived_equality();
+                let mut st = ReplState::new();
+                assert_eq!(run(&rt, "a ← 3‿4", &mut st), "⟨ 3 4 ⟩");
+
+                // warm up, then compare a loop of fresh printed results with a
+                // loop whose results stay alive (assignment / variable read)
+                run(&rt, "↕5", &mut st);
+                let before = rbqn_core::live_arrays();
+                for _ in 0..200 {
+                    assert_eq!(run(&rt, "1↑ 2+↕5", &mut st), "⟨ 2 ⟩");
+                }
+                let freed_loop = rbqn_core::live_arrays() - before;
+
+                let before = rbqn_core::live_arrays();
+                for _ in 0..200 {
+                    run(&rt, "a", &mut st); // alias of a variable: must leak nothing, free nothing
+                }
+                let alias_loop = rbqn_core::live_arrays() - before;
+                eprintln!("live_arrays growth over 200 lines: fresh results {freed_loop}, variable reads {alias_loop}");
+
+                // a variable is still readable: it was never freed
+                assert_eq!(run(&rt, "a", &mut st), "⟨ 3 4 ⟩");
+                assert_eq!(run(&rt, "+´a", &mut st), "7");
+
+                // baseline: the same lines, results leaked
+                let before = rbqn_core::live_arrays();
+                for _ in 0..200 {
+                    let r = exec_repl_line(&rt, "1↑ 2+↕5", &mut st).unwrap();
+                    let _ = format_result(&rt, &r);
+                }
+                let leaked_loop = rbqn_core::live_arrays() - before;
+                eprintln!("same loop, results leaked: {leaked_loop}");
+                // NOTE: compiling a line allocates ~1800 arrays that stay leaked until
+                // stage 2, so compare the same line with and without releasing its
+                // result: the difference is exactly the 200 printed results.
+                assert_eq!(leaked_loop - freed_loop, 200, "freed {freed_loop} vs leaked {leaked_loop}");
+                // reading a variable frees nothing of it: same cost as the plain-eval loop of `a`
+                let before = rbqn_core::live_arrays();
+                for _ in 0..200 {
+                    let r = exec_repl_line(&rt, "a", &mut st).unwrap();
+                    let _ = format_result(&rt, &r);
+                }
+                assert_eq!(rbqn_core::live_arrays() - before, alias_loop);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
