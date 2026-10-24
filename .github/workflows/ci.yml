@@ -30,6 +30,9 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+      - name: Unsafe census
+        run: bash bench/unsafe_census.sh
+
       - name: Embed example
         run: cargo run --release --example embed
 
