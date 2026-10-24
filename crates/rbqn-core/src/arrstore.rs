@@ -295,6 +295,37 @@ impl Val {
     }
 }
 
+/// Give a plain handle one extra strong count that nobody releases: the array
+/// now outlives whatever `Val` owns it (#161). This is how a copy of a slot-owned
+/// handle escapes into a long-lived location. No-op for anything but a host array.
+#[inline]
+pub fn pin(b: B) {
+    if is_host_arr(b) {
+        // SAFETY: `b` names a live allocation (a `B` is only read while its owner
+        // lives, which is the contract of every caller); the added count is never released.
+        unsafe { Arc::increment_strong_count(host_ptr(b)) };
+    }
+}
+
+/// A new `Val` sharing `b`'s allocation: one more strong count, released when it drops.
+///
+/// # Safety
+/// `b` must name a live allocation (some count of it is held for the duration).
+#[inline]
+pub unsafe fn share(b: B) -> Val {
+    if is_host_arr(b) {
+        // SAFETY: the caller guarantees a live allocation behind `b`.
+        unsafe { Arc::increment_strong_count(host_ptr(b)) };
+    }
+    Val(b)
+}
+
+/// True for a host array handle (the kind `pin` and `Val` act on).
+#[inline]
+pub fn is_owned_kind(b: B) -> bool {
+    is_host_arr(b)
+}
+
 impl Clone for Val {
     fn clone(&self) -> Val {
         if is_host_arr(self.0) {
@@ -318,7 +349,10 @@ impl Drop for Val {
                     if TRACK_FREES.load(Ordering::Relaxed) {
                         queue_freed(host_ptr(self.0) as usize);
                     }
-                    DEAD.lock().unwrap_or_else(|e| e.into_inner()).insert(host_ptr(self.0) as usize);
+                    if !DEAD.lock().unwrap_or_else(|e| e.into_inner()).insert(host_ptr(self.0) as usize) {
+                        eprintln!("double free of array handle {:#x}", host_ptr(self.0) as usize);
+                        panic!("double free of array handle {:#x}", host_ptr(self.0) as usize);
+                    }
                     LIVE_ARRAYS.fetch_sub(1, Ordering::Relaxed);
                     GRAVE.lock().unwrap_or_else(|e| e.into_inner()).push(arc);
                 }
@@ -624,5 +658,22 @@ mod tests {
         assert!(get_arr(w.b()).is_some());
         let b = w.leak();
         assert!(get_arr(b).is_some());
+    }
+
+    // #161: a copy read out of a slot-owned handle holds a count of its own (`share`),
+    // or keeps one forever (`pin`), so the owner dropping its `Val` cannot free it.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn shared_and_pinned_handles_outlive_their_owner() {
+        let owner = tag_arr_owned(nums(3));
+        let b = owner.b();
+        // SAFETY: `owner` holds a count for the whole test body up to its drop.
+        let shared = unsafe { share(b) };
+        pin(b);
+        drop(owner);
+        assert!(get_arr(shared.b()).is_some());
+        drop(shared); // the pin still holds the array
+        assert_eq!(get_arr(b).unwrap().ia(), 3);
+        assert!(!DEAD.lock().unwrap().contains(&(host_ptr(b) as usize)));
     }
 }
