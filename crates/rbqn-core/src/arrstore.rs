@@ -99,8 +99,82 @@ pub fn live_arrays() -> usize {
     LIVE_ARRAYS.load(Ordering::Relaxed)
 }
 
+/// Debug quarantine (#160): when on, dropping the last `Val` of a host array does
+/// not free it. The allocation is parked in `GRAVE` and its address is added to
+/// `DEAD`; `get_arr` on a dead handle panics. A bad free then fails
+/// deterministically instead of reading freed (or reused) memory. On under
+/// `debug_assertions` or `RBQN_QUARANTINE=1`.
+static QUARANTINE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    cfg!(debug_assertions) || std::env::var("RBQN_QUARANTINE").is_ok_and(|v| v == "1")
+});
+static DEAD: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<usize>>> =
+    std::sync::LazyLock::new(Default::default);
+static GRAVE: std::sync::LazyLock<std::sync::Mutex<Vec<Arc<BqnArr>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// True when the quarantine is active.
+pub fn quarantine_enabled() -> bool {
+    *QUARANTINE
+}
+
+/// Set once a GPU runtime may exist: its caches are keyed by handle bits, so an
+/// address reused after a free could hit a stale entry. From then on `Val` drops
+/// release nothing (arrays leak, as before stage 2).
+static NO_FREE: AtomicBool = AtomicBool::new(false);
+
+/// Stop freeing arrays for the rest of the process (see `NO_FREE`).
+pub fn disable_free() {
+    NO_FREE.store(true, Ordering::Relaxed);
+}
+
+#[cold]
+#[inline(never)]
+fn use_after_free(addr: usize) -> ! {
+    eprintln!("use after free of array handle {addr:#x}");
+    panic!("use after free of array handle {addr:#x}");
+}
+
 std::thread_local! {
     static BIRTHS: std::cell::RefCell<Option<Vec<u64>>> = const { std::cell::RefCell::new(None) };
+    static BIRTH_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Nest-safe freshness probe: start recording (if not already) and return a mark.
+/// Pair with `births_release`. Unlike `births_begin` it does not discard an
+/// enclosing recording.
+pub fn births_mark() -> usize {
+    BIRTH_DEPTH.with(|d| d.set(d.get() + 1));
+    BIRTHS.with(|b| b.borrow_mut().get_or_insert_with(Vec::new).len())
+}
+
+/// True when host handle `b` was created after `mark` on this thread.
+pub fn born_since(mark: usize, b: B) -> bool {
+    BIRTHS.with(|v| {
+        v.borrow().as_ref().is_some_and(|v| v.get(mark..).is_some_and(|s| s.iter().rev().any(|&x| x == b.0)))
+    })
+}
+
+/// End the span opened by `births_mark`; the last release stops recording.
+pub fn births_release() {
+    let d = BIRTH_DEPTH.with(|d| {
+        d.set(d.get() - 1);
+        d.get()
+    });
+    if d == 0 {
+        BIRTHS.with(|b| *b.borrow_mut() = None);
+    }
+}
+
+/// True for a host array handle (not device-tagged).
+#[inline]
+pub fn is_host_handle(b: B) -> bool {
+    is_host_arr(b)
+}
+
+/// True when `a` and `b` are host handles of the same allocation.
+#[inline]
+pub fn same_array(a: B, b: B) -> bool {
+    is_host_arr(a) && is_host_arr(b) && (a.0 ^ b.0) & PTR_MASK == 0
 }
 
 /// Start recording the handles `tag_*` creates on this thread (replaces any
@@ -210,6 +284,19 @@ impl Clone for Val {
 impl Drop for Val {
     fn drop(&mut self) {
         if is_host_arr(self.0) {
+            if NO_FREE.load(Ordering::Relaxed) {
+                return;
+            }
+            if *QUARANTINE {
+                // SAFETY: as below; the adopted count is parked, not released.
+                let arc = unsafe { Arc::from_raw(host_ptr(self.0)) };
+                if Arc::strong_count(&arc) == 1 {
+                    DEAD.lock().unwrap_or_else(|e| e.into_inner()).insert(host_ptr(self.0) as usize);
+                    LIVE_ARRAYS.fetch_sub(1, Ordering::Relaxed);
+                    GRAVE.lock().unwrap_or_else(|e| e.into_inner()).push(arc);
+                }
+                return;
+            }
             // SAFETY: `self` owns one strong count (see `Clone`/`from_b_owned`) and
             // is being dropped, so adopting that count into an `Arc` is exactly
             // releasing it. `into_inner` returns the array only when this was the
@@ -244,6 +331,9 @@ pub fn get_arr(b: B) -> Option<Arc<BqnArr>> {
     }
     if b.0 & 2 == 0 {
         let ptr = host_ptr(b);
+        if *QUARANTINE && DEAD.lock().unwrap_or_else(|e| e.into_inner()).contains(&(ptr as usize)) {
+            use_after_free(ptr as usize);
+        }
         // SAFETY: a host handle is built only by `tag_host` from `Arc::into_raw`. Its
         // strong count is released only when a `Val` owning it drops, and that owner
         // promises no `B` copy is read afterwards (`from_b_owned`), so the allocation
@@ -442,5 +532,50 @@ mod tests {
         let born = births_end();
         assert!(born.contains(&a.0) && born.contains(&v.b().0));
         assert!(births_end().is_empty());
+    }
+
+    #[test]
+    fn same_array_compares_allocation_not_flags() {
+        let a = tag_arr(nums(2));
+        let m = tag_arr_merge(nums(2));
+        assert!(same_array(a, a) && !same_array(a, m));
+        assert!(!same_array(B::m_f64(1.0), B::m_f64(1.0)));
+    }
+
+    #[test]
+    fn born_since_nests() {
+        let before = tag_arr(nums(1));
+        let outer = births_mark();
+        let a = tag_arr(nums(1));
+        let inner = births_mark();
+        let b = tag_arr(nums(1));
+        assert!(born_since(inner, b) && !born_since(inner, a));
+        births_release();
+        // the inner span ending does not forget what the outer span saw
+        assert!(born_since(outer, a) && born_since(outer, b) && !born_since(outer, before));
+        births_release();
+        assert!(!born_since(0, a), "recording stops with the last span");
+    }
+
+    // The quarantine (#160): a freed array stays allocated but any read panics.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "use after free of array handle")]
+    fn quarantine_turns_bad_free_into_panic() {
+        let v = tag_arr_owned(nums(3));
+        let stale = v.b();
+        drop(v);
+        let _ = get_arr(stale);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn quarantine_does_not_flag_live_or_leaked_arrays() {
+        let v = tag_arr_owned(nums(3));
+        let w = v.clone();
+        drop(v); // another count remains: not freed
+        assert!(get_arr(w.b()).is_some());
+        let b = w.leak();
+        assert!(get_arr(b).is_some());
     }
 }

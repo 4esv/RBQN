@@ -134,7 +134,7 @@ pub struct Tls {
     pub scopes: std::cell::UnsafeCell<Vec<std::rc::Rc<Scope>>>,
     /// Recycled (operand stack, scope-chain) vector pairs. Only touched by
     /// `Frame::enter`/`Frame::drop`, which never re-enter while holding it.
-    pub frames: std::cell::UnsafeCell<Vec<(Vec<B>, Vec<ScRef>)>>,
+    pub frames: std::cell::UnsafeCell<Vec<(Vec<crate::vm::Slot>, Vec<ScRef>)>>,
 }
 
 std::thread_local! {

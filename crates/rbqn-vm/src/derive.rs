@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 use rbqn_core::{B, FUN_TAG, MD1_TAG, MD2_TAG, tagu64};
 
 use crate::block::Block;
+use crate::vm::Slot;
 use crate::scope::Scope;
 
 // --- Global state for system functions ---
@@ -753,6 +754,186 @@ pub fn m2_d(m: B, f: B, g: B) -> B {
     } else {
         rbqn_core::error::throw("Interpreting non-2-modifier as 2-modifier");
     }
+}
+
+// ============================================================
+// Owned/Borrowed calls from the VM value stack (#160)
+// ============================================================
+
+// NOTE: purity shares the SCALAR_OP table (one TLS lookup per call): entries below 18 are
+// scalar primitives (pure), PURE_YES / PURE_NO are classified others, and the default
+// 0xFF means not classified yet. `op < 18` and `op < 10` tests elsewhere are unaffected.
+const PURE_YES: u8 = 0xFD;
+const PURE_NO: u8 = 0xFE;
+
+/// A function whose whole evaluation is native Rust over its arguments: only
+/// primitives and the listed native modifiers, with data or such functions as
+/// operands. It runs no user code, so it stores nothing anywhere: every array it
+/// creates is reachable only through its result, and its arguments are only read.
+/// Anything else (blocks, system functions, FFI, `⌾` `⚇` `⁼` `⎊`, ...) is not,
+/// and the VM leaks the arguments it passes there.
+fn is_pure_native(f: B) -> bool {
+    if f.is_md() {
+        return false;
+    }
+    if !f.is_fun() {
+        // data operand (a number, an array, `·`)
+        return true;
+    }
+    let id = ((f.0 & 0xFFFFFFFFFFFF) >> 3) as usize;
+    match scalar_op_of(f) {
+        PURE_NO => return false,
+        PURE_YES | 0..=17 => return true,
+        _ => {}
+    }
+    let d = get_derived(id as u64);
+    let pure = match d.kind {
+        DerivedKind::NativeFn { .. } => true,
+        DerivedKind::Fork => is_pure_native(d.f) && is_pure_native(d.g) && is_pure_native(d.h),
+        DerivedKind::Atop => is_pure_native(d.g) && is_pure_native(d.h),
+        DerivedKind::Md1D => {
+            native_md_idx(d.g).is_some_and(|i| matches!(i, 44..=48 | 50..=52)) && is_pure_native(d.f)
+        }
+        DerivedKind::Md2D => {
+            native_md_idx(d.g).is_some_and(|i| matches!(i, 53..=56))
+                && is_pure_native(d.f)
+                && is_pure_native(d.h)
+        }
+        _ => false,
+    };
+    SCALAR_OP.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.len() <= id {
+            t.resize(id + 1, 0xFF);
+        }
+        if t[id] == 0xFF {
+            t[id] = if pure { PURE_YES } else { PURE_NO };
+        }
+    });
+    pure
+}
+
+fn native_md_idx(m: B) -> Option<usize> {
+    if !m.is_md() {
+        return None;
+    }
+    match get_derived((m.0 & 0xFFFFFFFFFFFF) >> 3).kind {
+        DerivedKind::NativeMd1 { prim_idx } | DerivedKind::NativeMd2 { prim_idx } => Some(prim_idx),
+        _ => None,
+    }
+}
+
+/// True when array `r` could hold a handle of one of the arguments: boxed
+/// data (elements) or an array fill. Numeric and character results cannot.
+fn may_hold_handles(r: B) -> bool {
+    if !rbqn_core::arrstore::is_host_handle(r) {
+        return false;
+    }
+    match rbqn_core::get_arr(r) {
+        Some(a) => matches!(a.data, rbqn_core::ArrData::Boxed(_)) || a.fill.is_some_and(|f| f.is_arr()),
+        None => true,
+    }
+}
+
+/// Ends a freshness span on drop (also when the call unwinds).
+struct BirthSpan(usize);
+
+impl Drop for BirthSpan {
+    fn drop(&mut self) {
+        rbqn_core::arrstore::births_release();
+    }
+}
+
+/// Callee that may keep its arguments: leak them, the result is Borrowed.
+#[inline(never)]
+fn call_impure(f: B, w: Option<Slot>, x: Slot) -> Slot {
+    let xb = x.leak();
+    let wb = w.map(Slot::leak);
+    Slot::Borrowed(match wb {
+        Some(wb) => c2(f, wb, xb),
+        None => c1(f, xb),
+    })
+}
+
+/// Call `f` with arguments that may own their arrays; the result's ownership is
+/// resolved afterwards:
+/// - not pure-native: arguments are leaked (the callee may keep them), result Borrowed;
+/// - pure-native, result created during the call: Owned;
+/// - result is an Owned argument: that argument's `Val` moves into the result;
+/// - otherwise Borrowed, and Owned arguments are dropped, except when a created
+///   array could hold their handles (boxed result), in which case they are leaked.
+fn call_slots(f: B, w: Option<Slot>, x: Slot) -> Slot {
+    use rbqn_core::arrstore::{births_mark, born_since, same_array};
+    let (wb, xb) = (w.as_ref().map(Slot::b), x.b());
+    // Number arguments to scalar primitives: no arrays anywhere, skip the bookkeeping.
+    let op = scalar_op_of(f);
+    if op < 18 {
+        let scalar = match wb {
+            Some(wb) => try_scalar_c2(f, wb, xb),
+            None => try_scalar_c1(f, xb),
+        };
+        if let Some(r) = scalar {
+            return Slot::Borrowed(r);
+        }
+    } else if op == PURE_NO {
+        return call_impure(f, w, x);
+    }
+    if op != PURE_YES && !is_pure_native(f) {
+        return call_impure(f, w, x);
+    }
+    // The arguments stay alive until the call returns; if it unwinds (a BQN error)
+    // they are leaked (ManuallyDrop), never freed.
+    let w = w.map(std::mem::ManuallyDrop::new);
+    let x = std::mem::ManuallyDrop::new(x);
+    let span = BirthSpan(births_mark());
+    let r = match wb {
+        Some(wb) => c2(f, wb, xb),
+        None => c1(f, xb),
+    };
+    let fresh = rbqn_core::arrstore::is_host_handle(r) && born_since(span.0, r);
+    drop(span);
+    let x = std::mem::ManuallyDrop::into_inner(x);
+    let w = w.map(std::mem::ManuallyDrop::into_inner);
+    if fresh {
+        // A created array could hold an argument's handle (boxed result): leak those.
+        let hold = may_hold_handles(r);
+        for arg in [w, Some(x)].into_iter().flatten() {
+            if hold {
+                arg.leak();
+            }
+        }
+        // SAFETY: `r` was created during this call by a pure-native function, so the
+        // only handle copies are the result itself; we take its count.
+        return Slot::Owned(unsafe { rbqn_core::Val::from_b_owned(r) });
+    }
+    let mut result: Option<Slot> = None;
+    for arg in [w, Some(x)].into_iter().flatten() {
+        match arg {
+            Slot::Owned(v) if result.is_none() && same_array(v.b(), r) => result = Some(Slot::Owned(v)),
+            other => drop(other), // an unreferenced temporary
+        }
+    }
+    result.unwrap_or(Slot::Borrowed(r))
+}
+
+#[inline(always)]
+pub fn c1_slot(f: B, x: Slot) -> Slot {
+    if let Slot::Borrowed(xb) = x
+        && let Some(r) = try_scalar_c1(f, xb)
+    {
+        return Slot::Borrowed(r);
+    }
+    call_slots(f, None, x)
+}
+
+#[inline(always)]
+pub fn c2_slot(f: B, w: Slot, x: Slot) -> Slot {
+    if let (Slot::Borrowed(wb), Slot::Borrowed(xb)) = (&w, &x)
+        && let Some(r) = try_scalar_c2(f, *wb, *xb)
+    {
+        return Slot::Borrowed(r);
+    }
+    call_slots(f, Some(w), x)
 }
 
 pub fn c1(f: B, x: B) -> B {
