@@ -109,6 +109,10 @@ fn build_runtime() -> Option<GpuRuntime> {
 }
 
 fn build_runtime_logged() -> Option<GpuRuntime> {
+    // NOTE: the upload caches are keyed by array handle bits; once a runtime may
+    // exist a freed address could be reused and hit a stale entry, so stop
+    // freeing arrays for the rest of the process (#160).
+    rbqn_core::arrstore::disable_free();
     let rt = std::panic::catch_unwind(build_runtime).ok().flatten();
     if rt.is_none() && debug_enabled() {
         eprintln!("[gpu] device init failed; using CPU path");
@@ -158,6 +162,7 @@ pub fn init(no_gpu: bool) {
 /// The thread initializes GPU_RUNTIME and then keeps precompiling; `get()`
 /// waits only for the device (OnceLock init), never for the precompile.
 fn start_init_thread() {
+    rbqn_core::arrstore::disable_free();
     if INIT_START.set(std::time::Instant::now()).is_err() {
         return;
     }
