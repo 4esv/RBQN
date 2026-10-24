@@ -43,6 +43,14 @@ jobs:
           RUST_BACKTRACE: "1"
         run: test "$(target/release/rbqn -p '1+1')" = 2
 
+      - name: Debug build smoke
+        # NOTE: dev profile keeps debug_assert!s that release strips (#164).
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          cargo build
+          test "$(target/debug/rbqn -p '+´↕10')" = 45
+
       - name: Checkout BQN (pinned)
         uses: actions/checkout@v4
         with:

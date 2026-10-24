@@ -196,17 +196,18 @@ impl BqnArr {
     }
 
     pub fn f64_iter(&self) -> Result<Vec<f64>> {
+        // NOTE: empty arrays can store a dummy element; yield exactly ia() values.
+        let ia = self.ia();
         match &self.data {
             ArrData::Bit(v) => {
-                let ia = self.ia();
                 Ok((0..ia)
                     .map(|i| ((v[i / 64] >> (i % 64)) & 1) as f64)
                     .collect())
             }
-            ArrData::I8(v) => Ok(v.iter().map(|&x| x as f64).collect()),
-            ArrData::I16(v) => Ok(v.iter().map(|&x| x as f64).collect()),
-            ArrData::I32(v) => Ok(v.iter().map(|&x| x as f64).collect()),
-            ArrData::F64(v) => Ok(v.clone()),
+            ArrData::I8(v) => Ok(v.iter().take(ia).map(|&x| x as f64).collect()),
+            ArrData::I16(v) => Ok(v.iter().take(ia).map(|&x| x as f64).collect()),
+            ArrData::I32(v) => Ok(v.iter().take(ia).map(|&x| x as f64).collect()),
+            ArrData::F64(v) => Ok(v[..ia.min(v.len())].to_vec()),
             other => {
                 // Handle Boxed arrays where all elements are f64 scalars (or empty)
                 if let ArrData::Boxed(v) = other
