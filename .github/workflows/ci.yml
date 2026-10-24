@@ -88,7 +88,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   test:
-    runs-on: ubuntu-latest
+    # NOTE: macOS; tests/ffi.rs looks up sqrt/pow in libc, which on Linux lives in libm.
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
