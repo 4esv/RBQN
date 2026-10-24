@@ -113,8 +113,6 @@ fn eval_line(rt: &Runtime, line: &str, silent: bool, state: &mut ReplState) {
                 let formatted = crate::format_result(rt, &result);
                 println!("{formatted}");
             }
-            // The printed result is released here when provably unreachable.
-            drop(crate::own_result(line, result, state));
         }
         Err(e) => {
             crate::print_error(&e, "(repl)");
