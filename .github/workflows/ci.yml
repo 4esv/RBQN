@@ -89,3 +89,79 @@ jobs:
             echo
             HYPERFINE="$(command -v hyperfine)" bench/compare.sh target/release/rbqn "$GITHUB_WORKSPACE/_deps/CBQN/BQN"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    # NOTE: Linux is where `cargo install rbqn` users are.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # NOTE: release profile; test_block_depth_bounded_by_stack only passes there.
+      - name: Test
+        run: cargo test --release --workspace
+
+      - name: Gate script tests
+        run: python3 -I bench/stranger/test_gate.py
+
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Pin CBQN commit
+        id: pin
+        run: echo "commit=$(tr -d '[:space:]' < bench/stranger/CBQN_COMMIT)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache CBQN
+        id: cbqn-cache
+        uses: actions/cache@v4
+        with:
+          path: _deps/CBQN-bin/BQN
+          key: cbqn-parity-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.commit }}
+
+      - name: Build CBQN
+        if: steps.cbqn-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/dzaima/CBQN.git _deps/CBQN-src
+          git -C _deps/CBQN-src checkout "${{ steps.pin.outputs.commit }}"
+          make -C _deps/CBQN-src -j"$(nproc)" CC=clang
+          mkdir -p _deps/CBQN-bin
+          cp _deps/CBQN-src/BQN _deps/CBQN-bin/BQN
+
+      # NOTE: pinned (shallow) so a docs change upstream never turns the job red by itself.
+      - name: Checkout BQN (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: mlochbaum/BQN
+          ref: ${{ env.BQN_REV }}
+          path: _deps/BQN
+
+      - name: Docs and grid vs CBQN
+        env:
+          CBQN_BIN: ${{ github.workspace }}/_deps/CBQN-bin/BQN
+          BQN_SRC: ${{ github.workspace }}/_deps/BQN
+          RBQN_BIN: ${{ github.workspace }}/target/release/rbqn
+        run: |
+          python3 -I bench/stranger/docs_diff.py | tee docs.out
+          # NOTE: grid.py batches 300 cells with a 90s timeout each; the grid is not shrunk.
+          python3 -I bench/stranger/grid.py | tee grid.out
+
+      - name: Gate
+        run: python3 -I bench/stranger/gate.py docs.out grid.out bench/stranger/known_divergences.txt

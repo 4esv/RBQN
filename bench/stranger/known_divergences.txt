@@ -1,0 +1,20 @@
+# Differences between RBQN and CBQN that the parity job tolerates. Format: <key> | <reason>
+# The key is the text after "--- " in docs_diff.py / grid.py output. Any other difference fails the job.
+@ - 0‿1‿1 | #89: CBQN returns a string with negative code points while its own @-1 errors; RBQN errors
+@ ¬ 1 | #89: CBQN's scalar path errors on the intermediate @-1; RBQN returns @
+fill.md: 3↑⟨⟩  # Fill unknown | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+@ ¬ 0‿1‿1 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+1 ↑ ⟨⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+¯2 ↑ ⟨⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+1‿2‿3 ↑ ⟨⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+1‿2‿3 ↑ ⟨1,"a",⟨2⟩⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+<5 ↑ ⟨⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+<5 ↑ ⟨1,"a",⟨2⟩⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+« ⟨1,"a",⟨2⟩⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+» ⟨1,"a",⟨2⟩⟩ | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾˘ 1‿0⥊0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾∘⌽ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾○⌽ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾⊸⌽ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
+∾⌾⌽ ↕0 | #103: CBQN b62079a errors here; RBQN returns a value, to be fixed
