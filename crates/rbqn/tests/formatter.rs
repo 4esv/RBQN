@@ -209,3 +209,10 @@ fn system_function_display_names() {
         assert_output(expr, expected);
     }
 }
+
+// System modifiers print their dotted names (#154).
+#[test]
+fn system_modifier_display_names() {
+    assert_output("•_timed", "•_timed");
+    assert_output("•Type •_timed", "•Type•_timed");
+}
