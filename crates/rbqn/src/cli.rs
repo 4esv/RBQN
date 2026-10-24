@@ -6,6 +6,7 @@ pub struct Args {
     pub silent: bool,
     pub heap_max: Option<u64>,
     pub no_gpu: bool,
+    pub threads: Option<usize>,
 }
 
 pub enum Action {
@@ -24,6 +25,7 @@ pub fn parse_args() -> Args {
     let mut silent = false;
     let mut heap_max = None;
     let mut no_gpu = false;
+    let mut threads = None;
     let mut i = 1;
 
     while i < args.len() {
@@ -51,6 +53,7 @@ pub fn parse_args() -> Args {
         if arg == "--version" {
             println!("rbqn {}", env!("CARGO_PKG_VERSION"));
             println!("bytecode: {}", rbqn::embedded::bytecode_source_tag());
+            println!("threads: {}", threads.unwrap_or_else(rbqn_prim::par::default_threads));
             process::exit(0);
         }
 
@@ -133,6 +136,24 @@ pub fn parse_args() -> Args {
                     i = args.len(); // consume remaining
                     break;
                 }
+                't' => {
+                    if j + 1 < chars.len() {
+                        eprintln!("{program}: -t must end the option");
+                        process::exit(1);
+                    }
+                    i += 1;
+                    if i >= args.len() {
+                        eprintln!("{program}: -t requires an argument");
+                        process::exit(1);
+                    }
+                    match args[i].parse::<usize>() {
+                        Ok(n) if n >= 1 => threads = Some(n),
+                        _ => {
+                            eprintln!("{program}: -t: argument not a positive number");
+                            process::exit(1);
+                        }
+                    }
+                }
                 'M' => {
                     if j + 1 < chars.len() {
                         eprintln!("{program}: -M must end the option");
@@ -166,7 +187,7 @@ pub fn parse_args() -> Args {
         repl = true;
     }
 
-    Args { actions, repl, silent, heap_max, no_gpu }
+    Args { actions, repl, silent, heap_max, no_gpu, threads }
 }
 
 pub fn print_help() {
@@ -179,6 +200,7 @@ pub fn print_help() {
          \x20 -p code    execute the argument as BQN and print its result pretty-printed\n\
          \x20 -o code    execute the argument as BQN and print its raw result\n\
          \x20 -M num     accepted for CBQN compatibility; no heap limit is enforced yet\n\
+         \x20 -t num     use num threads for large array arithmetic (default: RBQN_THREADS or all cores; 1 = serial)\n\
          \x20 -r         start the REPL after executing all arguments\n\
          \x20 -s         start a silent REPL\n\
          \x20 --no-gpu   disable GPU acceleration\n\

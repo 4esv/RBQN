@@ -62,6 +62,7 @@ fn interp_main(mut t: std::time::Instant) {
     std::panic::set_hook(Box::new(gpu_runtime::report_panic));
 
     let args = cli::parse_args();
+    rbqn_prim::par::init(args.threads.unwrap_or_else(rbqn_prim::par::default_threads));
 
     gpu_runtime::init(args.no_gpu);
 

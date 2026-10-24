@@ -51,6 +51,31 @@ fn fold_with<F: Fn(f64, f64) -> f64>(arr: &BqnArr, init: Option<f64>, op: F) -> 
     Some(acc)
 }
 
+/// ⌊´ / ⌈´ over a large F64 list, chunk-parallel. Only when the answer is
+/// order-independent: no NaN anywhere and a non-zero result (min/max of ±0 is
+/// order-dependent). None means "use the serial path".
+fn par_f64_minmax(idx: usize, arr: &BqnArr, init: Option<f64>) -> Option<f64> {
+    let ArrData::F64(v) = &arr.data else { return None };
+    if !rbqn_prim::par::go_fold(v.len()) || init.is_some_and(f64::is_nan) {
+        return None;
+    }
+    use rbqn_prim::par::reduce;
+    if reduce(v, |c| c.iter().fold(false, |s, &x| s | x.is_nan()), |a, b| a | b) {
+        return None;
+    }
+    let m = if idx == MIN {
+        reduce(v, |c| c.iter().copied().fold(f64::INFINITY, f64::min), f64::min)
+    } else {
+        reduce(v, |c| c.iter().copied().fold(f64::NEG_INFINITY, f64::max), f64::max)
+    };
+    let r = match init {
+        Some(i) if idx == MIN => m.min(i),
+        Some(i) => m.max(i),
+        None => m,
+    };
+    (r != 0.0).then_some(r)
+}
+
 fn has_nan(arr: &BqnArr) -> bool {
     // PERF: no early exit, so the loop vectorises (any() cost 12 ms at 1e7).
     matches!(&arr.data, ArrData::F64(v) if v.iter().fold(false, |s, &x| s | x.is_nan()))
@@ -100,6 +125,21 @@ fn int_fold(idx: usize, arr: &BqnArr, init: Option<f64>) -> Option<f64> {
         Some(_) => return None,
         None => None,
     };
+    if rbqn_prim::par::go_int_fold(n) {
+        let par = match &arr.data {
+            ArrData::I32(v) => par_int(idx, v, init),
+            ArrData::I16(v) => par_int(idx, v, init),
+            ArrData::I8(v) => par_int(idx, v, init),
+            _ => None,
+        };
+        // NOTE: a zero product goes serial: the f64 chain may give -0 where the integer path gives +0.
+        if let Some(r) = par.filter(|&r| !(idx == MUL && r == 0)) {
+            if r.abs() > EXACT && idx != ADD {
+                return None;
+            }
+            return Some(r as f64);
+        }
+    }
     let r: i64 = match (&arr.data, idx) {
         (ArrData::I32(v), ADD) => v.iter().map(|&a| a as i64).sum::<i64>() + init.unwrap_or(0),
         (ArrData::I16(v), ADD) => v.iter().map(|&a| a as i64).sum::<i64>() + init.unwrap_or(0),
@@ -144,6 +184,52 @@ fn int_fold(idx: usize, arr: &BqnArr, init: Option<f64>) -> Option<f64> {
         return None;
     }
     Some(r as f64)
+}
+
+/// Parallel exact fold for + × ⌊ ⌈ over a non-empty integer slice. None means
+/// "use the serial path" (sum magnitude bound or product range not provably exact).
+fn par_int<T: Copy + Sync + Into<i64>>(idx: usize, v: &[T], init: Option<i64>) -> Option<i64> {
+    use rbqn_prim::par::reduce;
+    match idx {
+        ADD => {
+            // Partial sums are exact in f64 only while ia × max|v| < 2^53.
+            let (s, mx) = reduce(
+                v,
+                |c| {
+                    c.iter().fold((0i64, 0i64), |(s, m), &a| {
+                        let a: i64 = a.into();
+                        (s + a, m.max(a.abs()))
+                    })
+                },
+                |(s1, m1), (s2, m2)| (s1 + s2, m1.max(m2)),
+            );
+            if (v.len() as i64).checked_mul(mx)? >= EXACT {
+                return None;
+            }
+            Some(s + init.unwrap_or(0))
+        }
+        MAX => {
+            let m = reduce(v, |c| c.iter().map(|&a| a.into()).max().unwrap_or(i64::MIN), i64::max);
+            Some(init.map_or(m, |i| i.max(m)))
+        }
+        MIN => {
+            let m = reduce(v, |c| c.iter().map(|&a| a.into()).min().unwrap_or(i64::MAX), i64::min);
+            Some(init.map_or(m, |i| i.min(m)))
+        }
+        MUL => {
+            let p = reduce(
+                v,
+                |c| {
+                    let mut acc = 1i64;
+                    c.iter().all(|&a| mul_exact(&mut acc, a.into())).then_some(acc)
+                },
+                |a, b| a?.checked_mul(b?).filter(|p| p.abs() <= EXACT),
+            )?;
+            let mut acc = init.unwrap_or(1);
+            mul_exact(&mut acc, p).then_some(acc)
+        }
+        _ => None,
+    }
 }
 
 #[inline]
@@ -223,6 +309,9 @@ pub fn fold(f: B, arr: &BqnArr, init: Option<f64>) -> Option<B> {
         // (13.9 → 25.8 ms in-process at 1e7). NaN is checked in a separate
         // pass instead; only F64 data can hold one.
         MIN | MAX => {
+            if let Some(r) = par_f64_minmax(idx, arr, init) {
+                return Some(B::m_f64(r));
+            }
             if init.is_some_and(f64::is_nan) || has_nan(arr) {
                 return Some(B::m_f64(f64::NAN));
             }

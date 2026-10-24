@@ -5,7 +5,7 @@ use crate::dispatch::PrimResult;
 /// place (no f64 copy of the input), then squeeze the result.
 fn map_num(arr: &BqnArr, f: fn(f64) -> f64) -> BqnArr {
     let result: Vec<f64> = match &arr.data {
-        ArrData::F64(v) => v.iter().map(|&x| f(x)).collect(),
+        ArrData::F64(v) => crate::par::map1(true, v, f),
         ArrData::I32(v) => v.iter().map(|&x| f(x as f64)).collect(),
         ArrData::I16(v) => v.iter().map(|&x| f(x as f64)).collect(),
         ArrData::I8(v) => v.iter().map(|&x| f(x as f64)).collect(),
