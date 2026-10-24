@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use rbqn_core::B;
+use rbqn_core::{B, Val};
 use rbqn_core::array::BqnArr;
 
 use crate::block::{Block, Body, eval_fun_block, m_md1_block, m_md2_block};
 use crate::bytecode::Op;
-use crate::derive::{c1, c2, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_partial_r};
+use crate::derive::{c1, c2, c1_slot, c2_slot, m_fork, m_atop, m1_d, m2_d, m_md2_partial_l, m_md2_partial_r};
 use crate::namespace::{self, NS, get_ns, store_ns};
 use crate::scope::{ScRef, Scope, TLS, Tls, v_get, v_set, v_seth, v_check_bad_read};
 
@@ -256,13 +256,42 @@ pub fn fmt_b_detail(b: B) -> String {
 }
 
 
+/// A value-stack slot (#160). `Owned` holds the strong count of an array created
+/// by a primitive call and referenced from nowhere else; `Borrowed` is any `B`
+/// whose lifetime someone else decides (variables, constants, captures, fields,
+/// elements: all still leaked). Dropping an `Owned` slot frees its array.
+pub enum Slot {
+    Owned(Val),
+    Borrowed(B),
+}
+
+impl Slot {
+    /// Copy view; must not outlive the slot.
+    #[inline(always)]
+    pub fn b(&self) -> B {
+        match self {
+            Slot::Owned(v) => v.b(),
+            Slot::Borrowed(b) => *b,
+        }
+    }
+
+    /// Give up ownership without freeing: the value goes to a long-lived location.
+    #[inline(always)]
+    pub fn leak(self) -> B {
+        match self {
+            Slot::Owned(v) => v.leak(),
+            Slot::Borrowed(b) => b,
+        }
+    }
+}
+
 /// One block evaluation's pooled buffers plus the depth count. Nesting depth is
 /// bounded only by the native stack: `stack::guard` in `enter` throws
 /// "Stack overflow" before the interpreter thread's stack runs out. Entering takes
 /// both vectors from the thread-local pool and bumps the depth in a single TLS
 /// access; Drop (also on unwinding from a BQN error) returns them in one more.
 struct Frame {
-    stack: Vec<B>,
+    stack: Vec<Slot>,
     pscs: Vec<ScRef>,
     /// The thread's TLS block, looked up once by the caller of `eval_bc_in`.
     t: *const Tls,
@@ -298,7 +327,14 @@ impl Drop for Frame {
         }
         let mut stack = std::mem::take(&mut self.stack);
         let mut pscs = std::mem::take(&mut self.pscs);
-        // B and ScRef are Copy (no destructors): clearing is just a length reset.
+        if std::thread::panicking() {
+            // WARNING: unwinding from an error: leak what is left instead of freeing
+            // (#160 point 5); nothing may read it, but nothing proves that here.
+            for slot in stack.drain(..) {
+                std::mem::forget(slot);
+            }
+        }
+        // Dropping an `Owned` slot frees its array (a temporary nobody consumed).
         stack.clear();
         pscs.clear();
         // SAFETY: `self.t` came from the `&Tls` handed to `Frame::enter` by the owner of
@@ -352,9 +388,10 @@ fn retry_scope(
 
 #[cold]
 #[inline(never)]
-fn vm_trace_op(stack: &[B], pc: usize, op: Option<Op>, op_val: u32) {
+fn vm_trace_op(stack: &[Slot], pc: usize, op: Option<Op>, op_val: u32) {
     let op_name = op.map(|o| format!("{:?}", o)).unwrap_or_else(|| format!("0x{:02x}", op_val));
-    let stack_info: String = stack.iter().rev().take(4).enumerate().map(|(i, b)| {
+    let stack_info: String = stack.iter().rev().take(4).enumerate().map(|(i, sl)| {
+    let b = &sl.b();
     if b.is_arr() {
         let ia = get_arr(*b).map_or(-1i64, |a| a.ia() as i64);
         format!("s[{}]=arr(ia={})", i, ia)
@@ -421,13 +458,13 @@ fn pred_not_bool() -> ! {
 /// Pop `sz` values into list order and build the array for LSTO/LSTM (mode 0),
 /// ARMO (1: merge, like `>`) or ARMM (2: merge-destructuring target).
 #[inline(never)]
-fn build_list(stack: &mut Vec<B>, sz: usize, mode: u8) -> B {
+fn build_list(stack: &mut Vec<Slot>, sz: usize, mode: u8) -> B {
     if mode == 0 && sz == 0 {
         return tag_arr(BqnArr::empty_harr());
     }
     let mut elems = vec![B::SENTINEL; sz];
     for i in 0..sz {
-        elems[sz - i - 1] = stack.pop().unwrap_or_else(|| pop_underflow());
+        elems[sz - i - 1] = stack.pop().unwrap_or_else(|| pop_underflow()).leak();
     }
     match mode {
         0 => b_vec_to_arr(elems),
@@ -486,7 +523,7 @@ fn retry_to(
     no_match: &str,
     current_sc: &mut std::rc::Rc<Scope>,
     pscs: &mut Vec<ScRef>,
-    stack: &mut Vec<B>,
+    stack: &mut Vec<Slot>,
 ) -> usize {
     let next_body = bl.bodies[next_idx].clone();
     if !next_body.exists {
@@ -530,7 +567,7 @@ fn alias_make(o: B, gid: i32) -> B {
 }
 
 #[inline(never)]
-fn ret_d(body: &Body, stack: &mut Vec<B>, pscs: &[ScRef], current_sc: &std::rc::Rc<Scope>) -> B {
+fn ret_d(body: &Body, stack: &mut Vec<Slot>, pscs: &[ScRef], current_sc: &std::rc::Rc<Scope>) -> B {
     if let Some(ref ns_desc) = body.ns_desc {
         if !stack.is_empty() {
             stack.pop();
@@ -540,7 +577,7 @@ fn ret_d(body: &Body, stack: &mut Vec<B>, pscs: &[ScRef], current_sc: &std::rc::
             sc: if !pscs.is_empty() { pscs[0].to_rc() } else { current_sc.clone() },
         });
     }
-    stack.pop().unwrap_or(B::SENTINEL)
+    stack.pop().map_or(B::SENTINEL, Slot::leak)
 }
 
 #[inline(never)]
@@ -588,19 +625,27 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
     let mut current_sc = sc;
     build_pscs(pscs, &current_sc, body.max_psc);
 
+    // NOTE: `pop!` hands out the slot; `popb!` leaks it into a plain `B` (what every
+    // instruction that stores or keeps the value does: #160 point 4). Only the call
+    // instructions and POPS look at ownership.
     macro_rules! pop {
         () => {
             stack.pop().unwrap_or_else(|| pop_underflow())
         };
     }
+    macro_rules! popb {
+        () => {
+            pop!().leak()
+        };
+    }
     macro_rules! push {
         ($v:expr) => {
-            stack.push($v)
+            stack.push(Slot::Borrowed($v))
         };
     }
     macro_rules! peek {
         ($n:expr) => {
-            stack[stack.len() - $n]
+            stack[stack.len() - $n].b()
         };
     }
     macro_rules! read_u32 {
@@ -638,6 +683,7 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
 
         match op {
             Some(Op::POPS) => {
+                // A discarded temporary: dropping an `Owned` slot frees its array.
                 pop!();
             }
             Some(Op::ADDI) => {
@@ -655,38 +701,38 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
 
             // --- Function calls ---
             Some(Op::FN1C) => {
-                let f = pop!();
+                let f = popb!();
                 let x = pop!();
-                push!(c1(f, x));
+                stack.push(c1_slot(f, x));
             }
             Some(Op::FN1O) => {
-                let f = pop!();
+                let f = popb!();
                 let x = pop!();
-                if x.q_n() {
-                    push!(x);
+                if x.b().q_n() {
+                    stack.push(x);
                 } else {
-                    push!(c1(f, x));
+                    stack.push(c1_slot(f, x));
                 }
             }
             Some(Op::FN2C) => {
                 let w = pop!();
-                let f = pop!();
+                let f = popb!();
                 let x = pop!();
                 if vm_debug {
-                    vm_trace_fn2c(w, f, x, pc);
+                    vm_trace_fn2c(w.b(), f, x.b(), pc);
                 }
-                push!(c2(f, w, x));
+                stack.push(c2_slot(f, w, x));
             }
             Some(Op::FN2O) => {
                 let w = pop!();
-                let f = pop!();
+                let f = popb!();
                 let x = pop!();
-                if x.q_n() {
-                    push!(x);
-                } else if w.q_n() {
-                    push!(c1(f, x));
+                if x.b().q_n() {
+                    stack.push(x);
+                } else if w.b().q_n() {
+                    stack.push(c1_slot(f, x));
                 } else {
-                    push!(c2(f, w, x));
+                    stack.push(c2_slot(f, w, x));
                 }
             }
 
@@ -694,22 +740,22 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::FN1Ci) => {
                 let f = B::from_u64(read_u64!());
                 let x = pop!();
-                push!(c1(f, x));
+                stack.push(c1_slot(f, x));
             }
             Some(Op::FN1Oi) => {
                 let f = B::from_u64(read_u64!());
                 let x = pop!();
-                if x.q_n() {
-                    push!(x);
+                if x.b().q_n() {
+                    stack.push(x);
                 } else {
-                    push!(c1(f, x));
+                    stack.push(c1_slot(f, x));
                 }
             }
             Some(Op::FN2Ci) => {
                 let f = B::from_u64(read_u64!());
                 let w = pop!();
                 let x = pop!();
-                push!(c2(f, w, x));
+                stack.push(c2_slot(f, w, x));
             }
             Some(Op::FN2Oi) => {
                 // FIX: FN2Oi has TWO u64 immediates — monadic fn ptr and dyadic fn ptr.
@@ -718,12 +764,12 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
                 let f_dy = B::from_u64(read_u64!());
                 let w = pop!();
                 let x = pop!();
-                if x.q_n() {
-                    push!(x);
-                } else if w.q_n() {
-                    push!(c1(f_mono, x));
+                if x.b().q_n() {
+                    stack.push(x);
+                } else if w.b().q_n() {
+                    stack.push(c1_slot(f_mono, x));
                 } else {
-                    push!(c2(f_dy, w, x));
+                    stack.push(c2_slot(f_dy, w, x));
                 }
             }
 
@@ -760,45 +806,45 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
 
             // --- Modifier application ---
             Some(Op::MD1C) => {
-                let f = pop!();
-                let m = pop!();
+                let f = popb!();
+                let m = popb!();
                 push!(m1_d(m, f));
             }
             Some(Op::MD2C) => {
-                let f = pop!();
-                let m = pop!();
-                let g = pop!();
+                let f = popb!();
+                let m = popb!();
+                let g = popb!();
                 push!(m2_d(m, f, g));
             }
             Some(Op::MD2L) => {
                 // Partial 2-modifier: has left operand, needs right
-                let f = pop!();
-                let m2 = pop!();
+                let f = popb!();
+                let m2 = popb!();
                 push!(m_md2_partial_l(m2, f));
             }
             Some(Op::MD2R) => {
                 // Partial 2-modifier: has right operand, needs left
-                let g = pop!();
-                let m2 = pop!();
+                let g = popb!();
+                let m2 = popb!();
                 push!(m_md2_partial_r(m2, g));
             }
 
             // --- Trains ---
             Some(Op::TR2D) => {
-                let g = pop!();
-                let h = pop!();
+                let g = popb!();
+                let h = popb!();
                 push!(m_atop(g, h));
             }
             Some(Op::TR3D) => {
-                let f = pop!();
-                let g = pop!();
-                let h = pop!();
+                let f = popb!();
+                let g = popb!();
+                let h = popb!();
                 push!(m_fork(f, g, h));
             }
             Some(Op::TR3O) => {
-                let f = pop!();
-                let g = pop!();
-                let h = pop!();
+                let f = popb!();
+                let g = popb!();
+                let h = popb!();
                 if f.q_n() {
                     push!(m_atop(g, h));
                 } else {
@@ -860,29 +906,29 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
 
             // --- Assignment opcodes ---
             Some(Op::SETN) => {
-                let s = pop!();
-                let x = pop!();
+                let s = popb!();
+                let x = popb!();
                 v_set(pscs, s, x, false, true);
                 push!(x);
             }
             Some(Op::SETU) => {
-                let s = pop!();
-                let x = pop!();
+                let s = popb!();
+                let x = popb!();
                 v_set(pscs, s, x, true, true);
                 push!(x);
             }
             Some(Op::SETM) => {
-                let s = pop!();
-                let f = pop!();
-                let x = pop!();
+                let s = popb!();
+                let f = popb!();
+                let x = popb!();
                 let w = v_get(pscs, s, true);
                 let r = c2(f, w, x);
                 v_set(pscs, s, r, true, false);
                 push!(r);
             }
             Some(Op::SETC) => {
-                let s = pop!();
-                let f = pop!();
+                let s = popb!();
+                let f = popb!();
                 let x = v_get(pscs, s, true);
                 let r = c1(f, x);
                 v_set(pscs, s, r, true, false);
@@ -893,14 +939,14 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::SETNi) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let x = pop!();
+                let x = popb!();
                 pscs[d].var_set(p, x);
                 push!(x);
             }
             Some(Op::SETUi) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let x = pop!();
+                let x = popb!();
                 let prev = pscs[d].var_get(p);
                 if crate::scope::v_check_bad_write(prev) {
                     crate::scope::v_tag_error_pub(prev, true);
@@ -911,8 +957,8 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::SETMi) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let f = pop!();
-                let x = pop!();
+                let f = popb!();
+                let x = popb!();
                 let w = pscs[d].var_get(p);
                 let r = c2(f, w, x);
                 pscs[d].var_set(p, r);
@@ -921,7 +967,7 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::SETCi) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let f = pop!();
+                let f = popb!();
                 let x = pscs[d].var_get(p);
                 let r = c1(f, x);
                 pscs[d].var_set(p, r);
@@ -932,13 +978,13 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::SETNv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let x = pop!();
+                let x = popb!();
                 pscs[d].var_set(p, x);
             }
             Some(Op::SETUv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let x = pop!();
+                let x = popb!();
                 let prev = pscs[d].var_get(p);
                 if crate::scope::v_check_bad_write(prev) {
                     crate::scope::v_tag_error_pub(prev, true);
@@ -948,8 +994,8 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::SETMv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let f = pop!();
-                let x = pop!();
+                let f = popb!();
+                let x = popb!();
                 let w = pscs[d].var_get(p);
                 let r = c2(f, w, x);
                 pscs[d].var_set(p, r);
@@ -957,7 +1003,7 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             Some(Op::SETCv) => {
                 let packed = read_u64!();
                 let (d, p) = unpack_var_ref(packed);
-                let f = pop!();
+                let f = popb!();
                 let x = pscs[d].var_get(p);
                 let r = c1(f, x);
                 pscs[d].var_set(p, r);
@@ -965,8 +1011,8 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
 
             // --- Header match (iterative retry instead of recursive exec_block) ---
             Some(Op::SETH1) => {
-                let s = pop!();
-                let x = pop!();
+                let s = popb!();
+                let x = popb!();
                 let next_body_idx = read_u64!() as usize;
                 if !v_seth(pscs, s, x) {
                     pc = retry_to(bl, next_body_idx, "No matching header", &mut current_sc, pscs, stack);
@@ -974,8 +1020,8 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
                 }
             }
             Some(Op::SETH2) => {
-                let s = pop!();
-                let x = pop!();
+                let s = popb!();
+                let x = popb!();
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
                 if !v_seth(pscs, s, x) {
@@ -987,7 +1033,7 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
 
             // --- Predicates (iterative retry instead of recursive exec_block) ---
             Some(Op::PRED1) => {
-                let x = pop!();
+                let x = popb!();
                 let next_body_idx = read_u64!() as usize;
                 if x.is_f64() {
                     let v = x.o2f();
@@ -1001,7 +1047,7 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
                 }
             }
             Some(Op::PRED2) => {
-                let x = pop!();
+                let x = popb!();
                 let mono_idx = read_u64!() as usize;
                 let dy_idx = read_u64!() as usize;
                 if x.is_f64() {
@@ -1019,23 +1065,23 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
 
             // --- Namespace field access ---
             Some(Op::FLDG) => {
-                let ns_val = pop!();
+                let ns_val = popb!();
                 let gid = read_u32!() as i32;
                 push!(fld_get(ns_val, gid, 0));
             }
             Some(Op::FLDO) => {
-                let ns_val = pop!();
+                let ns_val = popb!();
                 let gid = read_u32!() as i32;
                 push!(fld_get(ns_val, gid, 1));
             }
             Some(Op::FLDM) => {
-                let ns_val = pop!();
+                let ns_val = popb!();
                 let gid = read_u32!() as i32;
                 push!(fld_get(ns_val, gid, 2));
             }
 
             Some(Op::ALIM) => {
-                let o = pop!();
+                let o = popb!();
                 let gid = read_u32!() as i32;
                 push!(alias_make(o, gid));
             }
@@ -1051,7 +1097,7 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
                 // For now, just pass through (the value stays on the stack).
                 // VFYM consumes 1, produces 1 => net 0.
                 // It pops and re-pushes, or just peeks. stack_diff=0, consumed=1 suggests pop+push.
-                let v = pop!();
+                let v = popb!();
                 push!(v);
             }
 
@@ -1070,7 +1116,7 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
                 return ret_d(body, stack, pscs, &current_sc);
             }
             Some(Op::RETN) => {
-                let r = pop!();
+                let r = popb!();
                 Scope::recycle_in(t, current_sc);
                 return r;
             }
@@ -1333,7 +1379,7 @@ mod tests {
             {
                 let mut f = Frame::enter(t, 8, 2);
                 assert_eq!(t.depth.get(), d0 + 1);
-                f.stack.push(B::SENTINEL);
+                f.stack.push(Slot::Borrowed(B::SENTINEL));
             }
             assert_eq!(t.depth.get(), d0);
             // SAFETY: test thread owns its TLS pool; no other reference is live.
