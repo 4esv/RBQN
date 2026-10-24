@@ -318,7 +318,8 @@ impl Frame {
 impl Drop for Frame {
     #[inline]
     fn drop(&mut self) {
-        if !self.bl.is_null() && std::thread::panicking() {
+        let unwinding = std::thread::panicking();
+        if !self.bl.is_null() && unwinding {
             // SAFETY: `bl` was set from the `&Block` parameter of the function that owns this
             // Frame as a local (`run_bc` callers), so the block outlives the Frame, whose
             // drop (including unwind) runs before that parameter goes away. It is only
@@ -327,7 +328,7 @@ impl Drop for Frame {
         }
         let mut stack = std::mem::take(&mut self.stack);
         let mut pscs = std::mem::take(&mut self.pscs);
-        if std::thread::panicking() {
+        if unwinding {
             // WARNING: unwinding from an error: leak what is left instead of freeing
             // (#160 point 5); nothing may read it, but nothing proves that here.
             for slot in stack.drain(..) {

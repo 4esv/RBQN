@@ -760,10 +760,11 @@ pub fn m2_d(m: B, f: B, g: B) -> B {
 // Owned/Borrowed calls from the VM value stack (#160)
 // ============================================================
 
-std::thread_local! {
-    // Derived id -> 0 unknown, 1 pure-native, 2 not. Ids are never reused.
-    static PURE_NATIVE: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+// NOTE: purity shares the SCALAR_OP table (one TLS lookup per call): entries below 18 are
+// scalar primitives (pure), PURE_YES / PURE_NO are classified others, and the default
+// 0xFF means not classified yet. `op < 18` and `op < 10` tests elsewhere are unaffected.
+const PURE_YES: u8 = 0xFD;
+const PURE_NO: u8 = 0xFE;
 
 /// A function whose whole evaluation is native Rust over its arguments: only
 /// primitives and the listed native modifiers, with data or such functions as
@@ -780,9 +781,10 @@ fn is_pure_native(f: B) -> bool {
         return true;
     }
     let id = ((f.0 & 0xFFFFFFFFFFFF) >> 3) as usize;
-    let cached = PURE_NATIVE.with(|t| t.borrow().get(id).copied().unwrap_or(0));
-    if cached != 0 {
-        return cached == 1;
+    match scalar_op_of(f) {
+        PURE_NO => return false,
+        PURE_YES | 0..=17 => return true,
+        _ => {}
     }
     let d = get_derived(id as u64);
     let pure = match d.kind {
@@ -799,12 +801,14 @@ fn is_pure_native(f: B) -> bool {
         }
         _ => false,
     };
-    PURE_NATIVE.with(|t| {
+    SCALAR_OP.with(|t| {
         let mut t = t.borrow_mut();
         if t.len() <= id {
-            t.resize(id + 1, 0);
+            t.resize(id + 1, 0xFF);
         }
-        t[id] = if pure { 1 } else { 2 };
+        if t[id] == 0xFF {
+            t[id] = if pure { PURE_YES } else { PURE_NO };
+        }
     });
     pure
 }
@@ -840,6 +844,17 @@ impl Drop for BirthSpan {
     }
 }
 
+/// Callee that may keep its arguments: leak them, the result is Borrowed.
+#[inline(never)]
+fn call_impure(f: B, w: Option<Slot>, x: Slot) -> Slot {
+    let xb = x.leak();
+    let wb = w.map(Slot::leak);
+    Slot::Borrowed(match wb {
+        Some(wb) => c2(f, wb, xb),
+        None => c1(f, xb),
+    })
+}
+
 /// Call `f` with arguments that may own their arrays; the result's ownership is
 /// resolved afterwards:
 /// - not pure-native: arguments are leaked (the callee may keep them), result Borrowed;
@@ -851,20 +866,20 @@ fn call_slots(f: B, w: Option<Slot>, x: Slot) -> Slot {
     use rbqn_core::arrstore::{births_mark, born_since, same_array};
     let (wb, xb) = (w.as_ref().map(Slot::b), x.b());
     // Number arguments to scalar primitives: no arrays anywhere, skip the bookkeeping.
-    let scalar = match wb {
-        Some(wb) => try_scalar_c2(f, wb, xb),
-        None => try_scalar_c1(f, xb),
-    };
-    if let Some(r) = scalar {
-        return Slot::Borrowed(r);
+    let op = scalar_op_of(f);
+    if op < 18 {
+        let scalar = match wb {
+            Some(wb) => try_scalar_c2(f, wb, xb),
+            None => try_scalar_c1(f, xb),
+        };
+        if let Some(r) = scalar {
+            return Slot::Borrowed(r);
+        }
+    } else if op == PURE_NO {
+        return call_impure(f, w, x);
     }
-    if !is_pure_native(f) {
-        let xb = x.leak();
-        let wb = w.map(Slot::leak);
-        return Slot::Borrowed(match wb {
-            Some(wb) => c2(f, wb, xb),
-            None => c1(f, xb),
-        });
+    if op != PURE_YES && !is_pure_native(f) {
+        return call_impure(f, w, x);
     }
     // The arguments stay alive until the call returns; if it unwinds (a BQN error)
     // they are leaked (ManuallyDrop), never freed.
@@ -901,11 +916,23 @@ fn call_slots(f: B, w: Option<Slot>, x: Slot) -> Slot {
     result.unwrap_or(Slot::Borrowed(r))
 }
 
+#[inline(always)]
 pub fn c1_slot(f: B, x: Slot) -> Slot {
+    if let Slot::Borrowed(xb) = x
+        && let Some(r) = try_scalar_c1(f, xb)
+    {
+        return Slot::Borrowed(r);
+    }
     call_slots(f, None, x)
 }
 
+#[inline(always)]
 pub fn c2_slot(f: B, w: Slot, x: Slot) -> Slot {
+    if let (Slot::Borrowed(wb), Slot::Borrowed(xb)) = (&w, &x)
+        && let Some(r) = try_scalar_c2(f, *wb, *xb)
+    {
+        return Slot::Borrowed(r);
+    }
     call_slots(f, Some(w), x)
 }
 
