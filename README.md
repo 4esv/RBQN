@@ -76,7 +76,7 @@ Scalar code through the VM (the fib row) is where the most room remains. `bench/
 
 Two layers, kept separate so that nothing outside `•gpu` ever changes a result.
 
-**Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path; f64 arithmetic stays on the CPU (Metal has no f64). A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper; `RBQN_GPU_DEBUG=1` prints each decision. `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`).
+**Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path; f64 arithmetic stays on the CPU (Metal has no f64). A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper; `RBQN_GPU_DEBUG=1` prints each decision. `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`). `make gpu-parity` runs the stranger docs corpus and grid with `RBQN_GPU=force` and `RBQN_GPU=off` on the same binary and requires identical reports; it needs `CBQN_BIN` and `BQN_SRC`, and is run on a machine with a GPU, not in CI.
 
 **`•gpu`.** Explicit f32 kernels and device-resident arrays, for code that accepts f32 rounding in exchange for speed.
 
@@ -114,10 +114,10 @@ Options:
   -s         start a silent REPL
   --no-gpu   disable GPU acceleration
   --help     show this help text
-  --version  display version information
+  --version  display version information (including `gpu:` adapter name, `off` or `none`)
 ```
 
-Environment: `RBQN_GPU=off|force` overrides the dispatch decision; `RBQN_GPU_DEBUG=1` traces it.
+Environment: `RBQN_GPU=off|force` overrides the dispatch decision (`force` bypasses the cost model only); `RBQN_GPU_DEBUG=1` traces it.
 
 ## Build
 

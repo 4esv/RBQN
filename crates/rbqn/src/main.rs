@@ -14,6 +14,8 @@ mod gpu_runtime {
     pub fn print_summary() {}
     /// None: the GPU runtime is not compiled in, so the REPL header omits the gpu part.
     pub fn adapter_label() -> Option<String> { None }
+    /// `--version` gpu line: no GPU code is compiled in.
+    pub fn version_label(_no_gpu: bool) -> String { "none".to_string() }
 }
 
 use rbqn::bootstrap;

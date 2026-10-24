@@ -54,6 +54,7 @@ pub fn parse_args() -> Args {
             println!("rbqn {}", env!("CARGO_PKG_VERSION"));
             println!("bytecode: {}", rbqn::embedded::bytecode_source_tag());
             println!("threads: {}", threads.unwrap_or_else(rbqn_prim::par::default_threads));
+            println!("gpu: {}", crate::gpu_runtime::version_label(no_gpu || args.iter().any(|a| a == "--no-gpu")));
             process::exit(0);
         }
 

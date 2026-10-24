@@ -218,6 +218,15 @@ pub fn adapter_label() -> Option<String> {
     Some(get().map_or_else(|| "off".to_string(), |rt| rt.ctx.adapter_info.name.clone()))
 }
 
+/// `--version` gpu line: `off` when disabled (`--no-gpu`, `RBQN_GPU=off`), `none` when no
+/// adapter exists, else the adapter name. Creates the device, so only for `--version`.
+pub fn version_label(no_gpu: bool) -> String {
+    if no_gpu || gpu_mode() == GpuMode::Off {
+        return "off".to_string();
+    }
+    get().map_or_else(|| "none".to_string(), |rt| rt.ctx.adapter_info.name.clone())
+}
+
 /// Get the GPU runtime, waiting for device creation on first call. None when
 /// disabled (`--no-gpu`) or when no adapter is available.
 /// NOTE: Callers must apply their size threshold before calling this.
