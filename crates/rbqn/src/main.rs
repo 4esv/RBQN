@@ -12,6 +12,8 @@ mod gpu_runtime {
     pub fn report_panic(_: &std::panic::PanicHookInfo<'_>) {}
     pub fn init(_no_gpu: bool) {}
     pub fn print_summary() {}
+    /// None: the GPU runtime is not compiled in, so the REPL header omits the gpu part.
+    pub fn adapter_label() -> Option<String> { None }
 }
 
 use rbqn::bootstrap;

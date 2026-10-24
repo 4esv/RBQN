@@ -15,6 +15,21 @@ use rustyline::{
 use rbqn::bootstrap::Runtime;
 use crate::ReplState;
 
+const HELP: &str = "\
+)help        show this list
+)off, )exit  leave the REPL (also Ctrl-D)
+\\key         type a BQN glyph, e.g. \\r gives ↑
+<Tab>        complete system values and session names";
+
+fn header() -> String {
+    let mut h = format!("rbqn {} · {} threads", env!("CARGO_PKG_VERSION"), rbqn_prim::par::threads());
+    if let Some(g) = crate::gpu_runtime::adapter_label() {
+        h.push_str(&format!(" · gpu: {g}"));
+    }
+    h.push_str(" · )help");
+    h
+}
+
 pub fn run_repl(rt: &Runtime, silent: bool) {
     let mut rl = match Editor::<BqnHelper, DefaultHistory>::new() {
         Ok(rl) => rl,
@@ -40,6 +55,10 @@ pub fn run_repl(rt: &Runtime, silent: bool) {
     }
 
     let mut state = ReplState::new();
+
+    if !silent && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        println!("{}", header());
+    }
 
     loop {
         match rl.readline("   ") {
@@ -76,8 +95,12 @@ fn eval_line(rt: &Runtime, line: &str, silent: bool, state: &mut ReplState) {
     // Handle REPL commands
     if let Some(stripped) = line.strip_prefix(')') {
         let cmd = stripped.trim();
-        if cmd == "exit" || cmd == "off" {
+        if cmd == "exit" || cmd == "off" || cmd == "q" {
             std::process::exit(0);
+        }
+        if cmd == "help" {
+            println!("{HELP}");
+            return;
         }
         eprintln!("Unknown REPL command: {line}");
         return;
