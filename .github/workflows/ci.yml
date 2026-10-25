@@ -171,6 +171,47 @@ jobs:
           MIRIFLAGS: -Zmiri-ignore-leaks
         run: cargo miri test -p rbqn-vm
 
+  # NOTE: libFuzzer smoke over the three targets in fuzz/ (#172). Fork mode (bench/fuzz/run.sh)
+  # because every eval leaks about 1 MB; any Rust panic inside a primitive, 2 s hang or crash fails the job.
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # NOTE: crates/rbqn/bins/*.bin are LFS; without them Bqn::new cannot bootstrap.
+          lfs: true
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
+
+      - name: fuzz lists match the grid
+        run: python3 -I bench/fuzz/check_lists.py
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: expr (120 s)
+        run: bench/fuzz/run.sh expr 120
+
+      - name: fmt (60 s)
+        run: bench/fuzz/run.sh fmt 60
+
+      - name: bytes (60 s)
+        run: bench/fuzz/run.sh bytes 60
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+
   # NOTE: The spec is the target and CBQN is the floor. This job is a regression floor so rbqn never falls
   # below CBQN; deliberate divergences beyond CBQN are recorded, with a spec citation, in bench/stranger/known_divergences.txt.
   parity:
