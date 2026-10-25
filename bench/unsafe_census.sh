@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tu=0; ts=0; rows=""
-for d in crates/*/; do
+for d in crates/*/ fuzz/; do
   c=$(basename "$d")
   u=$(grep -rhE --include='*.rs' 'unsafe[[:space:]]*(\{|impl|fn |extern "C" \{)' "$d" 2>/dev/null | grep -vcE '^[[:space:]]*//' || true)
   s=$(grep -rhE --include='*.rs' 'SAFETY:|^[[:space:]]*///[[:space:]]*#[[:space:]]*Safety' "$d" 2>/dev/null | grep -c '//' || true)
@@ -19,5 +19,5 @@ echo "|---|---|---|"
 printf '%s' "$rows"
 echo "| total | $tu | $ts |"
 echo
-echo "README: $tu \`unsafe\` sites across the workspace, each with a \`// SAFETY:\` comment enforced by \`clippy::undocumented_unsafe_blocks\`; rbqn-core and rbqn-prim pass under Miri in CI."
+echo "README: every \`unsafe\` site carries a \`// SAFETY:\` comment enforced by \`clippy::undocumented_unsafe_blocks\`; rbqn-core and rbqn-prim pass under Miri in CI."
 [ "$tu" -eq "$ts" ] || { echo "MISMATCH: $tu unsafe sites, $ts SAFETY comments" >&2; exit 1; }
