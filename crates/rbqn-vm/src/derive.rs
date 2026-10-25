@@ -865,16 +865,13 @@ fn call_impure(f: B, w: Option<Slot>, x: Slot) -> Slot {
         }
     }
     if is_native_each(f) {
-        // `¨`/`⌜` assemble their result list after the last user call returned: when it
-        // was created during this call, nothing else references it (#161).
-        let span = BirthSpan(rbqn_core::arrstore::births_mark());
+        // `¨`/`⌜` assemble their result list after the last user call returned: nothing
+        // else references it, so the caller owns its count (#161).
         let r = match wb {
             Some(wb) => c2(f, wb, xb),
             None => c1(f, xb),
         };
-        let fresh = rbqn_core::arrstore::is_host_handle(r) && rbqn_core::arrstore::born_since(span.0, r);
-        drop(span);
-        if fresh {
+        if rbqn_core::arrstore::is_host_handle(r) && crate::modifiers::take_assembled(r) {
             // SAFETY: see above; the list's only handle is `r`, its count is ours.
             return Slot::Owned(unsafe { rbqn_core::Val::from_b_owned(r) });
         }

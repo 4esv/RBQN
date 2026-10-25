@@ -117,14 +117,31 @@ fn timed_c2(f: B, w: B, x: B) -> B {
 // Top-level dispatch
 // ============================================================
 
+thread_local! {
+    /// Handle bits of the list `¨`/`⌜` assembled last (0: none). See `take_assembled`.
+    static ASSEMBLED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Record `r` as the result list a native each/table just assembled after its last user
+/// call returned: nothing else references it.
+fn assembled(r: B) -> B {
+    ASSEMBLED.with(|a| a.set(r.0));
+    r
+}
+
+/// True once if `r` is the list `assembled` recorded last (#161). The caller owns its count.
+pub(crate) fn take_assembled(r: B) -> bool {
+    r.0 != 0 && ASSEMBLED.with(|a| a.replace(0)) == r.0
+}
+
 pub fn native_md1_c1(prim_idx: usize, operand: B, _self_val: B, x: B) -> B {
     match prim_idx {
         MD1_TIMED => timed_c1(operand, x),
         MD1_CONST => operand,
         MD1_SWAP => c2(operand, x, x),
         MD1_CELL => cells_c1(operand, x),
-        MD1_EACH => each_c1(operand, x),
-        MD1_TBL => each_c1(operand, x),
+        MD1_EACH => assembled(each_c1(operand, x)),
+        MD1_TBL => assembled(each_c1(operand, x)),
         MD1_UNDO => {
             // F⁼ x: look up the inverse of F, then call it monadically on x
             let inv_fn = crate::derive::inv_reg(operand);
@@ -162,8 +179,8 @@ pub fn native_md1_c2(prim_idx: usize, operand: B, _self_val: B, w: B, x: B) -> B
         MD1_CONST => operand,
         MD1_SWAP => c2(operand, x, w),
         MD1_CELL => cells_c2(operand, w, x),
-        MD1_EACH => each_c2(operand, w, x),
-        MD1_TBL => table_c2(operand, w, x),
+        MD1_EACH => assembled(each_c2(operand, w, x)),
+        MD1_TBL => assembled(table_c2(operand, w, x)),
         MD1_UNDO => {
             // w F⁼ x: look up the inverse of F, then call it dyadically
             let inv_fn = crate::derive::inv_reg(operand);
