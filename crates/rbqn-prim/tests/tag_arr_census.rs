@@ -19,12 +19,12 @@ use std::path::Path;
 
 /// (file, count, reason)
 const ALLOWED: &[(&str, usize, &str)] = &[
-    ("arith_dyad.rs", 2, "pervasive recursion over boxed elements: results become elements of the parent array"),
-    ("arith_monad.rs", 2, "pervasive_monad_b recursion over boxed elements: results become elements of the parent array"),
-    ("compare.rs", 4, "cmp_pervasive_b recursion over boxed elements (Result<B> helper)"),
-    ("group.rs", 13, "group cells and fill prototypes are stored as elements of the result array"),
-    ("select.rs", 3, "pick_elem (Result<B> helper for boxed-index picks) builds elements of the result"),
-    ("structural.rs", 4, "box_arr / prototype_of_arr build fill prototypes and enclosed elements (B-typed helpers)"),
+    ("arith_dyad.rs", 2, "pervasive recursion over boxed elements: results become elements of the parent array; stays leaked (#161), a raw handle with no ownership to move"),
+    ("arith_monad.rs", 2, "pervasive_monad_b recursion over boxed elements: results become elements of the parent array; stays leaked (#161), a raw handle with no ownership to move"),
+    ("compare.rs", 4, "cmp_pervasive_b recursion over boxed elements (Result<B> helper); stays leaked (#161), a raw handle with no ownership to move"),
+    ("group.rs", 13, "group cells and fill prototypes are stored as elements of the result array; stays leaked (#161), a raw handle with no ownership to move"),
+    ("select.rs", 3, "pick_elem (Result<B> helper for boxed-index picks) builds elements of the result; stays leaked (#161), a raw handle with no ownership to move"),
+    ("structural.rs", 4, "box_arr / prototype_of_arr build fill prototypes and enclosed elements (B-typed helpers); stays leaked (#161), a raw handle with no ownership to move"),
 ];
 
 fn count(src: &str) -> usize {

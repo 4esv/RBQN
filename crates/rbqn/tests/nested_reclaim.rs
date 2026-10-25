@@ -42,6 +42,9 @@ fn nested_elements_are_owned_released_and_stay_readable() {
     let g = growth(&|n| format!("{{𝕊: ≠ (↕3) ⋈ ↕100 ⋄ 0}}¨ ↕{n} ⋄ 0"));
     assert!((3600..4400).contains(&g), "pair kept {g} arrays over 4000 calls (want only the fill prototype)");
 
+    // A constant in a literal is shared, not stolen: the literal freed on every iteration
+    // must leave the program's own copy of the constant alone.
+    assert_eq!(fmt(&b, "{𝕊: ⟨\"abc\", 1⟩ ⋄ 0}¨ ↕3 ⋄ {𝕩 ⋄ ⟨\"abc\", 1⟩}¨ ↕2"), "⟨ ⟨ \"abc\" 1 ⟩ ⟨ \"abc\" 1 ⟩ ⟩");
     // Elements read out of an array outlive it.
     assert_eq!(fmt(&b, "l ← ⟨↕2, ↕3⟩ ⋄ e ← ⊑ l ⋄ l ↩ 0 ⋄ e"), "⟨ 0 1 ⟩");
     assert_eq!(fmt(&b, "e ← ⊑ {𝕩 ⋈ 1}¨ ↕3 ⋄ e"), "⟨ 0 1 ⟩");
