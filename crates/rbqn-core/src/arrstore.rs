@@ -797,7 +797,9 @@ mod tests {
     #[test]
     fn deeply_nested_owning_chain_drops_without_recursion() {
         let mut cur = tag_arr_owned(nums(1));
-        for _ in 0..200_000 {
+        // NOTE: Miri is ~1000x slower; the native run proves the no-recursion claim, Miri the soundness.
+        let depth = if cfg!(miri) { 500 } else { 200_000 };
+        for _ in 0..depth {
             cur = owning(vec![cur.leak()]);
         }
         drop(cur); // would overflow the native stack if the release recursed
