@@ -5,11 +5,62 @@ use crate::value::B;
 pub type Rank = u8;
 pub const RANK_MAX: Rank = 255;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BqnArr {
     pub shape: Vec<usize>,
     pub data: ArrData,
     pub fill: Option<B>,
+    /// Element ownership (#161, stage 2b). When true, `data` is `Boxed` and holds
+    /// exactly one strong count per host-array element (see `ArrData::Boxed`); dropping
+    /// the array releases those counts. False for every array a primitive builds: its
+    /// elements are plain handles that someone else keeps alive (leaked, or pinned).
+    pub owns: bool,
+}
+
+impl Clone for BqnArr {
+    /// A clone never owns. Cloning an owning array pins its elements (one extra count
+    /// nobody releases), so the clone's raw copies stay valid after the original is freed.
+    fn clone(&self) -> Self {
+        if self.owns
+            && let ArrData::Boxed(v) = &self.data
+        {
+            for &b in v {
+                crate::arrstore::pin(b);
+            }
+        }
+        BqnArr { shape: self.shape.clone(), data: self.data.clone(), fill: self.fill, owns: false }
+    }
+}
+
+impl BqnArr {
+    /// Release the element counts of an owning array (once; idempotent).
+    pub(crate) fn release_owned(&mut self) {
+        if self.owns {
+            self.owns = false;
+            if let ArrData::Boxed(v) = &self.data {
+                crate::arrstore::release_elems(v);
+            }
+        }
+    }
+
+    /// Move the data out. An owning array's element counts are given up (the elements
+    /// stay alive forever), since the caller now holds raw handles.
+    pub fn into_data(mut self) -> ArrData {
+        self.owns = false;
+        std::mem::replace(&mut self.data, ArrData::I8(Vec::new()))
+    }
+
+    /// Give up the element counts without releasing them: the elements stay alive
+    /// forever. For code that moves `data` out of an array it got by value.
+    pub fn disown(&mut self) {
+        self.owns = false;
+    }
+}
+
+impl Drop for BqnArr {
+    fn drop(&mut self) {
+        self.release_owned();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -22,6 +73,14 @@ pub enum ArrData {
     C8(Vec<u8>),
     C16(Vec<u16>),
     C32(Vec<u32>),
+    /// Element handles. INVARIANT (#161): when the owning `BqnArr.owns` is set, this vector
+    /// holds exactly one strong count per host-array element (numbers, chars, functions and
+    /// device-tagged values carry none), and `BqnArr::drop` releases them, so freeing the
+    /// outer array frees elements nobody else holds. Constructing such an array from an
+    /// `Owned` slot moves the slot's count in; from a `Borrowed(b)` it shares a new count.
+    /// When `owns` is clear (every primitive-built array) the elements are raw handles kept
+    /// alive by someone else and the array releases nothing. Reading an element out never
+    /// takes the array's count: it shares one (`share`) or stays `Borrowed`.
     Boxed(Vec<B>),
     /// Device-resident data (`•gpu.Tensor`). Lives only in the resident table:
     /// `get_arr` downloads it first, so primitives never see this variant.
@@ -225,6 +284,7 @@ impl BqnArr {
             shape: vec![len],
             data: ArrData::I32(data),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }
     }
 
@@ -234,6 +294,7 @@ impl BqnArr {
             shape: vec![len],
             data: ArrData::F64(data),
             fill: Some(B::m_f64(0.0)),
+            owns: false,
         }
     }
 
@@ -243,6 +304,7 @@ impl BqnArr {
             shape: vec![len],
             data: ArrData::Boxed(data),
             fill: None,
+            owns: false,
         }
     }
 
@@ -252,6 +314,7 @@ impl BqnArr {
             shape: vec![len],
             data: ArrData::C32(data),
             fill: Some(B::m_c32(b' ' as u32)),
+            owns: false,
         }
     }
 
@@ -260,6 +323,7 @@ impl BqnArr {
             shape: vec![0],
             data: ArrData::Boxed(vec![]),
             fill: None,
+            owns: false,
         }
     }
 
@@ -301,6 +365,7 @@ pub fn typed_arr_from_b_vec(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -
                 shape,
                 data: squeeze_i32(vals),
                 fill: fill.or(Some(B::m_f64(0.0))),
+                owns: false,
             };
         }
         if all_f64 {
@@ -309,6 +374,7 @@ pub fn typed_arr_from_b_vec(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -
                 shape,
                 data: ArrData::F64(vals),
                 fill: fill.or(Some(B::m_f64(0.0))),
+                owns: false,
             };
             return squeeze_num(arr);
         }
@@ -318,6 +384,7 @@ pub fn typed_arr_from_b_vec(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -
                 shape,
                 data: ArrData::C32(vals),
                 fill: fill.or(Some(B::m_c32(b' ' as u32))),
+                owns: false,
             };
         }
     }
@@ -325,6 +392,33 @@ pub fn typed_arr_from_b_vec(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -
         shape,
         data: ArrData::Boxed(elems),
         fill,
+        owns: false,
+    }
+}
+
+/// As `typed_arr_from_b_vec`, for `elems` that hold one strong count per host-array element
+/// (moved in by the caller). If the result is boxed and holds a host array it owns those
+/// counts (`owns`, see `ArrData::Boxed`); a host-array fill is pinned, since the array does
+/// not release it. When the elements collapse to a numeric or character array there is
+/// nothing to own.
+pub fn typed_arr_from_counted(elems: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> BqnArr {
+    let mut a = typed_arr_from_b_vec(elems, shape, fill);
+    a.seal_counted();
+    a
+}
+
+impl BqnArr {
+    /// Declare that a boxed `data` holds one count per host-array element (set `owns`
+    /// when there is any), and pin a host-array fill.
+    pub fn seal_counted(&mut self) {
+        if let ArrData::Boxed(v) = &self.data
+            && v.iter().any(|&b| crate::arrstore::is_owned_kind(b))
+        {
+            self.owns = true;
+            if let Some(f) = self.fill {
+                crate::arrstore::pin(f);
+            }
+        }
     }
 }
 
@@ -384,10 +478,12 @@ pub fn squeeze_num(arr: BqnArr) -> BqnArr {
         return arr;
     };
 
+    let mut arr = arr;
     BqnArr {
-        shape: arr.shape,
+        shape: std::mem::take(&mut arr.shape),
         data,
         fill: arr.fill,
+        owns: false,
     }
 }
 

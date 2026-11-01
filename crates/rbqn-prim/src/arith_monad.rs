@@ -43,7 +43,7 @@ fn round_c1(x: B, xa: Option<&BqnArr>, f: fn(f64) -> f64, name: &str) -> Result<
     if let ArrData::F64(v) = &arr.data
         && let Some(r) = round_to_i32(v, f)
     {
-        let mut out = BqnArr { shape: arr.shape.clone(), data: array::squeeze_i32(r), fill: None };
+        let mut out = BqnArr { shape: arr.shape.clone(), data: array::squeeze_i32(r), fill: None, owns: false };
         out.fill = arr.fill;
         return Ok(PrimResult::Array(out));
     }
@@ -161,7 +161,7 @@ pub fn sub_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
     if let Some(arr) = xa
         && let Some(data) = negate_int(arr)
     {
-        return Ok(PrimResult::Array(BqnArr { shape: arr.shape.clone(), data, fill: arr.fill }));
+        return Ok(PrimResult::Array(BqnArr { shape: arr.shape.clone(), data, fill: arr.fill, owns: false }));
     }
     pervasive_monad(x, xa, |v| -v, "-")
 }

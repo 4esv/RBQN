@@ -251,11 +251,11 @@ fn squeeze_i64(v: Vec<i64>) -> BqnArr {
         for (i, &x) in v.iter().enumerate() {
             words[i / 64] |= (x as u64) << (i % 64);
         }
-        BqnArr { shape: vec![v.len()], data: ArrData::Bit(words), fill: None }
+        BqnArr { shape: vec![v.len()], data: ArrData::Bit(words), fill: None, owns: false }
     } else if mn >= i8::MIN as i64 && mx <= i8::MAX as i64 {
-        BqnArr { shape: vec![v.len()], data: ArrData::I8(v.iter().map(|&x| x as i8).collect()), fill: None }
+        BqnArr { shape: vec![v.len()], data: ArrData::I8(v.iter().map(|&x| x as i8).collect()), fill: None, owns: false }
     } else if mn >= i16::MIN as i64 && mx <= i16::MAX as i64 {
-        BqnArr { shape: vec![v.len()], data: ArrData::I16(v.iter().map(|&x| x as i16).collect()), fill: None }
+        BqnArr { shape: vec![v.len()], data: ArrData::I16(v.iter().map(|&x| x as i16).collect()), fill: None, owns: false }
     } else if mn >= i32::MIN as i64 && mx <= i32::MAX as i64 {
         BqnArr::new_vec_i32(v.iter().map(|&x| x as i32).collect())
     } else {
@@ -494,7 +494,7 @@ fn int_table(idx: usize, warr: &BqnArr, xarr: &BqnArr) -> Option<BqnArr> {
     let w = warr.i32_iter().ok()?;
     let x = xarr.i32_iter().ok()?;
     let fill = Some(B::m_i32(0));
-    let mk = |data| Some(BqnArr { shape: vec![], data, fill });
+    let mk = |data| Some(BqnArr { shape: vec![], data, fill, owns: false });
     if w.is_empty() || x.is_empty() {
         return mk(if idx >= 12 { ArrData::Bit(vec![]) } else { ArrData::I32(vec![]) });
     }

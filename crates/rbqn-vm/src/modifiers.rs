@@ -63,8 +63,8 @@ fn get_rt_depth() -> Option<B> {
 const MD1_CONST: usize = 44;  // ˙
 const MD1_SWAP: usize = 45;   // ˜
 const MD1_CELL: usize = 46;   // ˘
-const MD1_EACH: usize = 47;   // ¨
-const MD1_TBL: usize = 48;    // ⌜
+pub(crate) const MD1_EACH: usize = 47;   // ¨
+pub(crate) const MD1_TBL: usize = 48;    // ⌜
 const MD1_UNDO: usize = 49;   // ⁼
 const MD1_FOLD: usize = 50;   // ´
 const MD1_INSERT: usize = 51; // ˝
@@ -117,14 +117,31 @@ fn timed_c2(f: B, w: B, x: B) -> B {
 // Top-level dispatch
 // ============================================================
 
+thread_local! {
+    /// Handle bits of the list `¨`/`⌜` assembled last (0: none). See `take_assembled`.
+    static ASSEMBLED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Record `r` as the result list a native each/table just assembled after its last user
+/// call returned: nothing else references it.
+fn assembled(r: B) -> B {
+    ASSEMBLED.with(|a| a.set(r.0));
+    r
+}
+
+/// True once if `r` is the list `assembled` recorded last (#161). The caller owns its count.
+pub(crate) fn take_assembled(r: B) -> bool {
+    r.0 != 0 && ASSEMBLED.with(|a| a.replace(0)) == r.0
+}
+
 pub fn native_md1_c1(prim_idx: usize, operand: B, _self_val: B, x: B) -> B {
     match prim_idx {
         MD1_TIMED => timed_c1(operand, x),
         MD1_CONST => operand,
         MD1_SWAP => c2(operand, x, x),
         MD1_CELL => cells_c1(operand, x),
-        MD1_EACH => each_c1(operand, x),
-        MD1_TBL => each_c1(operand, x),
+        MD1_EACH => assembled(each_c1(operand, x)),
+        MD1_TBL => assembled(each_c1(operand, x)),
         MD1_UNDO => {
             // F⁼ x: look up the inverse of F, then call it monadically on x
             let inv_fn = crate::derive::inv_reg(operand);
@@ -162,8 +179,8 @@ pub fn native_md1_c2(prim_idx: usize, operand: B, _self_val: B, w: B, x: B) -> B
         MD1_CONST => operand,
         MD1_SWAP => c2(operand, x, w),
         MD1_CELL => cells_c2(operand, w, x),
-        MD1_EACH => each_c2(operand, w, x),
-        MD1_TBL => table_c2(operand, w, x),
+        MD1_EACH => assembled(each_c2(operand, w, x)),
+        MD1_TBL => assembled(table_c2(operand, w, x)),
         MD1_UNDO => {
             // w F⁼ x: look up the inverse of F, then call it dyadically
             let inv_fn = crate::derive::inv_reg(operand);
@@ -286,6 +303,15 @@ fn results_to_arr_fill(results: Vec<B>, shape: Vec<usize>, fill: Option<B>) -> B
     crate::vm::tag_arr(out)
 }
 
+/// As `results_to_arr`, for results that each hold a count (`vm::counted`): the boxed
+/// array owns them (#161), so freeing it frees results nobody else holds.
+fn counted_results_to_arr(results: Vec<B>, shape: Vec<usize>) -> B {
+    let mut out = rbqn_core::array::typed_arr_from_b_vec(results, shape, None);
+    out.fill = None;
+    out.seal_counted();
+    crate::vm::tag_arr(out)
+}
+
 /// Merge cell results into a higher-rank array.
 /// Used by ˘ (cells) where results from each cell are combined with
 /// shape = leading_shape ∾ cell_result_shape.
@@ -362,6 +388,7 @@ fn extract_cell(arr: &BqnArr, cell_idx: usize, cell_size: usize, cell_shape: &[u
         shape: cell_shape.to_vec(),
         data,
         fill: arr.fill,
+        owns: false,
     }
 }
 
@@ -404,7 +431,7 @@ fn each_c1(f: B, x: B) -> B {
                 ArrData::Boxed(v) => each(bl, body, psc, f, v.iter().copied(), r),
                 _ => each(bl, body, psc, f, (0..n).map(|i| get_elem(&arr, i)), r),
             }
-            return results_to_arr(results, arr.shape.clone());
+            return counted_results_to_arr(results, arr.shape.clone());
         }
     }
     for i in 0..n {
@@ -700,6 +727,7 @@ fn enclose_cell(e: B) -> B {
         shape: vec![],
         data: ArrData::Boxed(vec![e]),
         fill: None,
+        owns: false,
     })
 }
 
@@ -812,6 +840,7 @@ fn scan_c1(f: B, x: B) -> B {
             shape: arr.shape.clone(),
             data: ArrData::Boxed(vec![]),
             fill: arr.fill,
+            owns: false,
         });
     }
     if rank == 1 {
@@ -919,6 +948,7 @@ pub fn scan_inv_c1(f: B, x: B) -> B {
             shape: arr.shape.clone(),
             data: ArrData::Boxed(vec![]),
             fill: arr.fill,
+            owns: false,
         });
     }
     // Get the inverse of F for applying between consecutive elements
@@ -1028,6 +1058,7 @@ fn cells_c1(f: B, x: B) -> B {
                 ArrData::Boxed(vec![result])
             },
             fill: Some(rbqn_prim::structural::prototype_of(result)),
+            owns: false,
         });
     }
     let arr = arr_of(x);
@@ -1056,6 +1087,7 @@ fn cells_c1(f: B, x: B) -> B {
                     shape: vec![],
                     data: ArrData::Boxed(vec![elem]),
                     fill: Some(rbqn_prim::structural::prototype_of(elem)),
+                    owns: false,
                 });
                 results.push(c1(f, cell));
             } else if elem.is_atom() && is_join_prim(f) {
