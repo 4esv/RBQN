@@ -13,16 +13,19 @@ static HEAP: AtomicIsize = AtomicIsize::new(0);
 
 // SAFETY: forwards every call to `System` unchanged and only counts bytes.
 unsafe impl GlobalAlloc for Counting {
+    // SAFETY: GlobalAlloc contract; the caller upholds it and it is passed to `System` as is.
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         HEAP.fetch_add(l.size() as isize, Ordering::Relaxed);
         // SAFETY: same contract as the caller's.
         unsafe { System.alloc(l) }
     }
+    // SAFETY: GlobalAlloc contract; the caller upholds it and it is passed to `System` as is.
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         HEAP.fetch_sub(l.size() as isize, Ordering::Relaxed);
         // SAFETY: same contract as the caller's.
         unsafe { System.dealloc(p, l) }
     }
+    // SAFETY: GlobalAlloc contract; the caller upholds it and it is passed to `System` as is.
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
         HEAP.fetch_add(n as isize - l.size() as isize, Ordering::Relaxed);
         // SAFETY: same contract as the caller's.
