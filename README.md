@@ -21,13 +21,13 @@ Or download a binary for macOS, Linux or Windows from [Releases](https://github.
 ⟨ 0 1 1 2 3 5 8 13 21 34 ⟩
 ```
 
-Multicore, 1e8 elements, `bench/wow/run.sh` against CBQN (12-core Intel Mac, 2026-10-24, [full output](bench/wow/results/2026-10-24-bench-intel12.md), which does not record the machine's load; a quiet-machine re-measure is #119):
+Multicore, 1e8 elements, `bench/wow/run.sh` against CBQN (12-core Intel Mac, 2026-11-01, started at load1 1.90, [full output](bench/wow/results/2026-11-01-bench-intel12.md) with the load before and after):
 
 | workload | CBQN | rbqn -t 1 | rbqn -t 12 | speedup vs -t 1 | result agrees |
 |---|---|---|---|---|---|
-| `+´` 1e8 i32 | 0.030 s (0.27 s) | 0.035 s (0.31 s) | 0.019 s (0.31 s) | 1.83x | yes |
-| `(a×b)+c` 1e8 f64 | 1.199 s (3.69 s) | 1.779 s (4.11 s) | 0.569 s (3.06 s) | 3.12x | yes |
-| `⌈´` 1e8 f64 | 0.129 s (1.06 s) | 0.299 s (1.30 s) | 0.085 s (1.23 s) | 3.52x | yes |
+| `+´` 1e8 i32 | 0.024 s (0.24 s) | 0.029 s (0.27 s) | 0.016 s (0.26 s) | 1.87x | yes |
+| `(a×b)+c` 1e8 f64 | 0.613 s (1.86 s) | 1.128 s (2.50 s) | 0.399 s (1.77 s) | 2.83x | yes |
+| `⌈´` 1e8 f64 | 0.042 s (0.40 s) | 0.123 s (0.56 s) | 0.051 s (0.50 s) | 2.41x | yes |
 
 Cells: median in-process seconds for the operation alone (median whole-process wall seconds).
 
@@ -78,23 +78,23 @@ Two layers, kept separate so that nothing outside `•gpu` ever changes a result
 
 **Automatic dispatch.** Arithmetic, folds, scans, sorts and `•math.MatMul` may run on the GPU. Only integer kernels whose result is exact are used, so the answer is the same as the CPU path; f64 arithmetic stays on the CPU (Metal has no f64). A per-operation cost model compares the modelled GPU time (including any one-time device initialisation not yet paid) with the modelled CPU time and picks the cheaper on each call; `RBQN_GPU_DEBUG=1` prints each decision. The model's constants are measured per machine at first device use (small GPU and host workloads timed at two sizes, `crates/rbqn/src/calibrate.rs`) and cached by adapter, driver and thread count under `RBQN_CACHE_DIR` (default: the platform cache directory); `RBQN_GPU_CALIBRATE=1` measures again (`crates/rbqn/tests/gpu_calibrate.rs`). `tests/gpu/corpus.txt` runs 87 expressions under forced GPU and CPU-only and requires identical output (`make gpu-corpus`). `make gpu-parity` runs the stranger docs corpus and grid with `RBQN_GPU=force` and `RBQN_GPU=off` on the same binary and requires identical reports; it needs `CBQN_BIN` and `BQN_SRC`, and is run on a machine with a GPU, not in CI. The CBQN parity job in CI is a regression floor, not the goal: the spec is the target, and deliberate divergences beyond CBQN are recorded with a spec citation in `bench/stranger/known_divergences.txt`.
 
-The device is used only when the cost model expects it to win, and results are identical either way. Median of 3 in-process seconds on an AMD Radeon Pro 5300M (Metal), from `bench/wow/results/2026-10-24-bench-matmul-cpu-166.md` (`bench/wow/run.sh`; that file records the load and foreign CPU of the run, which was shared with other builds: load1 16 at start, foreign CPU peaked at 533%, so the large ratios are the evidence, not the small ones; a quiet-machine re-measure is #119):
+The device is used only when the cost model expects it to win, and results are identical either way. Median of 3 in-process seconds on an AMD Radeon Pro 5300M (Metal), from `bench/wow/results/2026-11-01-bench-intel12.md` (`bench/wow/run.sh`, started at load1 1.90; the file records the load before and after and the peak CPU of other processes):
 
 <!-- gpu-table -->
 | workload | CBQN | rbqn CPU `-t 1` (`RBQN_GPU=off`) | rbqn CPU (`RBQN_GPU=off`) | rbqn GPU (`RBQN_GPU=force`) | rbqn default | default ran on |
 |---|---|---|---|---|---|---|
-| sort `∧` 1e6 i32 | 0.016 s | 0.033 s | 0.035 s | 0.046 s | 0.035 s | CPU |
-| sort `∧` 1e7 i32 | 0.173 s | 0.474 s | 0.510 s | 0.472 s | 0.479 s | CPU |
-| sort `∧` 1e8 i32 | 2.462 s | 6.003 s | 5.583 s | 5.310 s | 5.568 s | CPU |
-| `•math.MatMul` 1000² (entries below 10) | 0.490 s | 0.198 s | 0.054 s | 0.107 s | 0.056 s | CPU |
-| `•math.MatMul` 2000² | 5.575 s | 1.869 s | 0.295 s | 0.805 s | 0.331 s | CPU |
-| `•math.MatMul` 4096² | 42.774 s | 15.590 s | 2.569 s | 5.834 s | 2.919 s | CPU |
-| `+´˘` 1e3×1e3 i32 | 0.000 s | 0.003 s | 0.003 s | 1.584 s | 0.003 s | CPU |
-| `+´˘` 3e3×3e3 i32 | 0.003 s | 0.022 s | 0.019 s | 5.289 s | 0.024 s | CPU |
-| `+´˘` 1e4×1e4 i32 | 0.028 s | 0.250 s | 0.254 s | 19.261 s | 0.268 s | CPU |
+| sort `∧` 1e6 i32 | 0.010 s | 0.017 s | 0.017 s | 0.034 s | 0.018 s | CPU |
+| sort `∧` 1e7 i32 | 0.088 s | 0.200 s | 0.198 s | 0.274 s | 0.202 s | CPU |
+| sort `∧` 1e8 i32 | 0.893 s | 2.237 s | 2.246 s | 3.146 s | 2.308 s | CPU |
+| `•math.MatMul` 1000² (entries below 10) | 0.189 s | 0.085 s | 0.018 s | 0.068 s | 0.017 s | CPU |
+| `•math.MatMul` 2000² | 1.390 s | 0.634 s | 0.130 s | 0.518 s | 0.130 s | CPU |
+| `•math.MatMul` 4096² | 16.519 s | 5.325 s | 1.105 s | 4.375 s | 1.119 s | CPU |
+| `+´˘` 1e3×1e3 i32 | 0.000 s | 0.001 s | 0.001 s | 0.318 s | 0.001 s | CPU |
+| `+´˘` 3e3×3e3 i32 | 0.001 s | 0.010 s | 0.009 s | 1.273 s | 0.011 s | CPU |
+| `+´˘` 1e4×1e4 i32 | 0.010 s | 0.125 s | 0.123 s | 4.706 s | 0.124 s | CPU |
 <!-- /gpu-table -->
 
-`•math.MatMul` and the idiom `+˝∘×⎉1‿∞` run a blocked, packed, multicore f64 kernel on the host (#166): 4096² takes 15.6 s at `-t 1` and 2.6 s on 12 threads against 42.8 s for CBQN's `+˝∘×⎉1‿∞` (a heavily loaded machine; see the results file), up from 704 s for the earlier naive loop (`bench/wow/results/2026-10-24-bench-gpu-rows-radeon5300m.md`). The calibrated model keeps these sizes on the host on this machine; the exact-integer GPU kernel (4096² in 5.8 s when forced here) is chosen only where the model predicts it faster, for example at `-t 1`. Sort and row sums stay on the CPU here. The forced GPU sort (upload and download included) is slower than the host radix sort at 1e6 and about as fast from 1e7 to 1e8, and CBQN's own sort is faster than both (2.462 s at 1e8). There is no batched row-reduce kernel, so a forced `+´˘` runs one reduction per row and takes 19.261 s at 1e4×1e4 against 0.254 s on the host. `RBQN_GPU=force` produces those GPU numbers and `RBQN_GPU_DEBUG=1` prints the model's predicted times next to each decision.
+`•math.MatMul` and the idiom `+˝∘×⎉1‿∞` run a blocked, packed, multicore f64 kernel on the host (#166): 4096² takes 5.3 s at `-t 1` and 1.1 s on 12 threads against 16.5 s for CBQN's `+˝∘×⎉1‿∞`, up from 704 s for the earlier naive loop (`bench/wow/results/2026-10-24-bench-gpu-rows-radeon5300m.md`). The calibrated model keeps these sizes on the host on this machine; the exact-integer GPU kernel (4096² in 4.4 s when forced here) is chosen only where the model predicts it faster, for example at `-t 1`. Sort and row sums stay on the CPU here. The forced GPU sort (upload and download included) is slower than the host radix sort at every size measured (3.146 s against 2.246 s at 1e8), and CBQN's own sort is faster than both (0.893 s at 1e8). There is no batched row-reduce kernel, so a forced `+´˘` runs one reduction per row and takes 4.706 s at 1e4×1e4 against 0.123 s on the host. `RBQN_GPU=force` produces those GPU numbers and `RBQN_GPU_DEBUG=1` prints the model's predicted times next to each decision.
 
 **`•gpu`.** Explicit f32 kernels and device-resident arrays, for code that accepts f32 rounding in exchange for speed.
 
