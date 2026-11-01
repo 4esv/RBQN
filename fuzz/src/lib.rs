@@ -48,6 +48,7 @@ pub fn tick() {
     });
     if max > 0 && N.fetch_add(1, Relaxed) + 1 >= max {
         // _exit, not exit: libFuzzer interposes exit() and reports "fuzz target exited" as a crash.
+        // SAFETY: this declaration matches libc's `void _exit(int)`, which is always linked.
         unsafe extern "C" {
             fn _exit(code: i32) -> !;
         }
