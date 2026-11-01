@@ -660,3 +660,15 @@ fn test_timed_matches_cbqn() {
     assert_eq!(print_first("n←0 ⋄ t←3 {n+↩1 ⋄ 𝕩} •_timed 0 ⋄ n"), "3");
     assert_eq!(print_first("•Type¨ ⟨•_timed⟩"), "⟨ 4 ⟩");
 }
+
+#[test]
+fn dyadic_import_passes_left_argument_as_args() {
+    let d = path_test_dir("import-args");
+    std::fs::write(d.join("m.bqn"), "a ⇐ •args\n").unwrap();
+    let main = d.join("main.bqn");
+    std::fs::write(&main, "•Out ∾ ((⟨\"x\",\"y\"⟩ •Import \"m.bqn\").a) ∾¨ <\"-\"\n•Out ∾•args\n").unwrap();
+    let out = rbqn_cmd().arg(&main).arg("z").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // The imported file sees the left argument as •args; the caller's •args is restored.
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "x-y-\nz\n");
+}
