@@ -8,7 +8,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # NOTE: Pins match the tree the suite and parity corpus were validated against.
-  BQN_REV: f5706ec1aea51178ec905e896252b582556d7dc0
+  # NOTE: 5abbab96 includes 8e50c547 (field-access miscompilation fix) that the shipped compiler.bin was built from.
+  BQN_REV: 5abbab967fefc68ae9b3c2620d5d38473a90cb66
   CBQN_REV: f4257c14be5cbf1446ab2d0862af2391166d850b
 
 jobs:
@@ -69,6 +70,15 @@ jobs:
           # NOTE: test_suite.sh exits 0 on failures in default mode and leaves crashes
           # out of total_fail; gate on every saved file row being PASS.
           ! grep -Ev '^(#.*)?$' .test-results/baseline-latest.txt | grep -v ' PASS|'
+
+      - name: Embedded bytecode is the RBQN fixpoint
+        env:
+          BQN_SRC: ${{ github.workspace }}/_deps/BQN/src
+        run: |
+          # Regenerates all four bins with RBQN alone (no CBQN, no external bqn),
+          # then fails if they differ from what is committed.
+          cargo run --release -q -p rbqn --features gen-tools --bin rbqn-gen -- --self --fixpoint-check
+          git diff --exit-code crates/rbqn/bins
 
       - name: Cache CBQN
         id: cbqn-cache
