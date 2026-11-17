@@ -54,6 +54,7 @@ fn enclose_scalar(x: B) -> BqnArr {
         shape: vec![],
         data: ArrData::Boxed(vec![x]),
         fill: Some(prototype_of(x)),
+        owns: false,
     }
 }
 
@@ -117,6 +118,7 @@ fn prototype_of_arr(arr: &BqnArr) -> B {
                 shape: arr.shape.clone(),
                 data: ArrData::Boxed(proto_elems),
                 fill,
+                owns: false,
             })
         }
         ArrData::C8(_) | ArrData::C16(_) | ArrData::C32(_) => {
@@ -293,6 +295,7 @@ pub fn merge_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
                         shape: arr.shape.clone(),
                         data: ArrData::Boxed(vec![]),
                         fill: content_fill,
+                        owns: false,
                     };
                     return Ok(PrimResult::Array(result));
                 } else {
@@ -472,6 +475,7 @@ pub fn deshape_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         shape: vec![ia],
         data: arr.data.clone(),
         fill: arr.fill,
+        owns: false,
     }))
 }
 
@@ -519,7 +523,7 @@ fn fill_atom(x: B, total: usize, shape: Vec<usize>) -> BqnArr {
         } else {
             ArrData::C32(vec![c; total])
         };
-        return BqnArr { shape, data, fill: Some(B::m_c32(b' ' as u32)) };
+        return BqnArr { shape, data, fill: Some(B::m_c32(b' ' as u32)), owns: false };
     }
     let v = x.o2f();
     let i = v as i32;
@@ -539,7 +543,7 @@ fn fill_atom(x: B, total: usize, shape: Vec<usize>) -> BqnArr {
     } else {
         ArrData::I32(vec![i; total])
     };
-    BqnArr { shape, data, fill: Some(B::m_f64(0.0)) }
+    BqnArr { shape, data, fill: Some(B::m_f64(0.0)), owns: false }
 }
 
 // ⥊ dyad: reshape
@@ -574,6 +578,7 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
                 shape: new_shape,
                 data: arr.data.clone(),
                 fill: arr.fill,
+                owns: false,
             }));
         }
         return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty when result is non-empty".into()));
@@ -599,7 +604,7 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
     // the whole result; the element set is identical so the narrowed type is identical).
     // Downstream fast paths key on the squeezed type, so keeping the source type is a 40x regression.
     let narrowed = |f: Vec<f64>| {
-        array::squeeze_num(BqnArr { shape: vec![m], data: ArrData::F64(f), fill: None }).data
+        array::squeeze_num(BqnArr { shape: vec![m], data: ArrData::F64(f), fill: None, owns: false }).into_data()
     };
     let src = match &arr.data {
         ArrData::I8(v) => narrowed(v[..m].iter().map(|&x| x as f64).collect()),
@@ -617,6 +622,7 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
                 shape: new_shape,
                 data: ArrData::Boxed(vec![v[0]; new_ia]),
                 fill: result_fill,
+                owns: false,
             }));
         }
         ArrData::Boxed(v) => {
@@ -636,7 +642,7 @@ pub fn reshape_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         ArrData::C32(v) => (ArrData::C32(repeat_to(v.as_slice(), new_ia)), chr_fill),
         ArrData::Boxed(_) | ArrData::Gpu(_) => unreachable!(),
     };
-    Ok(PrimResult::Array(BqnArr { shape: new_shape, data, fill }))
+    Ok(PrimResult::Array(BqnArr { shape: new_shape, data, fill, owns: false }))
 }
 
 /// Handle reshape with computed dimension (shape contains ∘, ⌊, ⌽, or ↑).
@@ -750,6 +756,7 @@ fn reshape_computed(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
                 shape: new_shape,
                 data: arr.data.clone(),
                 fill: arr.fill,
+                owns: false,
             }));
         }
         return Err(BqnError::Domain("𝕨⥊𝕩: 𝕩 can't be empty when result is non-empty".into()));
@@ -822,7 +829,7 @@ pub fn join_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
                 else { vec![0usize; outer_rank] }
             } else { vec![0usize; outer_rank] };
             return Ok(PrimResult::Array(BqnArr {
-                shape: fill_shape, data: ArrData::Boxed(vec![]), fill: None
+                shape: fill_shape, data: ArrData::Boxed(vec![]), fill: None, owns: false
             }));
         }
 
@@ -1075,7 +1082,7 @@ fn join_typed_vectors(arr: &BqnArr) -> Option<BqnArr> {
         }
     };
     let fill = if is_char { B::m_c32(b' ' as u32) } else { B::m_f64(0.0) };
-    Some(BqnArr { shape: vec![total], data, fill: Some(fill) })
+    Some(BqnArr { shape: vec![total], data, fill: Some(fill), owns: false })
 }
 
 // ∾ dyad: join to
@@ -1272,6 +1279,7 @@ pub fn pair_c1(x: B, _xa: Option<&BqnArr>) -> Result<PrimResult> {
         data: ArrData::Boxed(vec![x]),
         // spec/inferred.md fill table: monadic ⋈ has fill 𝕩 (as a valid fill, its prototype)
         fill: Some(prototype_of(x)),
+        owns: false,
     }))
 }
 
@@ -1310,6 +1318,7 @@ pub fn prefixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             shape: prefix_shape,
             data: ArrData::Boxed(data),
             fill: arr.fill,
+            owns: false,
         }));
     }
 
@@ -1450,6 +1459,7 @@ fn take_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResul
             shape,
             data: ArrData::Boxed(vec![x]),
             fill,
+            owns: false,
         };
         &atom_arr
     } else {
@@ -1550,6 +1560,7 @@ pub fn suffixes_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             shape: suffix_shape,
             data: ArrData::Boxed(data),
             fill: arr.fill,
+            owns: false,
         }));
     }
 
@@ -1743,6 +1754,7 @@ pub fn range_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
         shape: out_shape,
         data: ArrData::Boxed(result),
         fill,
+        owns: false,
     }))
 }
 
@@ -1778,7 +1790,7 @@ pub fn windows_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
         if arr.shape.len() > 1 {
             out_shape.extend_from_slice(&arr.shape[1..]);
         }
-        let out = BqnArr { shape: out_shape, data: ArrData::I32(vec![]), fill: arr.fill };
+        let out = BqnArr { shape: out_shape, data: ArrData::I32(vec![]), fill: arr.fill, owns: false };
         return Ok(PrimResult::Array(out));
     }
 
@@ -1833,6 +1845,7 @@ fn windows_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimRe
                 shape: vec![],
                 data: rbqn_core::array::ArrData::Boxed(vec![x]),
                 fill: None,
+                owns: false,
             };
             return Ok(PrimResult::Array(out));
         }
@@ -2326,6 +2339,7 @@ pub fn rotate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             shape: vec![],
             data: ArrData::Boxed(vec![x]),
             fill: None,
+            owns: false,
         }));
     }
 
@@ -2472,6 +2486,7 @@ pub fn transpose_c1(x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             data: ArrData::Boxed(vec![x]),
             // spec: monadic ⍉ fill is ⊢ (the argument's fill); an atom's is its prototype
             fill: Some(prototype_of(x)),
+            owns: false,
         }));
     }
     let arr = xa.ok_or_else(|| BqnError::Type("⍉𝕩: 𝕩 must be an array".into()))?;
@@ -2609,6 +2624,7 @@ pub fn reorder_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resul
             shape: vec![],
             data: ArrData::Boxed(vec![x]),
             fill: None,
+            owns: false,
         }));
     }
 

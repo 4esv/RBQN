@@ -262,7 +262,7 @@ fn fast_sort(arr: &BqnArr, ascending: bool) -> Option<BqnArr> {
         }
         ArrData::Boxed(_) | ArrData::Gpu(_) => return None,
     };
-    Some(BqnArr { shape: arr.shape.clone(), data, fill: arr.fill })
+    Some(BqnArr { shape: arr.shape.clone(), data, fill: arr.fill, owns: false })
 }
 
 fn grade(arr: &BqnArr, ascending: bool) -> Result<Vec<i32>> {
@@ -465,6 +465,7 @@ pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
             shape: vec![],
             data: array::ArrData::I32(vec![lo as i32]),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
     let xarr = xa.unwrap();
@@ -549,6 +550,7 @@ pub fn bins_up_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
             shape: vec![],
             data: array::ArrData::I32(result),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
     let mut out = BqnArr::new_vec_i32(result);
@@ -579,6 +581,7 @@ pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Re
             shape: vec![],
             data: array::ArrData::I32(vec![lo as i32]),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
     let xarr = xa.unwrap();
@@ -660,6 +663,7 @@ pub fn bins_down_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Re
             shape: vec![],
             data: array::ArrData::I32(result),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
     let mut out = BqnArr::new_vec_i32(result);

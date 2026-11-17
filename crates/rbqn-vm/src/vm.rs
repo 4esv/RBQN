@@ -484,22 +484,47 @@ fn pred_not_bool() -> ! {
     rbqn_core::error::throw("Expected boolean")
 }
 
-/// Pop `sz` values into list order and build the array for LSTO/LSTM (mode 0),
-/// ARMO (1: merge, like `>`) or ARMM (2: merge-destructuring target).
+/// A slot's array count as a plain `B` the caller now owns: an `Owned` slot hands its
+/// count over, a `Borrowed` host array gets a new count (`pin`). The result is the form
+/// an owning boxed array stores (`ArrData::Boxed`, #161).
+#[inline(always)]
+pub fn counted(s: Slot) -> B {
+    match s {
+        Slot::Owned(v) => v.leak(),
+        Slot::Borrowed(b) => {
+            rbqn_core::arrstore::pin(b);
+            b
+        }
+    }
+}
+
+/// Pop `sz` values into list order and build the array for ARMO (mode 1: merge, like
+/// `>`) or ARMM (mode 2: merge-destructuring target). Their stack values are leaked.
 #[inline(never)]
 fn build_list(stack: &mut Vec<Slot>, sz: usize, mode: u8) -> B {
-    if mode == 0 && sz == 0 {
-        return tag_arr(BqnArr::empty_harr());
-    }
     let mut elems = vec![B::SENTINEL; sz];
     for i in 0..sz {
         elems[sz - i - 1] = stack.pop().unwrap_or_else(|| pop_underflow()).leak();
     }
     match mode {
-        0 => b_vec_to_arr(elems),
         1 => bqn_merge(elems),
         _ => rbqn_core::tag_arr_merge(BqnArr::from_b_vec(elems)),
     }
+}
+
+/// Pop `sz` values into list order and build the list for LSTO/LSTM. The list owns its
+/// elements (#161): an `Owned` slot's count moves in, a `Borrowed` array gets a new count.
+/// The list itself is returned `Owned`: nothing else references it.
+#[inline(never)]
+fn build_owned_list(stack: &mut Vec<Slot>, sz: usize) -> Slot {
+    if sz == 0 {
+        return Slot::Owned(rbqn_core::arrstore::tag_arr_owned(BqnArr::empty_harr()));
+    }
+    let mut elems = vec![B::SENTINEL; sz];
+    for i in 0..sz {
+        elems[sz - i - 1] = counted(stack.pop().unwrap_or_else(|| pop_underflow()));
+    }
+    Slot::Owned(rbqn_core::arrstore::tag_arr_owned(b_vec_to_arr_counted(elems)))
 }
 
 /// A value about to be stored in a variable: the plain handle, and whether the
@@ -652,7 +677,7 @@ fn eval_bc_in(t: &Tls, body: &Body, sc: std::rc::Rc<Scope>, bl: &Block) -> Slot 
 }
 
 /// Call block `bl` (body `body`, parent `psc`) once per element, as `F x` with
-/// `𝕊 = f`, appending results to `out`. One TLS lookup, frame and depth bump
+/// `𝕊 = f`, appending results to `out`, each holding a count of its own (`counted`, #161). One TLS lookup, frame and depth bump
 /// serve the whole loop instead of one per element.
 #[inline(never)]
 pub fn exec_block_each(
@@ -668,7 +693,7 @@ pub fn exec_block_each(
         let mut frame = Frame::enter(t, body.max_stack as usize, body.max_psc as usize);
         for x in elems {
             let sc = Scope::new_rc_in(t, body, psc.clone(), var_am, &[f, x, B::SENTINEL]);
-            out.push(run_bc(t, &mut frame, body, sc, bl).leak());
+            out.push(counted(run_bc(t, &mut frame, body, sc, bl)));
         }
     })
 }
@@ -836,8 +861,8 @@ fn run_bc(t: &Tls, frame: &mut Frame, body: &Body, sc: std::rc::Rc<Scope>, bl: &
             // --- List/array construction ---
             Some(Op::LSTO) | Some(Op::LSTM) => {
                 let sz = read_u32!() as usize;
-                let l = build_list(stack, sz, 0);
-                push!(l);
+                let l = build_owned_list(stack, sz);
+                stack.push(l);
             }
             Some(Op::ARMO) => {
                 let sz = read_u32!() as usize;
@@ -1220,6 +1245,22 @@ pub fn b_vec_to_arr(elems: Vec<B>) -> B {
         return tag_arr(arr);
     }
     tag_arr(BqnArr::from_b_vec(elems))
+}
+
+/// As `b_vec_to_arr` for elements that each hold a count (see `counted`): a boxed result
+/// owns them, a numeric or character result has no arrays to own.
+pub fn b_vec_to_arr_counted(elems: Vec<B>) -> BqnArr {
+    if elems.iter().all(|b| b.is_f64()) {
+        let vals: Vec<f64> = elems.iter().map(|b| b.o2f()).collect();
+        return rbqn_core::array::squeeze_num(BqnArr::new_vec_f64(vals));
+    }
+    if elems.iter().all(|b| b.is_c32()) {
+        let vals: Vec<u32> = elems.iter().map(|b| b.0 as u32).collect();
+        return BqnArr::new_vec_c32(vals);
+    }
+    let mut a = BqnArr::from_b_vec(elems);
+    a.seal_counted();
+    a
 }
 
 /// Merge a list of elements (ARMO opcode). Equivalent to BQN's `>` on the list.

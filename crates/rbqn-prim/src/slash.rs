@@ -132,6 +132,7 @@ pub fn replicate_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Res
                     shape: vec![],
                     data: ArrData::Boxed(vec![x]),
                     fill: Some(prototype_of(x)),
+                    owns: false,
                 }));
             }
             if c.len() != 1 {

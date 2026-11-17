@@ -601,6 +601,7 @@ fn group_multi_axis(warr: &BqnArr, x: B, xa: Option<&BqnArr>) -> Result<PrimResu
             shape: vec![],
             data: ArrData::Boxed(vec![x]),
             fill: None,
+            owns: false,
         };
         &scalar_arr
     };

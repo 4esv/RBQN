@@ -149,6 +149,7 @@ pub fn indexOf_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Resu
             shape: vec![],
             data: rbqn_core::array::ArrData::I32(result),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
     let mut out = BqnArr::new_vec_i32(result);
@@ -271,6 +272,7 @@ pub fn count_c2(_w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result
             shape: vec![],
             data: rbqn_core::array::ArrData::I32(result),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
     let mut out = BqnArr::new_vec_i32(result);
@@ -348,6 +350,7 @@ pub fn member_of_c2(w_raw: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -
             shape: vec![],
             data: rbqn_core::array::ArrData::I32(vec![found as i32]),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
 
@@ -393,6 +396,7 @@ pub fn member_of_c2(w_raw: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -
             shape: vec![],
             data: rbqn_core::array::ArrData::I32(result),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
     let mut out = BqnArr::new_vec_i32(result);
@@ -460,6 +464,7 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
             shape: vec![],
             data: ArrData::I32(vec![rbqn_core::compare::deep_equal(wv, x) as i32]),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
     let xarr = xa.ok_or_else(|| BqnError::Type("𝕨⍷𝕩: 𝕩 must be an array".into()))?;
@@ -476,6 +481,7 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
             shape: vec![],
             data: ArrData::I32(vec![rbqn_core::compare::deep_equal(wv, xarr.get(0)?) as i32]),
             fill: Some(B::m_i32(0)),
+            owns: false,
         }));
     }
 
@@ -511,12 +517,12 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
     let result_ia: usize = result_shape.iter().product();
 
     if result_ia == 0 {
-        return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(vec![]), fill: None }));
+        return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(vec![]), fill: None, owns: false }));
     }
 
     // An empty 𝕨 matches at every position.
     if w_shape.contains(&0) {
-        return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(vec![1; result_ia]), fill: None }));
+        return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(vec![1; result_ia]), fill: None, owns: false }));
     }
 
     // w's actual data shape (before padding) and ia
@@ -543,7 +549,7 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
             }
             result.push(matches as i32);
         }
-        return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(result), fill: None }));
+        return Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(result), fill: None, owns: false }));
     }
 
     // Multi-dimensional sliding window match (handles rank promotion via padded w_shape)
@@ -599,7 +605,7 @@ pub fn find_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
         result.push(matches as i32);
     }
 
-    Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(result), fill: None }))
+    Ok(PrimResult::Array(BqnArr { shape: result_shape, data: ArrData::I32(result), fill: None, owns: false }))
 }
 
 // ---------------------------------------------------------------------------
@@ -736,7 +742,7 @@ fn intern(arrs: &[&BqnArr]) -> Option<(Vec<Vec<u32>>, usize)> {
 }
 
 fn i32_result(v: Vec<i32>, shape: Vec<usize>) -> PrimResult {
-    PrimResult::Array(BqnArr { shape, data: ArrData::I32(v), fill: Some(B::m_i32(0)) })
+    PrimResult::Array(BqnArr { shape, data: ArrData::I32(v), fill: Some(B::m_i32(0)), owns: false })
 }
 
 fn dense_occurrence<T: Copy + Into<i32>>(v: &[T], lo: i32, range: usize) -> Vec<i32> {

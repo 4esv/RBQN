@@ -18,6 +18,7 @@ pub fn first_cell_c1(_x: B, xa: Option<&BqnArr>) -> Result<PrimResult> {
             shape: vec![],
             data: ArrData::Boxed(vec![v]),
             fill: None,
+            owns: false,
         };
         return Ok(PrimResult::Array(out));
     }
@@ -171,6 +172,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
                     ArrData::Boxed(vec![v])
                 },
                 fill: arr.fill,
+                owns: false,
             };
             return Ok(PrimResult::Array(out));
         }
@@ -178,7 +180,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         if arr.el_type() != ElType::B
             && let Some(data) = gather_cells(&arr.data, &[idx], cell_size)
         {
-            return Ok(PrimResult::Array(BqnArr { shape: cell_shape.to_vec(), data, fill: typed_fill(arr) }));
+            return Ok(PrimResult::Array(BqnArr { shape: cell_shape.to_vec(), data, fill: typed_fill(arr), owns: false }));
         }
         let mut result = Vec::with_capacity(cell_size);
         for j in 0..cell_size {
@@ -431,7 +433,7 @@ pub fn select_c2(w: B, wa: Option<&BqnArr>, _x: B, xa: Option<&BqnArr>) -> Resul
         if let Some(data) = gather_cells(&arr.data, &idx, real_cell) {
             let mut out_shape = warr.shape.clone();
             out_shape.extend_from_slice(cell_shape);
-            return Ok(PrimResult::Array(BqnArr { shape: out_shape, data, fill: typed_fill(arr) }));
+            return Ok(PrimResult::Array(BqnArr { shape: out_shape, data, fill: typed_fill(arr), owns: false }));
         }
     }
 
@@ -520,6 +522,7 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
                 shape: vec![],
                 data: ArrData::Boxed(vec![picked]),
                 fill: Some(crate::structural::prototype_of(picked)),
+                owns: false,
             }));
         }
         // empty rank-0 boxed (<⟨⟩): must be applied to a unit (atom or rank-0 enclosed)
@@ -530,6 +533,7 @@ pub fn pick_c2(w: B, wa: Option<&BqnArr>, x: B, xa: Option<&BqnArr>) -> Result<P
                     shape: vec![],
                     data: ArrData::Boxed(vec![x]),
                     fill: Some(crate::structural::prototype_of(x)),
+                    owns: false,
                 }));
             }
             if let Some(xarr) = xa
@@ -665,6 +669,7 @@ fn pick_elem(idx: B, x: B) -> Result<B> {
                         shape: vec![],
                         data: ArrData::Boxed(vec![x]),
                         fill: Some(crate::structural::prototype_of(x)),
+                        owns: false,
                     }));
                 }
                 let xarr = get_arr(x).ok_or_else(|| BqnError::Type("𝕨⊑𝕩: 𝕩 must be an array".into()))?;
@@ -683,6 +688,7 @@ fn pick_elem(idx: B, x: B) -> Result<B> {
                 shape: vec![],
                 data: ArrData::Boxed(vec![picked]),
                 fill: Some(crate::structural::prototype_of(picked)),
+                owns: false,
             }));
         }
 
