@@ -2053,6 +2053,8 @@ fn dispatch_sys_c2(idx: u32, w: B, x: B) -> B {
         60 => file_rename_c2(w, x),
         // NOTE: •Cmp dyadic — total order comparison: returns ¯1, 0, or 1
         77 => sys_cmp_c2(w, x),
+        // NOTE: 𝕨 •Import 𝕩 — load with 𝕨 as •args inside the file (uncached)
+        70 => sys_import_with(Some(w), x),
         100 => { // •BQN placeholder — just return SENTINEL for now
             B::SENTINEL
         }
@@ -3084,6 +3086,12 @@ fn file_remove_c1(x: B) -> B {
 
 /// •Import: load and cache a BQN source file.
 fn sys_import_c1(x: B) -> B {
+    sys_import_with(None, x)
+}
+
+/// With `args` set (dyadic •Import), the file sees them as •args and the
+/// import cache is bypassed, since the result depends on the arguments.
+fn sys_import_with(args: Option<B>, x: B) -> B {
     let path_str = b_to_string(x);
     let resolved = resolve_path(path_str);
 
@@ -3093,7 +3101,7 @@ fn sys_import_c1(x: B) -> B {
         .unwrap_or_else(|_| resolved.clone());
 
     // Check cache first
-    {
+    if args.is_none() {
         let cache = IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&cached) = cache.get(&canonical) {
             if cached.0 == B::SENTINEL.0 {
@@ -3104,7 +3112,7 @@ fn sys_import_c1(x: B) -> B {
     }
 
     // Insert sentinel to detect circular imports
-    {
+    if args.is_none() {
         let mut cache = IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         cache.insert(canonical.clone(), B::SENTINEL);
     }
@@ -3118,6 +3126,10 @@ fn sys_import_c1(x: B) -> B {
     let old_path = *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner());
     let old_name = *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner());
     set_sys_path(&resolved);
+    let old_args = *SYS_ARGS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(a) = args {
+        *SYS_ARGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(a);
+    }
 
     // Compile and execute the imported file using •BQN machinery
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3127,19 +3139,24 @@ fn sys_import_c1(x: B) -> B {
     // Restore •path and •name
     *SYS_PATH.lock().unwrap_or_else(|e| e.into_inner()) = old_path;
     *SYS_NAME.lock().unwrap_or_else(|e| e.into_inner()) = old_name;
+    *SYS_ARGS.lock().unwrap_or_else(|e| e.into_inner()) = old_args;
 
     let result = match result {
         Ok(v) => v,
         Err(_) => {
             // Remove sentinel on error so caller can retry
-            IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&canonical);
+            if args.is_none() {
+                IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&canonical);
+            }
             crate::vm::keep_error_site_for_next_throw();
             rbqn_core::error::throw(format!("•Import: error loading {resolved}"))
         }
     };
 
     // Cache the result
-    IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(canonical, result);
+    if args.is_none() {
+        IMPORT_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(canonical, result);
+    }
     result
 }
 
