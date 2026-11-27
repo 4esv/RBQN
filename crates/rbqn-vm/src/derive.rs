@@ -168,6 +168,11 @@ pub struct Derived {
 
 static DERIVED_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// Derived objects allocated so far on any thread (ids are never reused).
+pub fn derived_allocated() -> u64 {
+    DERIVED_COUNTER.load(std::sync::atomic::Ordering::Relaxed) - 1
+}
+
 fn next_derived_id() -> u64 {
     DERIVED_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
@@ -463,40 +468,78 @@ fn native_inverse_swap(prim_idx: usize) -> Option<B> {
     }
 }
 
-pub fn m_fork(f: B, g: B, h: B) -> B {
-    let id = store_derived(Derived {
-        kind: DerivedKind::Fork,
-        f, g, h,
-        bl: None, sc: None,
+// NOTE: Trains and modifier applications are hash-consed (#174). The VM builds a
+// fresh `F¨`, `F∘G` or `(F G H)` every time such an expression is evaluated, and
+// derived objects are never freed, so the self-hosted compiler alone left ~1200 of
+// them behind per `•BQN`/`Bqn::eval` call. Equal parts give the same object: a
+// Derived is immutable, its id is never reused, and function equality is
+// structural anyway. Only parts whose bits name the same value forever are keys:
+// numbers, characters and function/modifier ids (also never reused). An array or
+// namespace operand is not (a freed array's address can come back), so those
+// derived objects are built fresh as before.
+std::thread_local! {
+    static STRUCT_DERIVED: std::cell::RefCell<rbqn_core::arrstore::IdMap<u64>> =
+        std::cell::RefCell::new(rbqn_core::arrstore::IdMap::default());
+}
+
+/// Entries kept before the hash-cons table starts over (objects stay valid; only
+/// sharing with older ones is lost). Bounds the table when operands are fresh closures.
+const STRUCT_DERIVED_MAX: usize = 1 << 16;
+
+#[inline]
+fn stable_part(b: B) -> bool {
+    b.0 == B::SENTINEL.0 || b.is_f64() || b.is_c32() || b.is_fun() || b.is_md()
+}
+
+fn m_structural(kind: DerivedKind, f: B, g: B, h: B) -> u64 {
+    let tag = match kind {
+        DerivedKind::Fork => 0u64,
+        DerivedKind::Atop => 1,
+        DerivedKind::Md1D => 2,
+        DerivedKind::Md2D => 3,
+        _ => unreachable!("m_structural: {kind:?}"),
+    };
+    if !(stable_part(f) && stable_part(g) && stable_part(h)) {
+        return store_derived(Derived { kind, f, g, h, bl: None, sc: None });
+    }
+    // One u64 key: mix the four parts (IdMap hashes u64 keys); the stored entry
+    // keeps the full parts so a hash collision can never alias two objects.
+    let key = [tag, f.0, g.0, h.0].iter().fold(0x243F_6A88_85A3_08D3u64, |k, &p| {
+        (k ^ p).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29)
     });
-    tagu64(id << 3, FUN_TAG)
+    let parts = (f.0, g.0, h.0);
+    if let Some(id) = STRUCT_DERIVED.with(|t| t.borrow().get(&key).copied())
+        && let Some(d) = try_get_derived(id)
+        && d.kind == kind
+        && (d.f.0, d.g.0, d.h.0) == parts
+    {
+        return id;
+    }
+    let id = store_derived(Derived { kind, f, g, h, bl: None, sc: None });
+    STRUCT_DERIVED.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.len() >= STRUCT_DERIVED_MAX {
+            t.clear();
+        }
+        t.insert(key, id);
+    });
+    id
+}
+
+pub fn m_fork(f: B, g: B, h: B) -> B {
+    tagu64(m_structural(DerivedKind::Fork, f, g, h) << 3, FUN_TAG)
 }
 
 pub fn m_atop(g: B, h: B) -> B {
-    let id = store_derived(Derived {
-        kind: DerivedKind::Atop,
-        f: B::SENTINEL, g, h,
-        bl: None, sc: None,
-    });
-    tagu64(id << 3, FUN_TAG)
+    tagu64(m_structural(DerivedKind::Atop, B::SENTINEL, g, h) << 3, FUN_TAG)
 }
 
 pub fn m_md1d(m1: B, f: B) -> B {
-    let id = store_derived(Derived {
-        kind: DerivedKind::Md1D,
-        f, g: m1, h: B::SENTINEL,
-        bl: None, sc: None,
-    });
-    tagu64(id << 3, FUN_TAG)
+    tagu64(m_structural(DerivedKind::Md1D, f, m1, B::SENTINEL) << 3, FUN_TAG)
 }
 
 pub fn m_md2d(m2: B, f: B, g: B) -> B {
-    let id = store_derived(Derived {
-        kind: DerivedKind::Md2D,
-        f, g: m2, h: g,
-        bl: None, sc: None,
-    });
-    tagu64(id << 3, FUN_TAG)
+    tagu64(m_structural(DerivedKind::Md2D, f, m2, g) << 3, FUN_TAG)
 }
 
 /// MD2L: partial 2-modifier application with left operand.
